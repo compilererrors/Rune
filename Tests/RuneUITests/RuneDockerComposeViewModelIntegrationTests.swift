@@ -519,6 +519,123 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         XCTAssertNil(harness.state.lastError)
     }
 
+    func testDockerComposePodStatusMatchesKubectlForSidecarInitAndCrashLoopPods() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+
+        var pods: [String: PodSummary] = [:]
+        let deadline = Date().addingTimeInterval(120)
+        while Date() < deadline {
+            let listed = try await harness.kubeClient.listPods(from: sources, context: context, namespace: namespace)
+            pods = Dictionary(listed.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+            if pods["alpha-native-sidecar"]?.containersReady == "2/2",
+               pods["alpha-init-blocked"]?.displayStatus == "Init:0/1",
+               ["CrashLoopBackOff", "Error"].contains(pods["alpha-previous-log-probe"]?.displayStatus ?? "") {
+                break
+            }
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+
+        let sidecar = try XCTUnwrap(pods["alpha-native-sidecar"])
+        XCTAssertEqual(sidecar.displayStatus, "Running")
+        XCTAssertEqual(sidecar.containersReady, "2/2")
+        XCTAssertEqual(sidecar.initContainerNames, ["mesh-proxy"])
+
+        let initBlocked = try XCTUnwrap(pods["alpha-init-blocked"])
+        XCTAssertEqual(initBlocked.status, "Pending")
+        XCTAssertEqual(initBlocked.displayStatus, "Init:0/1")
+        XCTAssertEqual(initBlocked.containersReady, "0/1")
+
+        let crashing = try XCTUnwrap(pods["alpha-previous-log-probe"])
+        XCTAssertEqual(crashing.status, "Running")
+        XCTAssertTrue(["CrashLoopBackOff", "Error"].contains(crashing.displayStatus), crashing.displayStatus)
+
+        if let kubectl = kubectlPodColumns(
+            kubeconfig: harness.kubeconfigURL,
+            context: context.name,
+            namespace: namespace,
+            pods: ["alpha-native-sidecar", "alpha-init-blocked"]
+        ) {
+            XCTAssertEqual(kubectl["alpha-native-sidecar"]?.ready, sidecar.containersReady)
+            XCTAssertEqual(kubectl["alpha-native-sidecar"]?.status, sidecar.displayStatus)
+            XCTAssertEqual(kubectl["alpha-init-blocked"]?.ready, initBlocked.containersReady)
+            XCTAssertEqual(kubectl["alpha-init-blocked"]?.status, initBlocked.displayStatus)
+        }
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.pod)
+        try await waitUntil(timeout: 30) {
+            harness.state.pods.first { $0.name == "alpha-native-sidecar" }?.containersReady == "2/2"
+                && harness.state.pods.first { $0.name == "alpha-init-blocked" }?.displayStatus == "Init:0/1"
+                && !harness.state.isLoading
+        }
+    }
+
+    func testDockerComposeExternalSecretsListThroughServedV1() async throws {
+        let harness = try makeHarness()
+        let resources = try await harness.kubeClient.listOperatorResources(
+            from: [KubeConfigSource(url: harness.kubeconfigURL)],
+            context: KubeContext(name: "fake-orbit-mesh"),
+            namespace: "alpha-zone"
+        )
+
+        let secret = try XCTUnwrap(resources.first { $0.name == "orbit-payments-sync" })
+        XCTAssertEqual(secret.family, "External Secrets")
+        XCTAssertEqual(secret.kind, "ExternalSecrets")
+        XCTAssertEqual(secret.apiPath, "/apis/external-secrets.io/v1/namespaces/alpha-zone/externalsecrets")
+        XCTAssertEqual(secret.status, "Ready True")
+        XCTAssertTrue(resources.contains { $0.family == "cert-manager" && $0.name == "orbit-lens-tls" })
+        XCTAssertTrue(resources.contains { $0.family == "ArgoCD" && $0.name == "orbit-control-plane" })
+        XCTAssertEqual(
+            resources.filter { $0.name == "orbit-payments-sync" }.count,
+            1,
+            "Generic CRD discovery must not list the External Secrets resource a second time."
+        )
+    }
+
+    private func kubectlPodColumns(
+        kubeconfig: URL,
+        context: String,
+        namespace: String,
+        pods: [String]
+    ) -> [String: (ready: String, status: String)]? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["kubectl", "--kubeconfig", kubeconfig.path, "--context", context,
+                             "--namespace", namespace, "get", "pods", "--no-headers"] + pods
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = [environment["PATH"], "/opt/homebrew/bin", "/usr/local/bin"]
+            .compactMap { $0 }
+            .joined(separator: ":")
+        process.environment = environment
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        var columns: [String: (ready: String, status: String)] = [:]
+        for line in text.split(separator: "\n") {
+            let fields = line.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard fields.count >= 3 else { continue }
+            columns[fields[0]] = (fields[1], fields[2])
+        }
+        return columns
+    }
+
     func testDockerComposeViewModelExecAndPortForwardUseLocalCluster() async throws {
         let harness = try makeHarness()
         let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)

@@ -187,9 +187,9 @@ struct TerminalPodSelectorControl: View {
 
     private func podDetail(_ pod: PodSummary) -> String? {
         guard let status = terminalSessionStatus(for: pod) else {
-            return pod.status
+            return pod.displayStatus
         }
-        return "\(pod.status) - \(status)"
+        return "\(pod.displayStatus) - \(status)"
     }
 
     private func terminalSessionStatus(for pod: PodSummary) -> String? {

@@ -226,7 +226,7 @@ public struct KubernetesOutputParser {
             let t = s?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return t.isEmpty ? nil : t
         }
-        let containersReady = containersReadySummary(spec: spec, status: st)
+        let display = podDisplayStatus(item)
         let names = spec?.containers?.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         let containerNamesLine = names.map { $0.joined(separator: ", ") }
         let initNames = spec?.initContainers?.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -239,6 +239,7 @@ public struct KubernetesOutputParser {
             name: item.metadata.name,
             namespace: namespace,
             status: phase,
+            statusReason: display.status == phase ? nil : display.status,
             totalRestarts: restarts,
             ageDescription: age,
             cpuUsage: nil,
@@ -247,7 +248,7 @@ public struct KubernetesOutputParser {
             hostIP: nonEmpty(st?.hostIP),
             nodeName: nonEmpty(spec?.nodeName),
             qosClass: nonEmpty(st?.qosClass),
-            containersReady: containersReady,
+            containersReady: display.readyLine,
             containerNamesLine: nonEmpty(containerNamesLine),
             initContainerNamesLine: nonEmpty(initContainerNamesLine),
             ephemeralContainerNamesLine: nonEmpty(ephemeralContainerNamesLine),
@@ -255,12 +256,6 @@ public struct KubernetesOutputParser {
             containerImagesLine: nonEmpty(containerImagesLine),
             ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
         )
-    }
-
-    private func containersReadySummary(spec: KubePodSpec?, status: KubePodRowStatus?) -> String? {
-        guard let total = spec?.containers?.count, total > 0 else { return nil }
-        let ready = status?.containerStatuses?.filter { $0.ready == true }.count ?? 0
-        return "\(ready)/\(total)"
     }
 
     private func restartSum(from status: KubePodRowStatus?) -> Int {
@@ -353,14 +348,16 @@ public struct KubernetesOutputParser {
         let containerImages = containers?
             .compactMap { nonEmpty($0["image"] as? String) }
             .joined(separator: ", ")
-        let totalContainers = containers?.count ?? 0
-        let readyContainers = containerStatuses?.filter { ($0["ready"] as? Bool) == true }.count ?? 0
-        let containersReady = totalContainers > 0 ? "\(readyContainers)/\(totalContainers)" : nil
+        let display = KubernetesPodDisplayStatus.compute(
+            KubernetesPodDisplayStatus.input(metadata: metadata, spec: spec, status: status)
+        )
+        let phase = nonEmpty(status?["phase"] as? String) ?? "Unknown"
 
         return PodSummary(
             name: name,
             namespace: namespace,
-            status: nonEmpty(status?["phase"] as? String) ?? "Unknown",
+            status: phase,
+            statusReason: display.status == phase ? nil : display.status,
             totalRestarts: restartSum(from: containerStatuses)
                 + restartSum(from: initContainerStatuses)
                 + restartSum(from: ephemeralContainerStatuses),
@@ -371,7 +368,7 @@ public struct KubernetesOutputParser {
             hostIP: nonEmpty(status?["hostIP"] as? String),
             nodeName: nonEmpty(spec?["nodeName"] as? String),
             qosClass: nonEmpty(status?["qosClass"] as? String),
-            containersReady: containersReady,
+            containersReady: display.readyLine,
             containerNamesLine: nonEmpty(containerNames),
             initContainerNamesLine: nonEmpty(initContainerNames),
             ephemeralContainerNamesLine: nonEmpty(ephemeralContainerNames),
@@ -1041,12 +1038,14 @@ public struct KubernetesOutputParser {
     private struct KubePodSpecContainer: Decodable {
         let name: String
         let image: String?
+        let restartPolicy: String?
     }
 
     private struct KubePodRowMetadata: Decodable {
         let name: String
         let namespace: String?
         let creationTimestamp: String?
+        let deletionTimestamp: String?
         let labels: [String: String]?
         let ownerReferences: [KubeOwnerReference]?
     }
@@ -1058,6 +1057,8 @@ public struct KubernetesOutputParser {
 
     private struct KubePodRowStatus: Decodable {
         let phase: String?
+        let reason: String?
+        let conditions: [KubePodCondition]?
         let podIP: String?
         let hostIP: String?
         let qosClass: String?
@@ -1069,7 +1070,58 @@ public struct KubernetesOutputParser {
     private struct KubePodContainerStatus: Decodable {
         let name: String?
         let ready: Bool?
+        let started: Bool?
         let restartCount: Int?
+        let state: KubeContainerState?
+    }
+
+    private struct KubePodCondition: Decodable {
+        let type: String?
+        let status: String?
+        let reason: String?
+    }
+
+    private struct KubeContainerState: Decodable {
+        struct Waiting: Decodable { let reason: String? }
+        struct Running: Decodable { let startedAt: String? }
+        struct Terminated: Decodable {
+            let reason: String?
+            let exitCode: Int?
+            let signal: Int?
+        }
+        let waiting: Waiting?
+        let running: Running?
+        let terminated: Terminated?
+    }
+
+    private func podDisplayStatus(_ item: KubePodItem) -> KubernetesPodDisplayStatus.Result {
+        func states(_ statuses: [KubePodContainerStatus]?) -> [KubernetesPodDisplayStatus.ContainerState] {
+            (statuses ?? []).map { container in
+                KubernetesPodDisplayStatus.ContainerState(
+                    name: container.name ?? "",
+                    ready: container.ready ?? false,
+                    started: container.started,
+                    waitingReason: container.state?.waiting?.reason,
+                    running: container.state?.running != nil,
+                    terminated: container.state?.terminated.map {
+                        KubernetesPodDisplayStatus.Terminated(reason: $0.reason, exitCode: $0.exitCode ?? 0, signal: $0.signal ?? 0)
+                    }
+                )
+            }
+        }
+        let deletion = item.metadata.deletionTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return KubernetesPodDisplayStatus.compute(KubernetesPodDisplayStatus.Input(
+            phase: (item.status?.phase ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            reason: item.status?.reason,
+            isDeleting: !deletion.isEmpty,
+            conditions: (item.status?.conditions ?? []).compactMap { condition in
+                condition.type.map { KubernetesPodDisplayStatus.Condition(type: $0, status: condition.status ?? "", reason: condition.reason) }
+            },
+            containerCount: item.spec?.containers?.count ?? 0,
+            initContainers: (item.spec?.initContainers ?? []).map { ($0.name, $0.restartPolicy == "Always") },
+            initContainerStatuses: states(item.status?.initContainerStatuses),
+            containerStatuses: states(item.status?.containerStatuses)
+        ))
     }
 
     private struct KubeMetadata: Decodable {

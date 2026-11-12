@@ -157,7 +157,7 @@ public struct OverviewInsightsProjector: Sendable {
         }
 
         for pod in pods {
-            let status = pod.status.trimmingCharacters(in: .whitespacesAndNewlines)
+            let status = pod.displayStatus.trimmingCharacters(in: .whitespacesAndNewlines)
             let normalized = status.lowercased()
             let isSuccessfulTerminalPod = Self.successfulTerminalPodStatuses.contains(normalized)
             let readyWarning = isSuccessfulTerminalPod ? nil : pod.containersReady.flatMap { Self.readinessWarning($0) }
@@ -167,7 +167,7 @@ public struct OverviewInsightsProjector: Sendable {
                     title: pod.name,
                     detail: "Pod \(status.isEmpty ? "has unknown status" : "is \(status)")",
                     badge: "Pod",
-                    severity: Self.criticalPodStatuses.contains(normalized) ? .critical : .warning,
+                    severity: Self.isCriticalPodStatus(normalized) ? .critical : .warning,
                     target: OverviewResourceReference(kind: .pod, namespace: pod.namespace, name: pod.name)
                 ))
             } else if let readyWarning {
@@ -439,8 +439,17 @@ public struct OverviewInsightsProjector: Sendable {
         "error",
         "crashloopbackoff",
         "imagepullbackoff",
-        "errimagepull"
+        "errimagepull",
+        "oomkilled",
+        "createcontainerconfigerror",
+        "createcontainererror",
+        "invalidimagename"
     ])
+
+    private static func isCriticalPodStatus(_ normalized: String) -> Bool {
+        let base = normalized.hasPrefix("init:") ? String(normalized.dropFirst(5)) : normalized
+        return criticalPodStatuses.contains(base) || base.hasPrefix("exitcode:") || base.hasPrefix("signal:")
+    }
 
     private static let successfulTerminalPodStatuses = Set([
         "succeeded",

@@ -344,7 +344,10 @@ public enum KubeResourceKind: String, CaseIterable, Codable, Sendable, Identifia
 public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public let name: String
     public let namespace: String
+    /// `status.phase`; health counts use this.
     public let status: String
+    /// kubectl-style STATUS when it differs from the phase (e.g. `CrashLoopBackOff`, `Init:0/2`).
+    public let statusReason: String?
     /// Total restarts Rune shows in the workloads table (sum of container restart counts).
     public let totalRestarts: Int
     /// Human-readable age from `metadata.creationTimestamp` (e.g. `5d`, `3h`).
@@ -360,7 +363,7 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public let nodeName: String?
     /// `status.qosClass` (e.g. Burstable, Guaranteed).
     public let qosClass: String?
-    /// Ready count vs total main containers, e.g. `2/2` (from `containerStatuses`).
+    /// Ready count vs total containers as kubectl shows it, e.g. `2/2` (native sidecars included).
     public let containersReady: String?
     /// Comma-separated `spec.containers[].name` for quick reference.
     public let containerNamesLine: String?
@@ -379,6 +382,7 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         name: String,
         namespace: String,
         status: String,
+        statusReason: String? = nil,
         totalRestarts: Int = 0,
         ageDescription: String = "—",
         cpuUsage: String? = nil,
@@ -398,6 +402,7 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         self.name = name
         self.namespace = namespace
         self.status = status
+        self.statusReason = statusReason
         self.totalRestarts = totalRestarts
         self.ageDescription = ageDescription
         self.cpuUsage = cpuUsage
@@ -416,6 +421,8 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     }
 
     public var id: String { "\(namespace)/\(name)" }
+
+    public var displayStatus: String { statusReason ?? status }
 
     public var cpuDisplay: String { cpuUsage ?? "—" }
     public var memoryDisplay: String { memoryUsage ?? "—" }
@@ -455,6 +462,7 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
             name: detail.name,
             namespace: detail.namespace,
             status: status,
+            statusReason: statusReason,
             totalRestarts: totalRestarts,
             ageDescription: ageDescription,
             cpuUsage: cpuUsage ?? detail.cpuUsage,

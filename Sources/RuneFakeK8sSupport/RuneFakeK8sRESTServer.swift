@@ -97,6 +97,10 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
         requestRecorder.snapshot().map(\.requestLine)
     }
 
+    public func acceptedConnectionCount() -> Int {
+        requestRecorder.connectionCount()
+    }
+
     public func requests() -> [RuneFakeK8sRecordedRequest] {
         requestRecorder.snapshot()
     }
@@ -118,6 +122,19 @@ public final class RuneFakeK8sRESTServer: @unchecked Sendable {
 private final class RuneFakeK8sRequestRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var requests: [RuneFakeK8sRecordedRequest] = []
+    private var connections = 0
+
+    func recordConnection() {
+        lock.lock()
+        connections += 1
+        lock.unlock()
+    }
+
+    func connectionCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return connections
+    }
 
     func append(requestLine: String, body: String?) {
         lock.lock()
@@ -235,6 +252,7 @@ private final class ServerBox: @unchecked Sendable {
     }
 
     func receive(connection: NWConnection) {
+        requestRecorder.recordConnection()
         connection.start(queue: DispatchQueue(label: "rune.fake-k8s.rest-connection"))
         receive(connection: connection, accumulated: Data())
     }
@@ -294,10 +312,20 @@ private final class ServerBox: @unchecked Sendable {
                 contextName: contextName,
                 requestRecorder: requestRecorder
             ).route(requestLine: requestLine, body: recordedBody)
+            let remainder = Data(requestData[expectedRequestLength...])
+            let keepAlive = fixture.keepAliveConnections
             connection.sendHTTP(
                 response,
-                delayNanoseconds: Self.responseDelayNanoseconds(for: requestLine, fixture: fixture)
-            )
+                delayNanoseconds: Self.responseDelayNanoseconds(for: requestLine, fixture: fixture),
+                keepAlive: keepAlive
+            ) { [weak self] in
+                guard keepAlive else { return }
+                guard let self else {
+                    connection.cancel()
+                    return
+                }
+                self.receive(connection: connection, accumulated: remainder)
+            }
         }
     }
 
@@ -486,6 +514,10 @@ private struct RuneFakeK8sRouter {
                     items: cluster.namespaces.flatMap { namespace in ingressObjects(namespace) },
                     query: query
                 ))
+            }
+
+            if pathParts == ["apis"] {
+                return .json(status: 200, object: apiGroupListObject(cluster.operatorResources))
             }
 
             if pathParts == ["apis", "metrics.k8s.io", "v1beta1", "pods"] {
@@ -977,39 +1009,120 @@ private struct RuneFakeK8sRouter {
         ]
     }
 
+    private func apiGroupListObject(_ resources: [RuneFakeK8sOperatorResource]) -> [String: Any] {
+        var order: [String] = []
+        var versions: [String: [String]] = [:]
+        for resource in resources {
+            if versions[resource.apiGroup] == nil { order.append(resource.apiGroup) }
+            if !(versions[resource.apiGroup] ?? []).contains(resource.apiVersion) {
+                versions[resource.apiGroup, default: []].append(resource.apiVersion)
+            }
+        }
+        return [
+            "kind": "APIGroupList",
+            "apiVersion": "v1",
+            "groups": order.map { group in
+                let served = versions[group] ?? []
+                return [
+                    "name": group,
+                    "versions": served.map { ["groupVersion": "\(group)/\($0)", "version": $0] },
+                    "preferredVersion": ["groupVersion": "\(group)/\(served[0])", "version": served[0]]
+                ] as [String: Any]
+            }
+        ]
+    }
+
     private func podObject(_ pod: RuneFakeK8sPod, namespace: String) -> [String: Any] {
-        [
+        let running = pod.phase == "Running"
+        let image = "ghcr.io/rune/\(pod.deploymentName):fake"
+        let startedAt = "2026-04-26T10:00:00Z"
+        let initializing = pod.blockingInitContainer != nil
+
+        var metadata: [String: Any] = [
+            "name": pod.name,
+            "namespace": namespace,
+            "uid": "fake-\(pod.name)",
+            "creationTimestamp": startedAt,
+            "labels": pod.labels
+        ]
+        if pod.isTerminating {
+            metadata["deletionTimestamp"] = "2026-04-26T11:00:00Z"
+        }
+
+        var spec: [String: Any] = [
+            "nodeName": pod.nodeName,
+            "containers": pod.containers.map { container in
+                ["name": container, "image": image]
+            }
+        ]
+        let initSpecs: [[String: Any]] = pod.nativeSidecars.map { ["name": $0, "image": image, "restartPolicy": "Always"] }
+            + (pod.blockingInitContainer.map { [["name": $0, "image": image]] } ?? [])
+        if !initSpecs.isEmpty {
+            spec["initContainers"] = initSpecs
+        }
+
+        var initStatuses: [[String: Any]] = pod.nativeSidecars.map { sidecar in
+            [
+                "name": sidecar,
+                "ready": running,
+                "started": running,
+                "restartCount": 0,
+                "state": running
+                    ? ["running": ["startedAt": startedAt]]
+                    : ["waiting": ["reason": "PodInitializing"]]
+            ] as [String: Any]
+        }
+        if let blocking = pod.blockingInitContainer {
+            initStatuses.append([
+                "name": blocking,
+                "ready": false,
+                "started": true,
+                "restartCount": 0,
+                "state": ["running": ["startedAt": startedAt]]
+            ])
+        }
+
+        let mainState: [String: Any]
+        if let waiting = pod.containerWaitingReason {
+            mainState = ["waiting": ["reason": waiting]]
+        } else if initializing {
+            mainState = ["waiting": ["reason": "PodInitializing"]]
+        } else if running {
+            mainState = ["running": ["startedAt": startedAt]]
+        } else {
+            mainState = ["waiting": ["reason": "ContainerCreating"]]
+        }
+        let mainReady = running && !initializing && pod.containerWaitingReason == nil
+
+        var status: [String: Any] = [
+            "phase": initializing ? "Pending" : pod.phase,
+            "hostIP": "10.10.0.10",
+            "podIP": pod.podIP ?? "",
+            "qosClass": running ? "Burstable" : "BestEffort",
+            "conditions": [
+                ["type": "Initialized", "status": initializing ? "False" : "True"],
+                ["type": "Ready", "status": mainReady ? "True" : "False"]
+            ],
+            "containerStatuses": pod.containers.map { container in
+                [
+                    "name": container,
+                    "ready": mainReady,
+                    "started": mainReady,
+                    "restartCount": pod.restarts,
+                    "state": mainState
+                ] as [String: Any]
+            }
+        ]
+        if !initStatuses.isEmpty {
+            status["initContainerStatuses"] = initStatuses
+        }
+
+        return [
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": [
-                "name": pod.name,
-                "namespace": namespace,
-                "uid": "fake-\(pod.name)",
-                "creationTimestamp": "2026-04-26T10:00:00Z",
-                "labels": pod.labels
-            ],
-            "spec": [
-                "nodeName": pod.nodeName,
-                "containers": pod.containers.map { container in
-                    ["name": container, "image": "ghcr.io/rune/\(pod.deploymentName):fake"]
-                }
-            ],
-            "status": [
-                "phase": pod.phase,
-                "hostIP": "10.10.0.10",
-                "podIP": pod.podIP ?? "",
-                "qosClass": pod.phase == "Running" ? "Burstable" : "BestEffort",
-                "containerStatuses": pod.containers.map { container in
-                    [
-                        "name": container,
-                        "ready": pod.phase == "Running",
-                        "restartCount": pod.restarts,
-                        "state": pod.phase == "Running"
-                            ? ["running": ["startedAt": "2026-04-26T10:00:00Z"]]
-                            : ["waiting": ["reason": "ContainerCreating"]]
-                    ] as [String: Any]
-                }
-            ]
+            "metadata": metadata,
+            "spec": spec,
+            "status": status
         ]
     }
 
@@ -1521,31 +1634,44 @@ private struct RuneFakeK8sHTTPResponse {
 }
 
 private extension NWConnection {
-    func sendHTTP(_ response: RuneFakeK8sHTTPResponse, delayNanoseconds: UInt64 = 0) {
+    func sendHTTP(
+        _ response: RuneFakeK8sHTTPResponse,
+        delayNanoseconds: UInt64 = 0,
+        keepAlive: Bool = false,
+        onSent: @escaping @Sendable () -> Void = {}
+    ) {
         guard delayNanoseconds > 0 else {
-            sendHTTPNow(response)
+            sendHTTPNow(response, keepAlive: keepAlive, onSent: onSent)
             return
         }
 
         let delay = DispatchTimeInterval.nanoseconds(min(Int(delayNanoseconds), Int(Int32.max)))
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.sendHTTPNow(response)
+            self?.sendHTTPNow(response, keepAlive: keepAlive, onSent: onSent)
         }
     }
 
-    private func sendHTTPNow(_ response: RuneFakeK8sHTTPResponse) {
+    private func sendHTTPNow(
+        _ response: RuneFakeK8sHTTPResponse,
+        keepAlive: Bool,
+        onSent: @escaping @Sendable () -> Void
+    ) {
         let header = [
             "HTTP/1.1 \(response.status) \(reasonPhrase(response.status))",
             "Content-Type: \(response.contentType)",
             "Content-Length: \(response.body.count)",
-            "Connection: close",
+            keepAlive ? "Connection: keep-alive" : "Connection: close",
             "",
             ""
         ].joined(separator: "\r\n")
         var data = Data(header.utf8)
         data.append(response.body)
-        send(content: data, completion: .contentProcessed { [weak self] _ in
-            self?.cancel()
+        send(content: data, completion: .contentProcessed { [weak self] error in
+            if keepAlive, error == nil {
+                onSent()
+            } else {
+                self?.cancel()
+            }
         })
     }
 

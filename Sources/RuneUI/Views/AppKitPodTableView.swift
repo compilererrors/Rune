@@ -1757,9 +1757,11 @@ struct AppKitPodTableView: NSViewRepresentable {
                 return resourceTablePillCell(
                     in: tableView,
                     column: tableColumn,
-                    text: pod.status,
-                    color: statusColor(for: pod.status),
-                    tooltip: "\(pod.status) - pod status from the cluster"
+                    text: pod.displayStatus,
+                    color: statusColor(for: pod.displayStatus),
+                    tooltip: pod.statusReason == nil
+                        ? "\(pod.status) - pod phase from the cluster"
+                        : "\(pod.displayStatus) - phase \(pod.status)"
                 )
 
             case .favorite:
@@ -2160,14 +2162,25 @@ struct AppKitPodTableView: NSViewRepresentable {
         }
 
         private func statusColor(for status: String) -> NSColor {
-            switch status.lowercased() {
-            case "running", "succeeded", "ready":
+            let normalized = status.lowercased()
+            switch normalized {
+            case "running", "succeeded", "completed", "ready":
                 return .systemGreen
-            case "pending", "terminating":
+            case "pending", "terminating", "containercreating", "podinitializing", "notready", "schedulinggated":
                 return .systemOrange
-            case "failed", "error", "crashloopbackoff":
+            case "failed", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull", "oomkilled",
+                 "createcontainerconfigerror", "createcontainererror", "invalidimagename", "evicted":
                 return .systemRed
             default:
+                if normalized.hasPrefix("exitcode:") || normalized.hasPrefix("signal:")
+                    || normalized.hasPrefix("init:error") || normalized.hasPrefix("init:crashloopbackoff")
+                    || normalized.hasPrefix("init:exitcode:") || normalized.hasPrefix("init:signal:")
+                    || normalized.hasPrefix("init:imagepullbackoff") || normalized.hasPrefix("init:errimagepull") {
+                    return .systemRed
+                }
+                if normalized.hasPrefix("init:") {
+                    return .systemOrange
+                }
                 return .secondaryLabelColor
             }
         }

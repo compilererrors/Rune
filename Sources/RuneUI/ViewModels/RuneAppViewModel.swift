@@ -3036,7 +3036,7 @@ public final class RuneAppViewModel: ObservableObject {
             return visiblePodsCache
         }
         let values = filtered(state.pods) { pod in
-            "\(pod.name) \(pod.status) \(pod.namespace) \(pod.ageDescription) \(pod.cpuDisplay) \(pod.memoryDisplay) \(pod.totalRestarts)"
+            "\(pod.name) \(pod.displayStatus) \(pod.status) \(pod.namespace) \(pod.ageDescription) \(pod.cpuDisplay) \(pod.memoryDisplay) \(pod.totalRestarts)"
         }
         let result = sortedPods(values)
         visiblePodsCache = result
@@ -17091,7 +17091,7 @@ public final class RuneAppViewModel: ObservableObject {
             )
         case .status:
             return orderedBefore(
-                caseInsensitiveComparison(lhs.pod.status, rhs.pod.status),
+                caseInsensitiveComparison(lhs.pod.displayStatus, rhs.pod.displayStatus),
                 ascending: ascending,
                 tieBreak: identityOrder
             )

@@ -72,7 +72,7 @@ struct RelatedPodsRelationshipSection: View {
             ForEach(pods) { pod in
                 ResourceRelationshipLinkButton(
                     title: pod.name,
-                    subtitle: "\(pod.namespace) · \(pod.status)",
+                    subtitle: "\(pod.namespace) · \(pod.displayStatus)",
                     symbol: "cube.box"
                 ) {
                     open(pod)

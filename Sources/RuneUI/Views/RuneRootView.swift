@@ -9728,7 +9728,10 @@ public struct RuneRootView: View {
             if shouldShowResourceNamespaceLabel(pod.namespace) {
                 inspectorInfoRow("Namespace", value: pod.namespace, symbol: "square.stack.3d.up")
             }
-            inspectorInfoRow("Status", value: pod.status, symbol: "waveform.path.ecg")
+            inspectorInfoRow("Status", value: pod.displayStatus, symbol: "waveform.path.ecg")
+            if pod.statusReason != nil {
+                inspectorInfoRow("Phase", value: pod.status, symbol: "circle.dashed")
+            }
         }
     }
 
@@ -9848,7 +9851,7 @@ public struct RuneRootView: View {
                     ForEach(relatedPods) { pod in
                         ResourceRelationshipLinkButton(
                             title: pod.name,
-                            subtitle: "\(pod.namespace) · \(pod.status)",
+                            subtitle: "\(pod.namespace) · \(pod.displayStatus)",
                             symbol: "cube.box"
                         ) {
                             viewModel.openDeploymentRelatedPod(pod)

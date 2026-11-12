@@ -24,6 +24,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
     private let configCache = KubernetesRESTConfigCache()
     private let execCredentialCache = KubernetesExecCredentialCache()
     private let requestCoalescer = KubernetesRESTRequestCoalescer()
+    private let sessionPool = KubernetesRESTSessionPool<RESTURLSession>(urlSession: { $0.session })
     private let requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder?
     private let nativeCredentialProvider: any KubernetesNativeCredentialProviding
 
@@ -323,7 +324,11 @@ final class KubernetesRESTClient: @unchecked Sendable {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 let restSession = self.makeSession(for: resolved)
-                defer { restSession.session.invalidateAndCancel() }
+                let streamToken = self.sessionPool.registerStream(restSession.session)
+                defer {
+                    self.sessionPool.unregisterStream(streamToken)
+                    restSession.session.invalidateAndCancel()
+                }
                 do {
                     let (bytes, response) = try await restSession.session.bytes(for: finalRequest)
                     guard let httpResponse = response as? HTTPURLResponse,
@@ -1467,8 +1472,11 @@ final class KubernetesRESTClient: @unchecked Sendable {
             "k8s.request",
             "start method=\(method) context=<redacted-context> path=\(apiPath) server=\(resolved.serverURL.host ?? resolved.serverURL.absoluteString) tls=\(resolved.tlsDescription) auth=\(resolved.authentication.traceDescription) kubeconfigs=\(VerboseKubeTrace.kubeconfigSummary(environment))"
         )
-        let restSession = makeSession(for: resolved)
-        defer { restSession.session.invalidateAndCancel() }
+        let sessionKey = sessionPoolKey(for: resolved)
+        let restSession = session(for: resolved, key: sessionKey)
+        defer {
+            if sessionKey == nil { restSession.session.invalidateAndCancel() }
+        }
 
         guard let url = URL(string: apiPath, relativeTo: resolved.serverURL)?.absoluteURL else {
             throw RuneError.invalidInput(message: "Invalid Kubernetes API path: \(apiPath)")
@@ -1515,6 +1523,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 try await self.performRawRequest(
                     request: finalRequest,
                     restSession: restSession,
+                    sessionKey: sessionKey,
                     method: method,
                     contextName: contextName,
                     apiPath: apiPath,
@@ -1527,6 +1536,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         return try await performRawRequest(
             request: request,
             restSession: restSession,
+            sessionKey: sessionKey,
             method: method,
             contextName: contextName,
             apiPath: apiPath,
@@ -1537,7 +1547,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
 
     private func performRawRequest(
         request: URLRequest,
-        restSession: RESTURLSession,
+        restSession initialSession: RESTURLSession,
+        sessionKey: KubernetesRESTSessionKey?,
         method: String,
         contextName: String,
         apiPath: String,
@@ -1545,6 +1556,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         metricsScope: KubernetesRESTRequestMetricsScopeToken?
     ) async throws -> RESTResponse {
         var attempt = 1
+        var restSession = initialSession
         while true {
             let attemptStarted = ContinuousClock.now
             let data: Data
@@ -1552,6 +1564,10 @@ final class KubernetesRESTClient: @unchecked Sendable {
             do {
                 (data, response) = try await restSession.session.data(for: request)
             } catch {
+                if let sessionKey, Self.isConnectionLevelFailure(error) {
+                    sessionPool.evict(sessionKey, ifCurrent: restSession.session)
+                    restSession = session(for: resolved, key: sessionKey)
+                }
                 let retryDecision = KubernetesRequestRetryPolicy.classifyNetworkError(error)
                 let tlsFailure = restSession.delegate.lastTLSFailure()
                 let errorMessage = networkErrorMessage(error, resolved: resolved, tlsFailure: tlsFailure)
@@ -1897,6 +1913,44 @@ final class KubernetesRESTClient: @unchecked Sendable {
         )
         return try KubernetesJSON.describeEvents(from: raw)
     }
+
+    private func sessionPoolKey(for resolved: ResolvedRESTContext) -> KubernetesRESTSessionKey? {
+        let clientCertificateData: Data?
+        if let identity = resolved.clientTLSIdentity {
+            guard let data = identity.certificateData else { return nil }
+            clientCertificateData = data
+        } else {
+            clientCertificateData = nil
+        }
+        return KubernetesRESTSessionKey(
+            serverURL: resolved.serverURL,
+            insecureSkipTLSVerify: resolved.insecureSkipTLSVerify,
+            certificateAuthorityData: resolved.certificateAuthorityData,
+            tlsServerName: resolved.tlsServerName,
+            clientCertificateData: clientCertificateData
+        )
+    }
+
+    private func session(for resolved: ResolvedRESTContext, key: KubernetesRESTSessionKey?) -> RESTURLSession {
+        guard let key else { return makeSession(for: resolved) }
+        return sessionPool.session(for: key) { makeSession(for: resolved) }
+    }
+
+    static func isConnectionLevelFailure(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost,
+             .dnsLookupFailed, .timedOut, .secureConnectionFailed, .internationalRoamingOff,
+             .dataNotAllowed, .callIsActive:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var _testCachedSessionCount: Int { sessionPool.cachedSessionCount }
+    var _testRegisteredStreamCount: Int { sessionPool.registeredStreamCount }
+    func _testResetConnections() { sessionPool.resetAll() }
 
     private func makeSession(for resolved: ResolvedRESTContext) -> RESTURLSession {
         let configuration = URLSessionConfiguration.ephemeral

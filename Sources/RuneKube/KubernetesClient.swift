@@ -298,6 +298,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 name: pod.name,
                 namespace: pod.namespace,
                 status: pod.status,
+                statusReason: pod.statusReason,
                 totalRestarts: pod.totalRestarts,
                 ageDescription: pod.ageDescription,
                 podIP: pod.podIP,
@@ -402,66 +403,94 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         struct Definition {
             let family: String
             let kind: String
-            let apiPath: String
+            let group: String
+            let versions: [String]
+            let plural: String
+            let namespaced: Bool
         }
 
         let ns = namespace.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? namespace
         let definitions = [
-            Definition(family: "cert-manager", kind: "Certificates", apiPath: "/apis/cert-manager.io/v1/namespaces/\(ns)/certificates"),
-            Definition(family: "cert-manager", kind: "CertificateRequests", apiPath: "/apis/cert-manager.io/v1/namespaces/\(ns)/certificaterequests"),
-            Definition(family: "cert-manager", kind: "Issuers", apiPath: "/apis/cert-manager.io/v1/namespaces/\(ns)/issuers"),
-            Definition(family: "cert-manager", kind: "ClusterIssuers", apiPath: "/apis/cert-manager.io/v1/clusterissuers"),
-            Definition(family: "Flux", kind: "GitRepositories", apiPath: "/apis/source.toolkit.fluxcd.io/v1/namespaces/\(ns)/gitrepositories"),
-            Definition(family: "Flux", kind: "Kustomizations", apiPath: "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/\(ns)/kustomizations"),
-            Definition(family: "Flux", kind: "HelmReleases", apiPath: "/apis/helm.toolkit.fluxcd.io/v2/namespaces/\(ns)/helmreleases"),
-            Definition(family: "ArgoCD", kind: "Applications", apiPath: "/apis/argoproj.io/v1alpha1/namespaces/\(ns)/applications"),
-            Definition(family: "ArgoCD", kind: "AppProjects", apiPath: "/apis/argoproj.io/v1alpha1/namespaces/\(ns)/appprojects"),
-            Definition(family: "External Secrets", kind: "ExternalSecrets", apiPath: "/apis/external-secrets.io/v1beta1/namespaces/\(ns)/externalsecrets"),
-            Definition(family: "External Secrets", kind: "SecretStores", apiPath: "/apis/external-secrets.io/v1beta1/namespaces/\(ns)/secretstores"),
-            Definition(family: "External Secrets", kind: "ClusterSecretStores", apiPath: "/apis/external-secrets.io/v1beta1/clustersecretstores"),
-            Definition(family: "Crossplane", kind: "Compositions", apiPath: "/apis/apiextensions.crossplane.io/v1/compositions"),
-            Definition(family: "Crossplane", kind: "CompositeResourceDefinitions", apiPath: "/apis/apiextensions.crossplane.io/v1/compositeresourcedefinitions"),
-            Definition(family: "Crossplane", kind: "Providers", apiPath: "/apis/pkg.crossplane.io/v1/providers"),
-            Definition(family: "Crossplane", kind: "Configurations", apiPath: "/apis/pkg.crossplane.io/v1/configurations"),
-            Definition(family: "Gateway API", kind: "GatewayClasses", apiPath: "/apis/gateway.networking.k8s.io/v1/gatewayclasses"),
-            Definition(family: "Gateway API", kind: "Gateways", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/gateways"),
-            Definition(family: "Gateway API", kind: "HTTPRoutes", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/httproutes"),
-            Definition(family: "Gateway API", kind: "GRPCRoutes", apiPath: "/apis/gateway.networking.k8s.io/v1/namespaces/\(ns)/grpcroutes"),
-            Definition(family: "Prometheus Operator", kind: "Prometheuses", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/prometheuses"),
-            Definition(family: "Prometheus Operator", kind: "Alertmanagers", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/alertmanagers"),
-            Definition(family: "Prometheus Operator", kind: "ServiceMonitors", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/servicemonitors"),
-            Definition(family: "Prometheus Operator", kind: "PodMonitors", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/podmonitors"),
-            Definition(family: "Prometheus Operator", kind: "PrometheusRules", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/prometheusrules"),
-            Definition(family: "Prometheus Operator", kind: "ThanosRulers", apiPath: "/apis/monitoring.coreos.com/v1/namespaces/\(ns)/thanosrulers")
+            Definition(family: "cert-manager", kind: "Certificates", group: "cert-manager.io", versions: ["v1"], plural: "certificates", namespaced: true),
+            Definition(family: "cert-manager", kind: "CertificateRequests", group: "cert-manager.io", versions: ["v1"], plural: "certificaterequests", namespaced: true),
+            Definition(family: "cert-manager", kind: "Issuers", group: "cert-manager.io", versions: ["v1"], plural: "issuers", namespaced: true),
+            Definition(family: "cert-manager", kind: "ClusterIssuers", group: "cert-manager.io", versions: ["v1"], plural: "clusterissuers", namespaced: false),
+            Definition(family: "Flux", kind: "GitRepositories", group: "source.toolkit.fluxcd.io", versions: ["v1"], plural: "gitrepositories", namespaced: true),
+            Definition(family: "Flux", kind: "Kustomizations", group: "kustomize.toolkit.fluxcd.io", versions: ["v1"], plural: "kustomizations", namespaced: true),
+            Definition(family: "Flux", kind: "HelmReleases", group: "helm.toolkit.fluxcd.io", versions: ["v2"], plural: "helmreleases", namespaced: true),
+            Definition(family: "ArgoCD", kind: "Applications", group: "argoproj.io", versions: ["v1alpha1"], plural: "applications", namespaced: true),
+            Definition(family: "ArgoCD", kind: "AppProjects", group: "argoproj.io", versions: ["v1alpha1"], plural: "appprojects", namespaced: true),
+            Definition(family: "External Secrets", kind: "ExternalSecrets", group: "external-secrets.io", versions: ["v1", "v1beta1"], plural: "externalsecrets", namespaced: true),
+            Definition(family: "External Secrets", kind: "SecretStores", group: "external-secrets.io", versions: ["v1", "v1beta1"], plural: "secretstores", namespaced: true),
+            Definition(family: "External Secrets", kind: "ClusterSecretStores", group: "external-secrets.io", versions: ["v1", "v1beta1"], plural: "clustersecretstores", namespaced: false),
+            Definition(family: "Crossplane", kind: "Compositions", group: "apiextensions.crossplane.io", versions: ["v1"], plural: "compositions", namespaced: false),
+            Definition(family: "Crossplane", kind: "CompositeResourceDefinitions", group: "apiextensions.crossplane.io", versions: ["v1"], plural: "compositeresourcedefinitions", namespaced: false),
+            Definition(family: "Crossplane", kind: "Providers", group: "pkg.crossplane.io", versions: ["v1"], plural: "providers", namespaced: false),
+            Definition(family: "Crossplane", kind: "Configurations", group: "pkg.crossplane.io", versions: ["v1"], plural: "configurations", namespaced: false),
+            Definition(family: "Gateway API", kind: "GatewayClasses", group: "gateway.networking.k8s.io", versions: ["v1"], plural: "gatewayclasses", namespaced: false),
+            Definition(family: "Gateway API", kind: "Gateways", group: "gateway.networking.k8s.io", versions: ["v1"], plural: "gateways", namespaced: true),
+            Definition(family: "Gateway API", kind: "HTTPRoutes", group: "gateway.networking.k8s.io", versions: ["v1"], plural: "httproutes", namespaced: true),
+            Definition(family: "Gateway API", kind: "GRPCRoutes", group: "gateway.networking.k8s.io", versions: ["v1"], plural: "grpcroutes", namespaced: true),
+            Definition(family: "Prometheus Operator", kind: "Prometheuses", group: "monitoring.coreos.com", versions: ["v1"], plural: "prometheuses", namespaced: true),
+            Definition(family: "Prometheus Operator", kind: "Alertmanagers", group: "monitoring.coreos.com", versions: ["v1"], plural: "alertmanagers", namespaced: true),
+            Definition(family: "Prometheus Operator", kind: "ServiceMonitors", group: "monitoring.coreos.com", versions: ["v1"], plural: "servicemonitors", namespaced: true),
+            Definition(family: "Prometheus Operator", kind: "PodMonitors", group: "monitoring.coreos.com", versions: ["v1"], plural: "podmonitors", namespaced: true),
+            Definition(family: "Prometheus Operator", kind: "PrometheusRules", group: "monitoring.coreos.com", versions: ["v1"], plural: "prometheusrules", namespaced: true),
+            Definition(family: "Prometheus Operator", kind: "ThanosRulers", group: "monitoring.coreos.com", versions: ["v1"], plural: "thanosrulers", namespaced: true)
         ]
 
+        func apiPath(_ definition: Definition, version: String) -> String {
+            definition.namespaced
+                ? "/apis/\(definition.group)/\(version)/namespaces/\(ns)/\(definition.plural)"
+                : "/apis/\(definition.group)/\(version)/\(definition.plural)"
+        }
+
         let env = try kubeconfigEnvironment(from: sources)
+        let groupsRaw = try? await restClient.rawGET(
+            environment: env,
+            contextName: context.name,
+            apiPath: "/apis",
+            timeout: 15
+        )
+        let servedGroups = groupsRaw.map(Self.parseServedAPIGroups)
         let crdPrinterColumns = await crdPrinterColumnDefinitions(environment: env, contextName: context.name)
         var output: [OperatorResourceSummary] = []
+        var listedPaths = Set<String>()
 
         for definition in definitions {
-            guard let raw = try? await restClient.customCollection(
-                environment: env,
-                contextName: context.name,
-                apiPath: definition.apiPath,
-                timeout: 20
-            ) else {
-                continue
-            }
-            output += Self.parseOperatorResources(
-                raw,
-                family: definition.family,
-                kind: definition.kind,
-                apiPath: definition.apiPath,
-                printerColumnDefinitions: Self.printerColumnDefinitions(for: definition.apiPath, in: crdPrinterColumns)
+            let versions = Self.operatorResourceVersionCandidates(
+                group: definition.group,
+                knownVersions: definition.versions,
+                servedGroups: servedGroups
             )
+            for version in versions {
+                let path = apiPath(definition, version: version)
+                listedPaths.insert(path)
+                guard let raw = try? await restClient.customCollection(
+                    environment: env,
+                    contextName: context.name,
+                    apiPath: path,
+                    timeout: 20
+                ) else {
+                    continue
+                }
+                output += Self.parseOperatorResources(
+                    raw,
+                    family: definition.family,
+                    kind: definition.kind,
+                    apiPath: path,
+                    printerColumnDefinitions: Self.printerColumnDefinitions(for: path, in: crdPrinterColumns)
+                )
+                break
+            }
         }
 
         output += await discoverGenericCustomResources(
             environment: env,
             contextName: context.name,
             namespace: namespace,
-            alreadyListedPaths: Set(definitions.map(\.apiPath)),
+            groupsRaw: groupsRaw,
+            alreadyListedPaths: listedPaths,
             crdPrinterColumns: crdPrinterColumns
         )
 
@@ -2836,6 +2865,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             name: base.name,
             namespace: base.namespace,
             status: base.status,
+            statusReason: base.statusReason,
             totalRestarts: base.totalRestarts,
             ageDescription: base.ageDescription,
             cpuUsage: base.cpuUsage,
@@ -3033,6 +3063,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 name: pod.name,
                 namespace: pod.namespace,
                 status: pod.status,
+                statusReason: pod.statusReason,
                 totalRestarts: pod.totalRestarts,
                 ageDescription: pod.ageDescription,
                 cpuUsage: m.cpu,
@@ -3063,6 +3094,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 name: pod.name,
                 namespace: pod.namespace,
                 status: pod.status,
+                statusReason: pod.statusReason,
                 totalRestarts: pod.totalRestarts,
                 ageDescription: pod.ageDescription,
                 cpuUsage: m.cpu,
@@ -3243,15 +3275,11 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         environment: [String: String],
         contextName: String,
         namespace: String,
+        groupsRaw: String?,
         alreadyListedPaths: Set<String>,
         crdPrinterColumns: [CRDPrinterColumnKey: [CRDPrinterColumnDefinition]]
     ) async -> [OperatorResourceSummary] {
-        guard let groupsRaw = try? await restClient.rawGET(
-            environment: environment,
-            contextName: contextName,
-            apiPath: "/apis",
-            timeout: 15
-        ) else { return [] }
+        guard let groupsRaw else { return [] }
 
         let preferredVersions = Self.parsePreferredAPIGroupVersions(groupsRaw)
             .filter { version in
@@ -3397,6 +3425,44 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             "storage.k8s.io"
         ]
         return builtIns.contains(group)
+    }
+
+    struct ServedAPIGroup: Equatable {
+        let preferredVersion: String?
+        let versions: [String]
+    }
+
+    static func parseServedAPIGroups(_ raw: String) -> [String: ServedAPIGroup] {
+        guard let root = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+              let groups = root["groups"] as? [[String: Any]]
+        else { return [:] }
+
+        var served: [String: ServedAPIGroup] = [:]
+        for group in groups {
+            guard let name = group["name"] as? String, !name.isEmpty else { continue }
+            let versions = (group["versions"] as? [[String: Any]] ?? []).compactMap { $0["version"] as? String }
+            let preferred = (group["preferredVersion"] as? [String: Any])?["version"] as? String
+            served[name] = ServedAPIGroup(preferredVersion: preferred, versions: versions)
+        }
+        return served
+    }
+
+    static func operatorResourceVersionCandidates(
+        group: String,
+        knownVersions: [String],
+        servedGroups: [String: ServedAPIGroup]?
+    ) -> [String] {
+        guard let servedGroups else { return knownVersions }
+        guard let served = servedGroups[group] else { return [] }
+
+        var candidates: [String] = []
+        if let preferred = served.preferredVersion, served.versions.isEmpty || served.versions.contains(preferred) {
+            candidates.append(preferred)
+        }
+        for version in knownVersions where served.versions.contains(version) && !candidates.contains(version) {
+            candidates.append(version)
+        }
+        return candidates
     }
 
     private static func parsePreferredAPIGroupVersions(_ raw: String) -> [(group: String, groupVersion: String)] {

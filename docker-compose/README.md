@@ -13,6 +13,8 @@ The `fake-orbit-mesh` cluster also includes local-only diagnostics workloads for
 - `alpha-log-matrix` covers init-container YAML/describe output plus explicit multi-container log selection.
 - `alpha-previous-log-probe` covers `previous=true` pod log reads after a container restart.
 - Flux, ArgoCD, and cert-manager custom resources cover operator resource discovery, YAML, and describe paths.
+- `alpha-native-sidecar` (an init container with `restartPolicy: Always`) and `alpha-init-blocked` cover kubectl-style STATUS and READY for native sidecars and unfinished init containers.
+- An External Secrets CRD that serves only `v1` covers operator API versions chosen through discovery.
 
 ## Validated Kubernetes versions
 
@@ -117,6 +119,14 @@ Run only the multi-container, previous-log, and operator-resource coverage:
 ```bash
 RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 swift test --filter RuneDockerComposeViewModelIntegrationTests/testDockerComposeLogsCoverMultiContainerPreviousLogsAndOperatorResources
 ```
+
+Run only the pod status and operator API version coverage:
+
+```bash
+RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 swift test --filter 'RuneDockerComposeViewModelIntegrationTests/(testDockerComposePodStatusMatchesKubectlForSidecarInitAndCrashLoopPods|testDockerComposeExternalSecretsListThroughServedV1)'
+```
+
+Existing clusters must be reseeded once to get the new pods and CRD (`RUNE_RESET_DOCKER_FAKE_K8S=1` below).
 
 Run the local integration report, including Docker Compose setup:
 

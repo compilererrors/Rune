@@ -6,6 +6,7 @@ public struct RuneFakeK8sFixture: Sendable {
     public let transientFailureTargets: Set<String>
     public let delayedResponseTargets: [String: UInt64]
     public let selfSubjectAccessReviewDenials: Set<RuneFakeK8sRBACRule>
+    public var keepAliveConnections: Bool = false
 
     public init(
         contexts: [RuneFakeK8sCluster] = RuneFakeK8sFixture.defaultContexts,
@@ -187,6 +188,10 @@ public struct RuneFakeK8sPod: Sendable {
     public let nodeName: String
     public let labels: [String: String]
     public let containers: [String]
+    public var nativeSidecars: [String] = []
+    public var blockingInitContainer: String? = nil
+    public var containerWaitingReason: String? = nil
+    public var isTerminating: Bool = false
 }
 
 public struct RuneFakeK8sDeployment: Sendable {
