@@ -297,7 +297,10 @@ cd "$ROOT_DIR" || exit 1
 
 run_step build_RuneFakeK8s swift build --disable-sandbox --product RuneFakeK8s
 
-FAKE_BIN="${RUNE_FAKE_K8S_BINARY:-$ROOT_DIR/.build/debug/RuneFakeK8s}"
+FAKE_BIN="${RUNE_FAKE_K8S_BINARY:-$(swift build --disable-sandbox --show-bin-path 2>/dev/null)/RuneFakeK8s}"
+if [[ ! -x "$FAKE_BIN" && -x "$ROOT_DIR/.build/debug/RuneFakeK8s" ]]; then
+  FAKE_BIN="$ROOT_DIR/.build/debug/RuneFakeK8s"
+fi
 if [[ ! -x "$FAKE_BIN" && -x "$ROOT_DIR/.build/arm64-apple-macosx/debug/RuneFakeK8s" ]]; then
   FAKE_BIN="$ROOT_DIR/.build/arm64-apple-macosx/debug/RuneFakeK8s"
 fi

@@ -120,10 +120,10 @@ Run only the multi-container, previous-log, and operator-resource coverage:
 RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 swift test --filter RuneDockerComposeViewModelIntegrationTests/testDockerComposeLogsCoverMultiContainerPreviousLogsAndOperatorResources
 ```
 
-Run only the pod status and operator API version coverage:
+Run only the pod status, operator API version and connection coverage:
 
 ```bash
-RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 swift test --filter 'RuneDockerComposeViewModelIntegrationTests/(testDockerComposePodStatusMatchesKubectlForSidecarInitAndCrashLoopPods|testDockerComposeExternalSecretsListThroughServedV1)'
+RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 swift test --filter 'RuneDockerComposeViewModelIntegrationTests/(testDockerComposePodStatusMatchesKubectlForSidecarInitAndCrashLoopPods|testDockerComposeExternalSecretsListThroughServedV1|testDockerComposeRepeatedRequestsShareOneTLSSessionPerCluster|testDockerComposeConnectionResetReleasesAnOpenWatchImmediately)'
 ```
 
 Existing clusters must be reseeded once to get the new pods and CRD (`RUNE_RESET_DOCKER_FAKE_K8S=1` below).

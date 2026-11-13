@@ -577,6 +577,101 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
                 && harness.state.pods.first { $0.name == "alpha-init-blocked" }?.displayStatus == "Init:0/1"
                 && !harness.state.isLoading
         }
+
+        harness.viewModel.setSection(.overview)
+        try await waitUntil(timeout: 30) {
+            harness.state.selectedSection == .overview
+                && harness.state.overviewPods.contains { $0.name == "alpha-init-blocked" }
+                && !harness.state.isLoading
+        }
+        let statusSignals = harness.viewModel.overviewUnhealthyItems.filter { $0.id.hasPrefix("pod-status|") }
+        let criticalCount = harness.viewModel.overviewUnhealthyItems.filter { $0.severity == .critical }.count
+        if let crashSignal = statusSignals.first(where: { $0.target?.name == "alpha-previous-log-probe" }) {
+            XCTAssertEqual(crashSignal.severity, .critical)
+        } else {
+            XCTAssertEqual(criticalCount, 8, "The crash-looping pod should be a critical signal while there is room for it.")
+        }
+        if let initSignal = statusSignals.first(where: { $0.target?.name == "alpha-init-blocked" }) {
+            XCTAssertEqual(initSignal.severity, .warning)
+        }
+        XCTAssertFalse(statusSignals.contains { $0.target?.name == "alpha-native-sidecar" })
+    }
+
+    func testDockerComposeRepeatedRequestsShareOneTLSSessionPerCluster() async throws {
+        let harness = try makeHarness()
+        let restClient = KubernetesRESTClient()
+        let client = KubernetesClient(
+            commandTimeout: 10,
+            restClient: restClient,
+            requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder()
+        )
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let orbit = KubeContext(name: "fake-orbit-mesh")
+
+        for _ in 0..<10 {
+            let pods = try await client.listPods(from: sources, context: orbit, namespace: "alpha-zone")
+            XCTAssertFalse(pods.isEmpty)
+        }
+        XCTAssertEqual(restClient._testCachedSessionCount, 1)
+
+        let latticeNamespaces = try await client.listNamespaces(from: sources, context: KubeContext(name: "fake-lattice-spark"))
+        XCTAssertFalse(latticeNamespaces.isEmpty)
+        XCTAssertEqual(restClient._testCachedSessionCount, 2, "Each cluster keeps its own TLS session.")
+
+        restClient._testResetConnections()
+        XCTAssertEqual(restClient._testCachedSessionCount, 0)
+        let afterReset = try await client.listPods(from: sources, context: orbit, namespace: "alpha-zone")
+        XCTAssertFalse(afterReset.isEmpty)
+        XCTAssertEqual(restClient._testCachedSessionCount, 1)
+    }
+
+    func testDockerComposeConnectionResetReleasesAnOpenWatchImmediately() async throws {
+        let harness = try makeHarness()
+        let restClient = KubernetesRESTClient()
+        let client = KubernetesClient(
+            commandTimeout: 10,
+            restClient: restClient,
+            requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder()
+        )
+        let events = try await client.watchResourceChanges(
+            from: [KubeConfigSource(url: harness.kubeconfigURL)],
+            context: KubeContext(name: "fake-orbit-mesh"),
+            namespace: "alpha-zone",
+            kind: .pod,
+            timeoutSeconds: 290
+        )
+        let consumer = Task {
+            do {
+                for try await _ in events {}
+            } catch {}
+            return Date()
+        }
+        defer { consumer.cancel() }
+
+        let registered = Date().addingTimeInterval(20)
+        while restClient._testRegisteredStreamCount == 0, Date() < registered {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(restClient._testRegisteredStreamCount, 1)
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        XCTAssertEqual(restClient._testRegisteredStreamCount, 1, "The watch should still be open before the reset.")
+
+        let resetAt = Date()
+        restClient._testResetConnections()
+        let endedAt = await withTaskGroup(of: Date?.self) { group -> Date? in
+            group.addTask { await consumer.value }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        let ended = try XCTUnwrap(endedAt, "The watch should end right after a connection reset, not at its 290 s timeout.")
+        XCTAssertGreaterThanOrEqual(ended.timeIntervalSince(resetAt), 0)
+        XCTAssertLessThan(ended.timeIntervalSince(resetAt), 5)
+        XCTAssertEqual(restClient._testRegisteredStreamCount, 0)
     }
 
     func testDockerComposeExternalSecretsListThroughServedV1() async throws {
