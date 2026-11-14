@@ -56,9 +56,11 @@ extension RuneRootView {
                 RuneGlassPaneSurface(role: .inspector)
                 RuneGlassPaneBorder(role: .inspector)
                 RuneRootLayoutProbe(kind: .detail, generation: layoutGeneration)
+                RuneInspectorDocumentAnchor()
                 paneFocusOutline(isFocused: keyboardPaneFocus == .detail)
             }
         }
+
     }
 
     var overviewDetails: some View {

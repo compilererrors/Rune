@@ -21,13 +21,16 @@ enum RuneSpacing {
 /// Continuous corner radii, from window-level panels down to inline chips.
 enum RuneRadius {
     static let panel: CGFloat = 14
+    /// Control cards and status strips: concentric with the 8 pt controls
+    /// they hold (8 pt radius + 4 pt of the 8 pt inset reads as one curve).
+    static let group: CGFloat = 12
     static let card: CGFloat = 10
     static let control: CGFloat = 8
     static let tab: CGFloat = 7
     static let chip: CGFloat = 6
     static let indicator: CGFloat = 2
 
-    static let scale: [CGFloat] = [indicator, chip, tab, control, card, panel]
+    static let scale: [CGFloat] = [indicator, chip, tab, control, card, group, panel]
 }
 
 /// Control sizes follow the AppKit scale as rendered on current macOS

@@ -55,6 +55,7 @@ public struct RuneRootView: View {
     @State var overviewCardSelectionIndex = 0
     @State var expandedOverviewInsightPanels: Set<OverviewInsightPanelID> = []
     @State var localKeyEventMonitor: Any?
+    @State var localMouseEventMonitor: Any?
     @State var workspaceWindowReference = RuneWorkspaceWindowReference()
     @State var addClusterPopoverPresented = false
     @State var selectedAddClusterProvider: RuneAddClusterProvider?

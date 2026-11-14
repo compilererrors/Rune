@@ -869,7 +869,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
     }
 }
 
-private final class TerminalTranscriptInteractionTextView: NSTextView {
+private final class TerminalTranscriptInteractionTextView: NSTextView, RuneKeyboardTypingSurface {
     var onPasteText: ((String) -> Void)?
     var onInputSequence: ((String) -> Void)?
 

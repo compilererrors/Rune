@@ -146,6 +146,10 @@ struct RuneToolbarControlSurface: ViewModifier {
             }
             .contentShape(RoundedRectangle(cornerRadius: RuneRadius.control, style: .continuous))
             .onHover { isHovered = $0 }
+            // Colour-only transitions: hover and press fade instead of
+            // snapping, and nothing moves.
+            .animation(.easeOut(duration: 0.12), value: isHovered)
+            .animation(.easeOut(duration: 0.08), value: isPressed)
     }
 
     private var foreground: Color {
@@ -244,6 +248,7 @@ private struct RuneCompactButtonBody: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: RuneRadius.chip, style: .continuous))
             .onHover { isHovered = $0 }
+            .animation(.easeOut(duration: 0.12), value: isHovered)
     }
 
     private var fallbackForeground: Color {
@@ -339,6 +344,7 @@ private struct RuneToolbarSegmentButtonBody: View {
             .background(accent.opacity(configuration.isPressed ? 0.20 : isHovered && isEnabled ? 0.11 : 0))
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
+            .animation(.easeOut(duration: 0.12), value: isHovered)
     }
 }
 

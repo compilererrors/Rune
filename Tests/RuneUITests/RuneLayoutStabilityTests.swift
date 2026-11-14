@@ -52,7 +52,8 @@ final class RuneLayoutStabilityTests: XCTestCase {
     func testQuickEditDoesNotReflowTheYAMLPane() throws {
         let editorFrames = try [(false, false), (true, false), (true, true)].map { isEditing, hasEdits in
             let view = YAMLPaneHarness(isEditing: isEditing, hasEdits: hasEdits)
-            let hostView = host(view, width: 460, height: 640)
+            // Inspector width, where the mode note competes with the status title.
+            let hostView = host(view, width: 400, height: 640)
             let editor = try XCTUnwrap(firstScrollView(in: hostView), "YAML editor surface")
             return editor.convert(editor.bounds, to: hostView)
         }

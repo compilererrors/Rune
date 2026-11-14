@@ -985,11 +985,10 @@ private final class PlainManifestTextView: NSTextView {
         if handleYAMLTabKey(event) {
             return
         }
-        // Read-only documents page with Space / Shift+Space; editable text
-        // keeps Space for typing.
-        if !isEditable, let direction = RuneSpacePaging.direction(for: event), let enclosingScrollView {
-            let lineHeight = layoutManager?.defaultLineHeight(for: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)) ?? 16
-            RuneSpacePaging.page(enclosingScrollView, direction: direction, lineHeight: lineHeight)
+        // Read-only documents scroll with Space, arrows, Page Up/Down and
+        // Home/End; editable text keeps every key for typing and the caret.
+        if !isEditable, let command = RuneSpacePaging.command(for: event), let enclosingScrollView {
+            RuneSpacePaging.scroll(enclosingScrollView, command: command, lineHeight: RuneSpacePaging.lineHeight(for: enclosingScrollView))
             return
         }
         super.keyDown(with: event)

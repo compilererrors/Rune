@@ -387,6 +387,42 @@ extension RuneRootView {
         }
     }
 
+    /// A click anywhere in the inspector gives it keyboard focus, so Space,
+    /// arrows, Page Up/Down and Home/End scroll its document. A field outside
+    /// the inspector stops editing; a control the click lands on inside the
+    /// inspector still takes focus as usual (the event continues).
+    func installLocalMouseMonitorIfNeeded() {
+        guard localMouseEventMonitor == nil else { return }
+        localMouseEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { event in
+            focusInspectorPaneIfClicked(event)
+            return event
+        }
+    }
+
+    func removeLocalMouseMonitor() {
+        guard let localMouseEventMonitor else { return }
+        NSEvent.removeMonitor(localMouseEventMonitor)
+        self.localMouseEventMonitor = nil
+    }
+
+    func focusInspectorPaneIfClicked(_ event: NSEvent) {
+        guard let window = event.window,
+              window.windowNumber == workspaceWindowReference.windowNumber || workspaceWindowReference.windowNumber == nil,
+              let anchor = RuneInspectorDocumentAnchor.AnchorView.anchor(in: window),
+              anchor.paneRectInWindow.contains(event.locationInWindow) else { return }
+        keyboardPaneFocus = .detail
+        textInputFocus = nil
+        if let responder = window.firstResponder as? NSView {
+            let frame = responder.convert(responder.bounds, to: nil)
+            let paneRect = anchor.paneRectInWindow
+            let containsPane = frame.contains(NSPoint(x: paneRect.midX, y: paneRect.midY))
+            let isInsidePane = paneRect.contains(NSPoint(x: frame.midX, y: frame.midY))
+            if !containsPane, !isInsidePane {
+                window.makeFirstResponder(nil)
+            }
+        }
+    }
+
     func installLocalKeyboardMonitorIfNeeded() {
         guard localKeyEventMonitor == nil else { return }
         localKeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
@@ -410,6 +446,15 @@ extension RuneRootView {
             } else {
                 focusNextKeyboardPane()
             }
+            return nil
+        }
+
+        // The inspector pane has keyboard focus: Space, arrows, Page Up/Down
+        // and Home/End scroll its document (Logs, YAML, Describe).
+        if keyboardPaneFocus == .detail,
+           !keyboardNavigationContext.isSuspended,
+           let window = event.window ?? NSApp.keyWindow,
+           RuneInspectorKeyboardScrolling.handle(event, in: window) {
             return nil
         }
 

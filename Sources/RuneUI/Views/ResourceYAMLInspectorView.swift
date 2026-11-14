@@ -619,14 +619,7 @@ struct YAMLValidationSummaryView: View {
         }
         .padding(.horizontal, RuneUILayoutMetrics.inspectorControlContentInset)
         .padding(.vertical, RuneUILayoutMetrics.inspectorControlChromeVerticalPadding)
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
-        }
+        .modifier(RuneCardSurface())
         .onChange(of: issueSignature) { _, _ in
             if issues.isEmpty {
                 isExpanded = false
@@ -645,6 +638,9 @@ struct YAMLValidationSummaryView: View {
             Text(summaryTitle)
                 .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
 
             Spacer(minLength: 0)
 

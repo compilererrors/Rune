@@ -120,12 +120,13 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("private struct LogToolbarSourceSummary"))
         XCTAssertTrue(source.contains("statusColor"))
         XCTAssertTrue(source.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
-        XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)"))
+        XCTAssertTrue(source.contains(".modifier(RuneCardSurface())"))
         XCTAssertTrue(source.contains("LogToolbarPopupPicker("))
         XCTAssertTrue(source.contains("popup.font = parent.popupFont"))
         XCTAssertTrue(source.contains("interfaceMenuFontSize + RuneControlSize.large.labelRelativeSize"))
-        XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.row.opacity(0.42)"))
-        XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.stroke.opacity(0.28)"))
+        // Log toolbar groups share the inspector card surface (row fill, soft
+        // top-lit border, group radius).
+        XCTAssertTrue(toolbarGroupSource.contains(".modifier(RuneCardSurface())"))
         XCTAssertFalse(toolbarGroupSource.contains("RoundedRectangle(cornerRadius: 9, style: .continuous)"))
         XCTAssertTrue(source.contains("VStack(alignment: .leading, spacing: RuneSpacing.tight)"))
         XCTAssertTrue(source.contains("Text(title.uppercased())"))

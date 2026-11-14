@@ -9,6 +9,7 @@ enum RuneUILayoutMetrics {
     static let groupedContentCornerRadius: CGFloat = RuneRadius.card
     /// Tight interactive rows (sidebar section/context picks), log/YAML editor chrome.
     static let interactiveRowCornerRadius: CGFloat = RuneRadius.control
+    static let controlCardCornerRadius: CGFloat = RuneRadius.group
     /// Small metadata chips and inline badges.
     static let compactGlyphCornerRadius: CGFloat = RuneRadius.chip
     /// Compact terminal/log tab chrome; deliberately distinct from general interactive rows.

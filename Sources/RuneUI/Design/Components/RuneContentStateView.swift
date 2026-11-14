@@ -153,9 +153,12 @@ struct RuneContentStateView: View {
 
     private var verticalContent: some View {
         VStack(spacing: RuneSpacing.sm) {
-            stateGraphic(size: 22)
+            stateGraphic(size: 20)
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(graphicColor.opacity(0.12)))
 
             stateText(alignment: .center)
+                .frame(maxWidth: 360)
 
             if let action {
                 actionButton(action)
@@ -198,13 +201,13 @@ struct RuneContentStateView: View {
     private func stateText(alignment: TextAlignment) -> some View {
         VStack(alignment: alignment == .center ? .center : .leading, spacing: RuneSpacing.xxs) {
             Text(state.title)
-                .font(variant == .inline ? .caption.weight(.semibold) : .body.weight(.semibold))
+                .runeText(variant == .inline ? .captionEmphasis : .headline)
                 .foregroundStyle(.runePrimary)
 
             if let message = state.message,
                !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(message)
-                    .font(variant == .inline ? .caption2 : .footnote)
+                    .runeText(variant == .inline ? .micro : .caption)
                     .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)

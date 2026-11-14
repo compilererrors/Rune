@@ -125,16 +125,37 @@ struct RuneControlCard<Content: View>: View {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
         content
             .buttonStyle(RuneToolbarButtonStyle())
             .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
             .padding(.vertical, verticalPadding)
             .frame(maxWidth: fillsWidth ? .infinity : nil, minHeight: minHeight, alignment: .leading)
+            .modifier(RuneCardSurface())
+    }
+}
+
+/// The quiet card surface shared by control cards and status strips: the row
+/// fill, a soft top-lit border (lighter at the top edge, like light falling on
+/// a raised surface) and the group radius. No shadow, so scrolling past cards
+/// costs nothing extra.
+struct RuneCardSurface: ViewModifier {
+    @Environment(\.runeThemePalette) private var palette
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: RuneUILayoutMetrics.controlCardCornerRadius, style: .continuous)
+        let edge = palette?.stroke ?? Color(nsColor: .separatorColor)
+        content
             .background(shape.fill(palette?.row.opacity(0.42) ?? Color.primary.opacity(0.04)))
             .overlay {
                 shape
-                    .strokeBorder(palette?.stroke.opacity(0.28) ?? Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [edge.opacity(palette == nil ? 0.30 : 0.44), edge.opacity(palette == nil ? 0.12 : 0.20)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
                     .allowsHitTesting(false)
             }
     }

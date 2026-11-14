@@ -422,17 +422,7 @@ private struct LogToolbarGroup<Content: View>: View {
         .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
         .padding(.vertical, role.verticalPadding)
         .frame(minHeight: role.height)
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .fill(runeThemePalette?.row.opacity(0.42) ?? Color.primary.opacity(0.055))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .strokeBorder(
-                    runeThemePalette?.stroke.opacity(0.28) ?? Color(nsColor: .separatorColor).opacity(0.16),
-                    lineWidth: 1
-                )
-        }
+        .modifier(RuneCardSurface())
         .fixedSize(horizontal: true, vertical: false)
     }
 }

@@ -73,6 +73,7 @@ extension RuneRootView {
             NSApp.keyWindow?.makeFirstResponder(nil)
         }
         installLocalKeyboardMonitorIfNeeded()
+        installLocalMouseMonitorIfNeeded()
         scheduleWorkspaceChromeMount()
         if RuneRootLayoutDebug.isEnabled {
             RuneLoggers.layout.debug(
@@ -282,6 +283,7 @@ extension RuneRootView {
         viewModel.persistLastAppStateNow()
         persistTerminalWorkspaceStateIfNeeded()
         removeLocalKeyboardMonitor()
+        removeLocalMouseMonitor()
     }
 
     func scheduleWorkspaceChromeMount() {
