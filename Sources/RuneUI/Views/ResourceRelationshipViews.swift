@@ -28,9 +28,9 @@ struct ResourceRelationshipSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             Text(title)
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
 
             if usesBoundedInnerScroll {
@@ -46,7 +46,7 @@ struct ResourceRelationshipSection<Content: View>: View {
                 relationshipRows
             }
         }
-        .padding(10)
+        .padding(RuneSpacing.inset)
         .background(RuneSurfaceBackground(kind: .editor))
     }
 
@@ -119,22 +119,22 @@ struct ResourceRelationshipLinkButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: RuneSpacing.xs) {
                 Image(systemName: symbol)
                     .frame(width: 16)
                     .foregroundStyle(.runeSecondary)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                     Text(title)
-                        .font(.caption.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .lineLimit(1)
                     Text(subtitle)
-                        .font(.caption2)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .foregroundStyle(.runeTertiary)
             }
             .frame(maxWidth: .infinity, minHeight: Self.minimumHeight, alignment: .leading)
@@ -153,15 +153,15 @@ struct ResourceRelationshipEmptyRow: View {
     let subtitle: String
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             Image(systemName: "tray")
                 .frame(width: 16)
                 .foregroundStyle(.runeSecondary)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                 Text(subtitle)
-                    .font(.caption2)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .lineLimit(2)
             }

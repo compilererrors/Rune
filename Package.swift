@@ -78,6 +78,9 @@ let package = Package(
                 "RuneSecurity",
                 "RuneExport"
             ],
+            exclude: [
+                "Design/README.md"
+            ],
             resources: [
                 .process("Resources")
             ]

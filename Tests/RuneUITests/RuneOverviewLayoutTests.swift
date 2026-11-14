@@ -59,13 +59,10 @@ final class RuneOverviewLayoutTests: XCTestCase {
     func testSharedOverviewHeadersUseOneIconTrack() throws {
         let root = repoRoot
         let design = try String(
-            contentsOf: root.appendingPathComponent("Sources/RuneUI/Layout/RuneOverviewLayouts.swift"),
+            contentsOf: root.appendingPathComponent("Sources/RuneUI/Design/Components/RuneOverviewLayouts.swift"),
             encoding: .utf8
         )
-        let overview = try String(
-            contentsOf: root.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift"),
-            encoding: .utf8
-        )
+        let overview = try RuneRootViewSource.text()
         let signals = try String(
             contentsOf: root.appendingPathComponent("Sources/RuneUI/Views/OverviewClusterSignalsPanelView.swift"),
             encoding: .utf8

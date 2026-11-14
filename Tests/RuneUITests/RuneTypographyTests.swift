@@ -205,14 +205,14 @@ final class RuneTypographyTests: XCTestCase {
     }
 
     func testSecondaryCaptionAuditKeepsSupportingLabelsRegularWeight() throws {
-        let designSource = try source(at: "Sources/RuneUI/Layout/RuneDesignComponents.swift")
+        let designSource = try source(at: "Sources/RuneUI/Design/Components/RuneDesignComponents.swift")
         let importSource = try source(at: "Sources/RuneUI/Views/KubeConfigImportReviewPanel.swift")
         let nativeContextSource = try source(at: "Sources/RuneUI/Views/AddClusterNativeContextSection.swift")
 
-        XCTAssertTrue(designSource.contains("Text(title)\n                .font(.caption)\n                .foregroundStyle(.runeSecondary)"))
-        XCTAssertTrue(importSource.contains("Text(context.name)\n                                .font(.caption2)\n                                .foregroundStyle(.runeSecondary)"))
+        XCTAssertTrue(designSource.contains("Text(title)\n                .runeText(.micro)\n                .foregroundStyle(.runeSecondary)"))
+        XCTAssertTrue(importSource.contains("Text(context.name)\n                                .runeText(.micro)\n                                .foregroundStyle(.runeSecondary)"))
         XCTAssertTrue(importSource.contains("Duplicate handling requires an explicit choice before saving:"))
-        XCTAssertTrue(nativeContextSource.contains("Text(\"Imported context\")\n                .font(.caption)\n                .foregroundStyle(.runeSecondary)"))
+        XCTAssertTrue(nativeContextSource.contains("Text(\"Imported context\")\n                .runeText(.micro)\n                .foregroundStyle(.runeSecondary)"))
     }
 
     private func fittingSize(dynamicTypeSize: DynamicTypeSize) -> CGSize {

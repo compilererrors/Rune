@@ -310,7 +310,7 @@ private struct ContrastPreview: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Settings and resource contrast").font(.title2.bold())
+            Text("Settings and resource contrast").runeText(.title, weight: .bold)
             HStack(spacing: 8) {
                 Button("Reload") {}.buttonStyle(RuneToolbarButtonStyle())
                 Button("Save Logs") {}.buttonStyle(RuneToolbarButtonStyle(isProminent: true))

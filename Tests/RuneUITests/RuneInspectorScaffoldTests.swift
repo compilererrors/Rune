@@ -266,22 +266,22 @@ final class RuneInspectorScaffoldTests: XCTestCase {
     }
 
     func testAllResourceInspectorFamiliesUseScaffoldWithExplicitScrollOwnership() throws {
-        let source = try String(contentsOfFile: rootViewPath, encoding: .utf8)
-        let pod = try sourceBlock(from: "private var podDetails", to: "private var deploymentDetails", source: source)
-        let deployment = try sourceBlock(from: "private var deploymentDetails", to: "private var serviceDetails", source: source)
-        let service = try sourceBlock(from: "private var serviceDetails", to: "private func serviceInspectorCoreInfo", source: source)
+        let source = try RuneRootViewSource.text()
+        let pod = try sourceBlock(from: "var podDetails", to: "var deploymentDetails", source: source)
+        let deployment = try sourceBlock(from: "var deploymentDetails", to: "var serviceDetails", source: source)
+        let service = try sourceBlock(from: "var serviceDetails", to: "func serviceInspectorCoreInfo", source: source)
         let generic = try sourceBlock(
-            from: "private func genericResourceDetails<Supplementary: View>",
-            to: "private func genericResourceOverview<Supplementary: View>",
+            from: "func genericResourceDetails<Supplementary: View>",
+            to: "func genericResourceOverview<Supplementary: View>",
             source: source
         )
         let operatorResource = try sourceBlock(
-            from: "private func operatorResourceDetails",
-            to: "private func operatorResourceOverview",
+            from: "func operatorResourceDetails",
+            to: "func operatorResourceOverview",
             source: source
         )
-        let helm = try sourceBlock(from: "private var helmDetails", to: "private func helmReleaseCoreInfo", source: source)
-        let event = try sourceBlock(from: "private var eventDetails", to: "private func eventInspectorCoreInfo", source: source)
+        let helm = try sourceBlock(from: "var helmDetails", to: "func helmReleaseCoreInfo", source: source)
+        let event = try sourceBlock(from: "var eventDetails", to: "func eventInspectorCoreInfo", source: source)
 
         for block in [pod, deployment, service] {
             XCTAssertTrue(block.contains("RuneInspectorScaffold("))
@@ -306,10 +306,10 @@ final class RuneInspectorScaffoldTests: XCTestCase {
     }
 
     func testGenericOverviewOwnsSupplementaryRelationshipsAndRolloutBeforeDocumentTabs() throws {
-        let source = try String(contentsOfFile: rootViewPath, encoding: .utf8)
+        let source = try RuneRootViewSource.text()
         let generic = try sourceBlock(
-            from: "private func genericResourceOverview<Supplementary: View>",
-            to: "private var yamlManifestDocumentState",
+            from: "func genericResourceOverview<Supplementary: View>",
+            to: "var yamlManifestDocumentState",
             source: source
         )
 
@@ -321,12 +321,12 @@ final class RuneInspectorScaffoldTests: XCTestCase {
         XCTAssertLessThan(relationshipIndex, rolloutIndex)
 
         for name in [
-            "private var replicaSetDetails",
-            "private var statefulSetDetails",
-            "private var cronJobInspectorContent",
-            "private var ingressDetails",
-            "private var persistentVolumeClaimDetails",
-            "private var rbacDetails"
+            "var replicaSetDetails",
+            "var statefulSetDetails",
+            "var cronJobInspectorContent",
+            "var ingressDetails",
+            "var persistentVolumeClaimDetails",
+            "var rbacDetails"
         ] {
             let start = try XCTUnwrap(source.range(of: name))
             let firstCall = try XCTUnwrap(source.range(of: "genericResourceDetails(resource:", range: start.upperBound..<source.endIndex))
@@ -337,49 +337,49 @@ final class RuneInspectorScaffoldTests: XCTestCase {
     }
 
     func testHelmInspectorKeepsActionsTabRelevantAndAvoidsNestedHistoryScroll() throws {
-        let source = try String(contentsOfFile: rootViewPath, encoding: .utf8)
+        let source = try RuneRootViewSource.text()
         let helm = try sourceBlock(
-            from: "private var helmDetails",
-            to: "private func operatorResourceDetails",
+            from: "var helmDetails",
+            to: "func operatorResourceDetails",
             source: source
         )
 
         let identityIndex = try XCTUnwrap(helm.range(of: "title: release.name")).lowerBound
         let coreInfoIndex = try XCTUnwrap(helm.range(of: "helmReleaseCoreInfo(release)")).lowerBound
-        let tabsIndex = try XCTUnwrap(helm.range(of: "RuneSegmentedPickerInScroll")).lowerBound
+        let tabsIndex = try XCTUnwrap(helm.range(of: "RuneTabBar(")).lowerBound
 
         XCTAssertLessThan(identityIndex, coreInfoIndex)
         XCTAssertLessThan(coreInfoIndex, tabsIndex)
 
-        let coreInfo = try sourceBlock(from: "private func helmReleaseCoreInfo", to: "private var helmInspectorActions", source: source)
+        let coreInfo = try sourceBlock(from: "func helmReleaseCoreInfo", to: "var helmInspectorActions", source: source)
         let statusIndex = try XCTUnwrap(coreInfo.range(of: "inspectorInfoRow(\"Status\"")).lowerBound
         let chartIndex = try XCTUnwrap(coreInfo.range(of: "inspectorInfoRow(\"Chart\"")).lowerBound
         XCTAssertLessThan(statusIndex, chartIndex)
         XCTAssertTrue(helm.contains("inspectorInfoRow(\"Updated\""))
-        XCTAssertTrue(helm.contains("private var helmInspectorActions"))
+        XCTAssertTrue(helm.contains("var helmInspectorActions"))
         XCTAssertTrue(helm.contains("Save Values…"))
         XCTAssertTrue(helm.contains("Save Manifest…"))
         XCTAssertTrue(helm.contains("Save History…"))
 
-        let history = try sourceBlock(from: "private var helmHistoryPane", to: "private func operatorResourceDetails", source: source)
+        let history = try sourceBlock(from: "var helmHistoryPane", to: "func operatorResourceDetails", source: source)
         XCTAssertFalse(history.contains("ScrollView"))
         XCTAssertTrue(history.contains("LazyVStack"))
     }
 
     func testDocumentAndEventBodiesKeepOneVerticalScrollOwner() throws {
-        let source = try String(contentsOfFile: rootViewPath, encoding: .utf8)
+        let source = try RuneRootViewSource.text()
         let generic = try sourceBlock(
-            from: "private func genericResourceDetails<Supplementary: View>",
-            to: "private func genericResourceOverview<Supplementary: View>",
+            from: "func genericResourceDetails<Supplementary: View>",
+            to: "func genericResourceOverview<Supplementary: View>",
             source: source
         )
         let operatorResource = try sourceBlock(
-            from: "private func operatorResourceDetails",
-            to: "private func operatorResourceOverview",
+            from: "func operatorResourceDetails",
+            to: "func operatorResourceOverview",
             source: source
         )
-        let event = try sourceBlock(from: "private var eventDetails", to: "private func eventInspectorCoreInfo", source: source)
-        let exportable = try sourceBlock(from: "private func exportableTextPane", to: "private func execPane", source: source)
+        let event = try sourceBlock(from: "var eventDetails", to: "func eventInspectorCoreInfo", source: source)
+        let exportable = try sourceBlock(from: "func exportableTextPane", to: "func execPane", source: source)
 
         XCTAssertTrue(generic.contains("case .describe, .yaml:"))
         XCTAssertTrue(generic.contains("manifestInspectorPane(activeTab:"))
@@ -477,12 +477,9 @@ final class RuneInspectorScaffoldTests: XCTestCase {
     }
 
     private var scaffoldPath: String {
-        repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneInspectorScaffold.swift").path
+        repoRoot.appendingPathComponent("Sources/RuneUI/Design/Components/RuneInspectorScaffold.swift").path
     }
 
-    private var rootViewPath: String {
-        repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
-    }
 
     private func sourceBlock(from start: String, to end: String, source: String) throws -> String {
         let startRange = try XCTUnwrap(source.range(of: start))

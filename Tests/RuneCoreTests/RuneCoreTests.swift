@@ -667,16 +667,28 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertFalse(defaults.runeShowHoverTooltips)
     }
 
-    func testResourceTableScrollEdgeGlowDefaultsOnAndPersists() {
+    func testResourceTableScrollEdgeGlowDefaultsOffAndPersists() {
         let suiteName = "RuneCoreTests.resourceTableScrollEdgeGlow.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        XCTAssertTrue(defaults.runeShowResourceTableScrollEdgeGlow)
-
-        defaults.runeShowResourceTableScrollEdgeGlow = false
-
         XCTAssertFalse(defaults.runeShowResourceTableScrollEdgeGlow)
+
+        defaults.runeShowResourceTableScrollEdgeGlow = true
+
+        XCTAssertTrue(defaults.runeShowResourceTableScrollEdgeGlow)
+    }
+
+    func testSplitResizeHandlesDefaultOffAndPersist() {
+        let suiteName = "RuneCoreTests.splitResizeHandles.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertFalse(defaults.runeShowSplitResizeHandles)
+
+        defaults.runeShowSplitResizeHandles = true
+
+        XCTAssertTrue(defaults.runeShowSplitResizeHandles)
     }
 
     func testDemoClusterSettingAcceptsCommandLineStyleBooleanStrings() {

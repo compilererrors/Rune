@@ -37,7 +37,6 @@ struct TerminalTranscriptSurface: View {
     }
 
     var body: some View {
-        let warning = RuneSemanticColorRole.warning.color(in: runeThemePalette)
         let activeModel = publishedRenderModel.flatMap { model in
             model.isSearchNavigableSnapshot(
                 for: text,
@@ -160,19 +159,7 @@ struct TerminalTranscriptSurface: View {
         }
         .overlay(alignment: .topLeading) {
             if hasTrimmedScrollback {
-                Label("Scrollback trimmed", systemImage: "scissors")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(
-                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.84))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                            .stroke(warning.opacity(0.42), lineWidth: 1)
-                    )
-                    .foregroundStyle(warning)
+                RuneBadge("Scrollback trimmed", systemImage: "scissors", tone: .warning)
                     .padding(RuneUILayoutMetrics.inspectorOverlayInset)
                     .help("Older terminal output was discarded by the scrollback limit")
                     .accessibilityLabel("Scrollback trimmed")
@@ -331,8 +318,7 @@ struct TerminalTranscriptSearchBar: View {
                 .foregroundStyle(.runeSecondary)
         } content: {
             TextField("Find in terminal", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12))
+                .textFieldStyle(RuneControlTextFieldStyle())
                 .frame(
                     minWidth: RuneFindBarMetrics.minimumSearchFieldWidth,
                     idealWidth: RuneFindBarMetrics.idealSearchFieldWidth,
@@ -350,7 +336,7 @@ struct TerminalTranscriptSearchBar: View {
     private var navigationControls: some View {
         HStack(spacing: 8) {
             Text(statusText)
-                .font(.caption.weight(.medium))
+                .runeText(.micro, weight: .medium)
                 .foregroundStyle(.runeSecondary)
                 .monospacedDigit()
                 .frame(minWidth: 56, alignment: .trailing)
@@ -574,6 +560,10 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
     }
 
     func makeNSView(context: Context) -> NSScrollView {

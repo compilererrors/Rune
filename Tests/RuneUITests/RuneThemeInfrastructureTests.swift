@@ -38,10 +38,10 @@ final class RuneThemeInfrastructureTests: XCTestCase {
     }
 
     func testSharedSurfacesConsumeEnvironmentResolvedTheme() throws {
-        let source = try sourceText("Sources/RuneUI/Layout/RuneDesignComponents.swift")
-        let glass = try sourceText("Sources/RuneUI/Layout/RuneGlassShell.swift")
+        let source = try sourceText("Sources/RuneUI/Design/Components/RuneDesignComponents.swift")
+        let glass = try sourceText("Sources/RuneUI/Design/Components/RuneGlassShell.swift")
         let manifest = try sourceText("Sources/RuneUI/Views/AppKitManifestTextView.swift")
-        let theme = try sourceText("Sources/RuneUI/Layout/RuneThemePalette.swift")
+        let theme = try sourceText("Sources/RuneUI/Design/Tokens/RuneThemePalette.swift")
 
         XCTAssertTrue(theme.contains("var runeResolvedTheme: RuneResolvedTheme"))
         XCTAssertTrue(theme.contains(".environment(\\.runeResolvedTheme, theme)"))
@@ -54,7 +54,7 @@ final class RuneThemeInfrastructureTests: XCTestCase {
     }
 
     func testDefinitionOnlyDesignAPIsAreRemoved() throws {
-        let source = try sourceText("Sources/RuneUI/Layout/RuneDesignComponents.swift")
+        let source = try sourceText("Sources/RuneUI/Design/Components/RuneDesignComponents.swift")
 
         XCTAssertFalse(source.contains("struct RuneSelectionCheckboxButton"))
         XCTAssertFalse(source.contains("struct RuneInspectorSection"))

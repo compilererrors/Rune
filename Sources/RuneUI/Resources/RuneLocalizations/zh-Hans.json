@@ -106,6 +106,8 @@
   "settingsShowHoverTooltipsHelp": "为不太明显的标签、标签页和控件（例如 Cluster Signals）显示简短原生悬停说明。如果提示碍事可关闭。",
   "settingsShowResourceTableScrollEdgeGlow": "显示表格滚动边缘光效",
   "settingsShowResourceTableScrollEdgeGlowHelp": "当资源表格左右还有更多列时，在相应边缘显示柔和光效。关闭后仍可水平滚动。",
+  "settingsShowSplitResizeHandles": "显示面板调整大小手柄",
+  "settingsShowSplitResizeHandlesHelp": "在每个分隔线旁的列边缘显示一个小手柄。无论是否显示，都可以拖动分隔线。",
   "settingsSimpleMode": "简单模式",
   "settingsSimpleModeHelp": "使用更轻量的界面以便快速导航：跳过高级可选面板，在只读 YAML 和 Describe 输出中隐藏 Kubernetes managedFields，并让终端日志更接近紧凑的 k9s 风格流程。",
   "settingsSimpleModeManagedFieldsNote": "简单模式始终在只读 YAML 和 Describe 视图中隐藏 managedFields。",

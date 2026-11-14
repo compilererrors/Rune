@@ -962,6 +962,8 @@ func displayedResourceTableSelectedID<Value: Hashable>(
 enum RuneAppKitResourceTableRefreshPlan: Equatable {
     case none
     case rows(IndexSet)
+    /// Rows were added, removed or reordered after the table was populated.
+    case replaceRows
     case reloadAll
 
     static func resolve<Value: Hashable>(
@@ -969,11 +971,11 @@ enum RuneAppKitResourceTableRefreshPlan: Equatable {
         current: [RuneAppKitResourceTableRowSnapshot<Value>]
     ) -> RuneAppKitResourceTableRefreshPlan {
         guard let previous else { return .reloadAll }
-        guard previous.count == current.count else { return .reloadAll }
+        guard previous.count == current.count else { return .replaceRows }
 
         var changedRows = IndexSet()
         for index in current.indices {
-            guard previous[index].id == current[index].id else { return .reloadAll }
+            guard previous[index].id == current[index].id else { return .replaceRows }
             if previous[index] != current[index] {
                 changedRows.insert(index)
             }
@@ -994,6 +996,28 @@ enum RuneAppKitResourceTableRefreshPlan: Equatable {
             )
         case .reloadAll:
             tableView.reloadData()
+        case .replaceRows:
+            guard tableView.numberOfColumns > 0 else {
+                tableView.reloadData()
+                return
+            }
+            // Keep existing row views and only refresh the rows that have them;
+            // a full reload tears down and rebuilds every visible row view.
+            tableView.noteNumberOfRowsChanged()
+            var loadedRows = IndexSet()
+            tableView.enumerateAvailableRowViews { _, row in
+                if row >= 0, row < tableView.numberOfRows {
+                    loadedRows.insert(row)
+                }
+            }
+            guard !loadedRows.isEmpty else {
+                tableView.reloadData()
+                return
+            }
+            tableView.reloadData(
+                forRowIndexes: loadedRows,
+                columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
+            )
         }
     }
 }
@@ -1548,6 +1572,37 @@ func runeResourceCellColor(_ requested: NSColor, theme: RuneResolvedTheme, tintO
     return RuneThemeContrast.readable(color, over: backgrounds)
 }
 
+fileprivate struct RuneResourceCellInkKey: Hashable {
+    let requested: NSColor
+    let tintOpacity: Double
+    let appearance: NSAppearance.Name
+}
+
+/// Cached `runeResourceCellColor` for cells inside a resource table. The cache
+/// lives on the table and is cleared whenever its theme changes, so scrolling
+/// never repeats the contrast search for colors it has already resolved.
+@MainActor
+func runeResourceCellInk(_ requested: NSColor, for view: NSView, tintOpacity: Double = 0) -> NSColor {
+    var candidate: NSView? = view
+    var tableView: RuneAppKitResourceTableView?
+    while let current = candidate {
+        if let table = current as? RuneAppKitResourceTableView { tableView = table; break }
+        candidate = current.superview
+    }
+    guard let tableView else {
+        return runeResourceCellColor(requested, theme: resolvedRuneResourceTableTheme(for: view), tintOpacity: tintOpacity)
+    }
+    let key = RuneResourceCellInkKey(
+        requested: requested,
+        tintOpacity: tintOpacity,
+        appearance: NSAppearance.currentDrawing().name
+    )
+    if let cached = tableView.cellInkCache[key] { return cached }
+    let resolved = runeResourceCellColor(requested, theme: tableView.resolvedTheme, tintOpacity: tintOpacity)
+    tableView.cellInkCache[key] = resolved
+    return resolved
+}
+
 struct AppKitPodTableView: NSViewRepresentable {
     let pods: [PodSummary]
     let selectedPodID: String?
@@ -1570,7 +1625,11 @@ struct AppKitPodTableView: NSViewRepresentable {
     let onOpenYAML: (PodSummary) -> Void
     let onDelete: (PodSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
-    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = false
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -1655,7 +1714,7 @@ struct AppKitPodTableView: NSViewRepresentable {
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
-            DispatchQueue.main.async { [weak self, weak tableView] in
+            RuneLiveScrollActivity.shared.performWhenIdle(owner: self) { [weak self, weak tableView] in
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
@@ -2104,6 +2163,17 @@ struct AppKitPodTableView: NSViewRepresentable {
                         tableColumn.width = width
                     }
                 }
+                // Narrow tables scroll the metrics columns, never the pod state:
+                // the name gives way so selection, name and status stay in view.
+                let statusIndex = tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(PodColumn.status.rawValue))
+                let nameIndex = tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(PodColumn.name.rawValue))
+                if statusIndex >= 0, nameIndex >= 0 {
+                    let overflow = tableView.rect(ofColumn: statusIndex).maxX - visibleWidth
+                    let nameColumn = tableView.tableColumns[nameIndex]
+                    if overflow > 0.5 {
+                        nameColumn.width = max(nameColumn.minWidth, nameColumn.width - overflow)
+                    }
+                }
             }
             updateTableWidth(on: tableView)
         }
@@ -2166,7 +2236,8 @@ struct AppKitPodTableView: NSViewRepresentable {
             switch normalized {
             case "running", "succeeded", "completed", "ready":
                 return .systemGreen
-            case "pending", "terminating", "containercreating", "podinitializing", "notready", "schedulinggated":
+            case "pending", "terminating", "containercreating", "podinitializing", "notready", "schedulinggated",
+                 "containerstatusunknown", "unknown", "nodelost", "unschedulable":
                 return .systemOrange
             case "failed", "error", "crashloopbackoff", "imagepullbackoff", "errimagepull", "oomkilled",
                  "createcontainerconfigerror", "createcontainererror", "invalidimagename", "evicted":
@@ -2181,7 +2252,7 @@ struct AppKitPodTableView: NSViewRepresentable {
                 if normalized.hasPrefix("init:") {
                     return .systemOrange
                 }
-                return .secondaryLabelColor
+                return .systemGray
             }
         }
 
@@ -2224,7 +2295,11 @@ struct AppKitDeploymentListView: NSViewRepresentable {
     let onOpenYAML: (DeploymentSummary) -> Void
     let onDelete: (DeploymentSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
-    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = false
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2305,7 +2380,7 @@ struct AppKitDeploymentListView: NSViewRepresentable {
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
-            DispatchQueue.main.async { [weak self, weak tableView] in
+            RuneLiveScrollActivity.shared.performWhenIdle(owner: self) { [weak self, weak tableView] in
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
@@ -2692,7 +2767,11 @@ struct AppKitServiceListView: NSViewRepresentable {
     let onOpenYAML: (ServiceSummary) -> Void
     let onDelete: (ServiceSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
-    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = false
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2773,7 +2852,7 @@ struct AppKitServiceListView: NSViewRepresentable {
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
-            DispatchQueue.main.async { [weak self, weak tableView] in
+            RuneLiveScrollActivity.shared.performWhenIdle(owner: self) { [weak self, weak tableView] in
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
@@ -3181,7 +3260,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
     let onOpenYAML: (ClusterResourceSummary) -> Void
     let onDelete: (ClusterResourceSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
-    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = false
 
     var resolvedResourceKind: KubeResourceKind? {
         kind ?? resources.first?.kind
@@ -3189,6 +3268,10 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
 
     var columnPresentation: RuneGenericResourceColumnPresentation {
         RuneGenericResourceColumnPresentation.resolve(for: resolvedResourceKind)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -3282,7 +3365,7 @@ struct AppKitGenericResourceListView: NSViewRepresentable {
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
-            DispatchQueue.main.async { [weak self, weak tableView] in
+            RuneLiveScrollActivity.shared.performWhenIdle(owner: self) { [weak self, weak tableView] in
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
@@ -3732,7 +3815,11 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
     let onSelectRelease: (HelmReleaseSummary) -> Void
     let onToggleSort: (HelmReleaseListSortColumn) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
-    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = false
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -3805,7 +3892,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
-            DispatchQueue.main.async { [weak self, weak tableView] in
+            RuneLiveScrollActivity.shared.performWhenIdle(owner: self) { [weak self, weak tableView] in
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
@@ -4149,7 +4236,7 @@ struct AppKitHelmReleaseListView: NSViewRepresentable {
             case "failed", "error", "uninstalled":
                 return .systemRed
             default:
-                return .secondaryLabelColor
+                return .systemGray
             }
         }
 
@@ -4183,7 +4270,11 @@ struct AppKitEventListView: NSViewRepresentable {
     let onSelectEvent: (EventSummary) -> Void
     let onToggleSort: (EventListSortColumn) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
-    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = false
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -4256,7 +4347,7 @@ struct AppKitEventListView: NSViewRepresentable {
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
-            DispatchQueue.main.async { [weak self, weak tableView] in
+            RuneLiveScrollActivity.shared.performWhenIdle(owner: self) { [weak self, weak tableView] in
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
@@ -4651,7 +4742,11 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
     let onOpenDescribe: (OperatorResourceSummary) -> Void
     let onOpenYAML: (OperatorResourceSummary) -> Void
     @Environment(\.runeResolvedTheme) private var resolvedTheme
-    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showsHorizontalOverflowEdgeGlow = false
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -4732,7 +4827,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             guard let tableView else { return }
             applyGeneration += 1
             let generation = applyGeneration
-            DispatchQueue.main.async { [weak self, weak tableView] in
+            RuneLiveScrollActivity.shared.performWhenIdle(owner: self) { [weak self, weak tableView] in
                 guard let self,
                       let tableView,
                       generation == self.applyGeneration else { return }
@@ -5158,7 +5253,7 @@ struct AppKitOperatorResourceListView: NSViewRepresentable {
             case let value where value.contains("error") || value.contains("false") || value.contains("failed"):
                 return .systemRed
             default:
-                return .secondaryLabelColor
+                return .systemGray
             }
         }
 
@@ -5189,6 +5284,7 @@ final class RuneAppKitResourceTableView: NSTableView {
             guard resolvedTheme.resourceTableRenderSignature
                     != oldValue.resourceTableRenderSignature else { return }
             resourceTableTheme = RuneAppKitResourceTableTheme.resolved(resolvedTheme)
+            cellInkCache.removeAll()
             // Colors are stored on AppKit cells; repainting the row alone leaves
             // stale ink when switching between themes with the same appearance.
             reloadData()
@@ -5197,6 +5293,7 @@ final class RuneAppKitResourceTableView: NSTableView {
     fileprivate var resourceTableTheme = RuneAppKitResourceTableTheme.resolved(
         RuneAppearanceTheme.native.resolvedTheme
     )
+    fileprivate var cellInkCache: [RuneResourceCellInkKey: NSColor] = [:]
     var onContextMenu: ((Int, NSTableView) -> NSMenu?)?
     var onFavoriteToggle: (() -> Void)?
 
@@ -5699,6 +5796,11 @@ final class RuneHorizontalTableOverflowIndicatorView: NSView {
 @MainActor
 final class RuneAppKitResourceListScrollView: NSScrollView {
     var onVisibleWidthChanged: (() -> Void)?
+
+    override func scrollWheel(with event: NSEvent) {
+        RuneLiveScrollActivity.shared.noteScrollEvent()
+        super.scrollWheel(with: event)
+    }
     var showsHorizontalOverflowEdgeGlow = true {
         didSet {
             guard showsHorizontalOverflowEdgeGlow != oldValue else { return }
@@ -5857,7 +5959,7 @@ private final class RuneAppKitCenteredLabelCell: NSView {
 
     private func refreshTextColor() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            label.textColor = runeResourceCellColor(requestedTextColor, theme: resolvedRuneResourceTableTheme(for: self))
+            label.textColor = runeResourceCellInk(requestedTextColor, for: self)
         }
     }
 
@@ -5869,19 +5971,17 @@ private final class RuneAppKitCenteredLabelCell: NSView {
         tooltip: String? = nil,
         lineBreakMode: NSLineBreakMode = .byTruncatingTail
     ) {
-        label.stringValue = text
-        label.font = font
-        label.alignment = alignment
+        if label.stringValue != text { label.stringValue = text }
+        if label.font != font { label.font = font }
+        if label.alignment != alignment { label.alignment = alignment }
         requestedTextColor = textColor
         refreshTextColor()
-        label.lineBreakMode = lineBreakMode
-        label.toolTip = tooltip
-        leadingConstraint.constant = alignment == .left
-            ? RuneAppKitResourceTableStyle.contentLeadingInset
-            : 0
-        trailingConstraint.constant = alignment == .right
-            ? -RuneAppKitResourceTableStyle.contentTrailingInset
-            : 0
+        if label.lineBreakMode != lineBreakMode { label.lineBreakMode = lineBreakMode }
+        if label.toolTip != tooltip { label.toolTip = tooltip }
+        let leading = alignment == .left ? RuneAppKitResourceTableStyle.contentLeadingInset : 0
+        if leadingConstraint.constant != leading { leadingConstraint.constant = leading }
+        let trailing = alignment == .right ? -RuneAppKitResourceTableStyle.contentTrailingInset : 0
+        if trailingConstraint.constant != trailing { trailingConstraint.constant = trailing }
     }
 }
 
@@ -5903,17 +6003,21 @@ private final class RuneAppKitPillCell: NSView {
     }
 
     private func configurePillLayout() {
+        clipsToBounds = true
         pill.translatesAutoresizingMaskIntoConstraints = false
         addSubview(pill)
         NSLayoutConstraint.activate([
             pill.centerXAnchor.constraint(equalTo: centerXAnchor),
-            pill.centerYAnchor.constraint(equalTo: centerYAnchor)
+            pill.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pill.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: RuneSpacing.xxs),
+            pill.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -RuneSpacing.xxs)
         ])
     }
 
     func configure(text: String, color: NSColor, tooltip: String? = nil) {
         pill.configure(text: text, color: color)
-        pill.toolTip = tooltip
+        let resolvedTooltip = tooltip ?? text
+        if pill.toolTip != resolvedTooltip { pill.toolTip = resolvedTooltip }
     }
 }
 
@@ -5931,16 +6035,19 @@ private final class RuneAppKitFavoriteButtonCell: NSView {
         configureButtonLayout()
     }
 
+    private static let favoriteImage = NSImage(systemSymbolName: "star.fill", accessibilityDescription: "Favorite Resource") ?? NSImage()
+    private static let notFavoriteImage = NSImage(systemSymbolName: "star", accessibilityDescription: "Favorite Resource") ?? NSImage()
+    private var configuredFavoriteState: Bool?
+
     func configure(isFavorite: Bool, row: Int, target: AnyObject, action: Selector) {
-        button.image = NSImage(
-            systemSymbolName: isFavorite ? "star.fill" : "star",
-            accessibilityDescription: "Favorite Resource"
-        ) ?? NSImage()
         button.target = target
         button.action = action
         button.tag = row
         requestedTint = isFavorite ? .systemYellow : .secondaryLabelColor
         refreshTint()
+        guard configuredFavoriteState != isFavorite else { return }
+        configuredFavoriteState = isFavorite
+        button.image = isFavorite ? Self.favoriteImage : Self.notFavoriteImage
         button.toolTip = isFavorite ? "Remove favorite" : "Favorite resource"
         button.setAccessibilityLabel(isFavorite ? "Remove Favorite" : "Favorite Resource")
         button.setAccessibilityValue(isFavorite ? "Selected" : "Not selected")
@@ -5959,7 +6066,7 @@ private final class RuneAppKitFavoriteButtonCell: NSView {
 
     private func refreshTint() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            button.contentTintColor = runeResourceCellColor(requestedTint, theme: resolvedRuneResourceTableTheme(for: self))
+            button.contentTintColor = runeResourceCellInk(requestedTint, for: self)
         }
     }
 
@@ -6001,11 +6108,15 @@ private final class RuneAppKitCheckboxCell: NSView {
         checkbox.target = target
         checkbox.action = action
         checkbox.tag = row
-        checkbox.state = isSelected ? .on : .off
-        checkbox.toolTip = isSelected ? "Remove from bulk selection" : "Add to bulk selection"
+        let state: NSControl.StateValue = isSelected ? .on : .off
+        if checkbox.state != state { checkbox.state = state }
+        let toolTip = isSelected ? "Remove from bulk selection" : "Add to bulk selection"
+        if checkbox.toolTip != toolTip {
+            checkbox.toolTip = toolTip
+            checkbox.setAccessibilityValue(isSelected ? "Selected" : "Not selected")
+            checkbox.setAccessibilityHelp(toolTip)
+        }
         checkbox.setAccessibilityLabel("Select \(resourceName)")
-        checkbox.setAccessibilityValue(isSelected ? "Selected" : "Not selected")
-        checkbox.setAccessibilityHelp(checkbox.toolTip)
     }
 
     private func configureCheckboxLayout() {
@@ -6052,10 +6163,10 @@ private final class RuneAppKitResourceStatusPillView: NSView {
     }
 
     func configure(text: String, color: NSColor) {
-        label.stringValue = text
+        if label.stringValue != text { label.stringValue = text }
         self.color = color
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            label.textColor = runeResourceCellColor(color, theme: resolvedRuneResourceTableTheme(for: self), tintOpacity: 0.12)
+            label.textColor = runeResourceCellInk(color, for: self, tintOpacity: 0.12)
             layer?.backgroundColor = color.withAlphaComponent(0.12).cgColor
         }
     }
@@ -6714,14 +6825,16 @@ private enum OperatorResourceColumn: String, CaseIterable {
     }
 }
 
+/// kubectl order: status stays next to the name, so narrow tables clip the
+/// metrics columns instead of the pod state.
 private enum PodColumn: String, CaseIterable {
     case selection
     case name
-    case cpu
-    case memory
+    case status
     case restarts
     case age
-    case status
+    case cpu
+    case memory
     case favorite
 
     init?(sortColumn: PodListSortColumn) {

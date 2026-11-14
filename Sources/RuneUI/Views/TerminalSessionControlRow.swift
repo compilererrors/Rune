@@ -46,18 +46,23 @@ struct TerminalActionButtonLabel: View {
     let systemImage: String
     let density: TerminalActionControlDensity
     let usesUniformWidth: Bool
+    /// Titles this button switches between; the label keeps the widest one's
+    /// size so a state change never moves the buttons beside it.
+    let reservedTitles: [String]
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(
         _ title: String,
         systemImage: String,
         density: TerminalActionControlDensity,
-        usesUniformWidth: Bool = true
+        usesUniformWidth: Bool = true,
+        reservedTitles: [String] = []
     ) {
         self.title = title
         self.systemImage = systemImage
         self.density = density
         self.usesUniformWidth = usesUniformWidth
+        self.reservedTitles = reservedTitles
     }
 
     @ViewBuilder
@@ -79,9 +84,19 @@ struct TerminalActionButtonLabel: View {
         }
     }
 
+    /// The terminal cluster keeps fixed-width buttons, so it uses the small
+    /// label size for every button in the row.
     private var label: some View {
-        Label(title, systemImage: systemImage)
-            .lineLimit(1)
+        ZStack {
+            ForEach(reservedTitles.filter { $0 != title }, id: \.self) { alternative in
+                Label(alternative, systemImage: systemImage)
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+            Label(title, systemImage: systemImage)
+        }
+        .runeInterfaceFont(relativeSize: RuneControlSize.large.labelRelativeSize - 1, weight: .medium)
+        .lineLimit(1)
     }
 }
 

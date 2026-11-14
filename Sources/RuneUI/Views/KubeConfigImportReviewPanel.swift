@@ -104,15 +104,15 @@ struct KubeConfigImportReviewPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             header
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.horizontal, RuneSpacing.sm)
+                .padding(.vertical, RuneSpacing.inset)
                 .kubeConfigImportReviewLayoutProbe(.header, enabled: onLayoutSnapshotChange != nil)
 
             Divider()
 
             ScrollView(.vertical) {
                 reviewContent
-                    .padding(12)
+                    .padding(RuneSpacing.sm)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .scrollContentBackground(.hidden)
@@ -122,14 +122,14 @@ struct KubeConfigImportReviewPanel: View {
 
             confirmationActions
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+                .padding(.horizontal, RuneSpacing.sm)
+                .padding(.bottom, RuneSpacing.inset)
                 .kubeConfigImportReviewLayoutProbe(.actions, enabled: onLayoutSnapshotChange != nil)
         }
     }
 
     private var reportLayout: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             header
                 .kubeConfigImportReviewLayoutProbe(.header, enabled: onLayoutSnapshotChange != nil)
             reviewContent
@@ -138,11 +138,11 @@ struct KubeConfigImportReviewPanel: View {
                 runAuthDoctorButton
             }
         }
-        .padding(10)
+        .padding(RuneSpacing.inset)
     }
 
     private var reviewContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             sourceSummary
             contextSummary
             importMetadataSection
@@ -154,15 +154,13 @@ struct KubeConfigImportReviewPanel: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
+        HStack(spacing: RuneSpacing.xs) {
+            RuneStatusDot(statusColor)
             Text("Import Review")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
             Spacer(minLength: 0)
             Text(statusText)
-                .font(.caption2.weight(.medium))
+                .runeText(.micro, weight: .medium)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .accessibilityLabel(statusText)
@@ -203,7 +201,7 @@ struct KubeConfigImportReviewPanel: View {
     private var sourceSummary: some View {
         if let sourceName = review.sourceName, !sourceName.isEmpty {
             Label(sourceName, systemImage: "doc.text.magnifyingglass")
-                .font(.caption2)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .help(sourceName)
@@ -214,18 +212,18 @@ struct KubeConfigImportReviewPanel: View {
     private var contextSummary: some View {
         if review.contexts.isEmpty {
             Text("No contexts were found in the selected kubeconfig.")
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
         } else {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                 ForEach(Array(review.contexts.prefix(3).enumerated()), id: \.offset) { _, context in
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                         Text(context.name)
-                            .font(.caption.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .lineLimit(1)
                             .help(context.name)
                         Text(contextDetailText(context))
-                            .font(.caption2)
+                            .runeText(.micro)
                             .foregroundStyle(.runeSecondary)
                             .lineLimit(2)
                             .help(contextDetailText(context))
@@ -236,7 +234,7 @@ struct KubeConfigImportReviewPanel: View {
 
                 if review.contexts.count > 3 {
                     Text("\(review.contexts.count - 3) more contexts")
-                        .font(.caption2)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 }
             }
@@ -247,16 +245,16 @@ struct KubeConfigImportReviewPanel: View {
     private var importMetadataSection: some View {
         if !review.contexts.isEmpty {
             RuneDisclosureSection("Import metadata") {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: RuneSpacing.xs) {
                     ForEach(Array(review.contexts.prefix(3).enumerated()), id: \.offset) { _, context in
                         let metadata = metadataDrafts[context.name] ?? ContextDisplayMetadata()
-                        VStack(alignment: .leading, spacing: 5) {
+                        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                             Text(context.name)
-                                .font(.caption2)
+                                .runeText(.micro)
                                 .foregroundStyle(.runeSecondary)
                                 .lineLimit(1)
                                 .help(context.name)
-                            HStack(spacing: 6) {
+                            HStack(spacing: RuneSpacing.tight) {
                                 KubeConfigImportMetadataDraftField(
                                     "Alias",
                                     value: metadata.alias ?? "",
@@ -264,7 +262,7 @@ struct KubeConfigImportReviewPanel: View {
                                 ) { value in
                                     updateMetadata(for: context, metadata: metadata, alias: value)
                                 }
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(RuneControlTextFieldStyle())
                                 KubeConfigImportMetadataDraftField(
                                     "Group",
                                     value: metadata.group ?? "",
@@ -272,9 +270,9 @@ struct KubeConfigImportReviewPanel: View {
                                 ) { value in
                                     updateMetadata(for: context, metadata: metadata, group: value)
                                 }
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(RuneControlTextFieldStyle())
                             }
-                            HStack(spacing: 6) {
+                            HStack(spacing: RuneSpacing.tight) {
                                 KubeConfigImportMetadataDraftField(
                                     "Color key",
                                     value: metadata.colorKey ?? "",
@@ -282,7 +280,7 @@ struct KubeConfigImportReviewPanel: View {
                                 ) { value in
                                     updateMetadata(for: context, metadata: metadata, colorKey: value)
                                 }
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(RuneControlTextFieldStyle())
                                 KubeConfigImportMetadataDraftField(
                                     "Icon",
                                     value: metadata.iconName ?? "",
@@ -290,7 +288,7 @@ struct KubeConfigImportReviewPanel: View {
                                 ) { value in
                                     updateMetadata(for: context, metadata: metadata, iconName: value)
                                 }
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(RuneControlTextFieldStyle())
                             }
                             KubeConfigImportMetadataDraftField(
                                 "Tags",
@@ -303,19 +301,19 @@ struct KubeConfigImportReviewPanel: View {
                                     tags: KubeConfigImportMetadataDraft.tags(from: value)
                                 )
                             }
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(RuneControlTextFieldStyle())
                         }
                     }
 
                     if review.contexts.count > 3 {
                         Text("\(review.contexts.count - 3) more contexts can keep generated metadata during import.")
-                            .font(.caption2)
+                            .runeText(.micro)
                             .foregroundStyle(.runeSecondary)
                     }
                 }
             } label: {
                 Text("Import metadata")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
             }
         }
     }
@@ -323,10 +321,10 @@ struct KubeConfigImportReviewPanel: View {
     @ViewBuilder
     private var issueSummary: some View {
         if !review.issues.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                 ForEach(Array(review.issues.prefix(3).enumerated()), id: \.offset) { _, issue in
                     Label(issue.message, systemImage: issueIcon(issue))
-                        .font(.caption2)
+                        .runeText(.micro)
                         .foregroundStyle(issueColor(issue))
                         .lineLimit(2)
                 }
@@ -337,24 +335,22 @@ struct KubeConfigImportReviewPanel: View {
     @ViewBuilder
     private var duplicateNameGuidance: some View {
         if !review.duplicateHandlingChoices.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                 Text("Duplicate handling requires an explicit choice before saving:")
-                    .font(.caption2)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Picker("Duplicate handling", selection: $duplicateHandlingChoice) {
-                    ForEach(review.duplicateHandlingChoices, id: \.rawValue) { choice in
-                        Text(choice.title).tag(choice)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                RuneTabBar(
+                    "Duplicate handling",
+                    selection: $duplicateHandlingChoice,
+                    tabs: review.duplicateHandlingChoices
+                ) { choice in choice.title }
 
                 ForEach(review.duplicateHandlingChoices, id: \.rawValue) { choice in
                     Label {
                         Text("\(choice.title): \(choice.detail)")
-                            .font(.caption2)
+                            .runeText(.micro)
                             .foregroundStyle(choice == duplicateHandlingChoice ? .primary : .secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } icon: {
@@ -367,19 +363,19 @@ struct KubeConfigImportReviewPanel: View {
 
     private var fullReviewDisclosure: some View {
         RuneDisclosureSection("Full review") {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: RuneSpacing.inset) {
                 reviewContextsSection
                 reviewIssuesSection
                 reviewRedactedPreviewSection
             }
         } label: {
             Text("Full review")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
         }
     }
 
     private var runAuthDoctorButton: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             Button {
                 onRunAuthDoctor()
             } label: {
@@ -392,26 +388,26 @@ struct KubeConfigImportReviewPanel: View {
 
     @ViewBuilder
     private var reviewContextsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
             Text("Contexts (\(review.contexts.count))")
-                .font(.caption2.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
 
             if review.contexts.isEmpty {
                 Text("No contexts found.")
-                    .font(.caption2)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
             } else {
                 reviewDetailViewport(maxHeight: 120) {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                         ForEach(Array(review.contexts.enumerated()), id: \.offset) { _, context in
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                                 Text(context.name)
-                                    .font(.caption.weight(.semibold))
+                                    .runeText(.microEmphasis)
                                     .lineLimit(1)
                                     .help(context.name)
                                 Text(contextDetailText(context))
-                                    .font(.caption2)
+                                    .runeText(.micro)
                                     .foregroundStyle(.runeSecondary)
                                     .lineLimit(2)
                                     .help(contextDetailText(context))
@@ -426,21 +422,21 @@ struct KubeConfigImportReviewPanel: View {
 
     @ViewBuilder
     private var reviewIssuesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
             Text("Issues (\(review.issues.count))")
-                .font(.caption2.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
 
             if review.issues.isEmpty {
                 Label("No issues found.", systemImage: "checkmark.circle.fill")
-                    .font(.caption2)
+                    .runeText(.micro)
                     .foregroundStyle(RuneSemanticColorRole.success.color(in: runeThemePalette))
             } else {
                 reviewDetailViewport(maxHeight: 120) {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                         ForEach(Array(review.issues.enumerated()), id: \.offset) { _, issue in
                             Label(issue.message, systemImage: issueIcon(issue))
-                                .font(.caption2)
+                                .runeText(.micro)
                                 .foregroundStyle(issueColor(issue))
                                 .lineLimit(3)
                         }
@@ -453,9 +449,9 @@ struct KubeConfigImportReviewPanel: View {
 
     @ViewBuilder
     private var reviewRedactedPreviewSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
             Text("Redacted kubeconfig")
-                .font(.caption2.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
 
             reviewDetailViewport(maxHeight: 180) {

@@ -55,7 +55,7 @@ final class RuneDisclosureSectionTests: XCTestCase {
                     action: {}
                 ) {
                     Text("Synthetic Command Details With A Deliberately Long Label")
-                        .font(.caption.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .environment(\.dynamicTypeSize, dynamicTypeSize)
@@ -76,7 +76,7 @@ final class RuneDisclosureSectionTests: XCTestCase {
     func testCompactControlLabelKeepsTwentyEightPointTarget() {
         let host = NSHostingView(rootView: Button(action: {}) {
             Label("All Prefixes", systemImage: "questionmark.circle")
-                .font(.caption)
+                .runeText(.micro)
                 .runeMinimumInteractiveTarget()
         }
         .buttonStyle(.plain)
@@ -137,7 +137,7 @@ final class RuneDisclosureSectionTests: XCTestCase {
                 .padding(.top, 8)
         } label: {
             Label("Synthetic Command Details", systemImage: "terminal")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
         }
         .frame(width: 320)
         .frame(minHeight: 120, alignment: .topLeading))
@@ -182,13 +182,13 @@ final class RuneDisclosureSectionTests: XCTestCase {
     }
 
     func testAllExpandableSurfacesUseTheSharedFullRowControl() throws {
-        let root = try source("Sources/RuneUI/Views/RuneRootView.swift")
+        let root = try RuneRootViewSource.text()
         let addCluster = try source("Sources/RuneUI/Views/AddClusterPopoverView.swift")
         let importReview = try source("Sources/RuneUI/Views/KubeConfigImportReviewPanel.swift")
         let logs = try source("Sources/RuneUI/Views/ResourceLogsInspectorView.swift")
         let overview = try source("Sources/RuneUI/Views/OverviewClusterSignalsPanelView.swift")
         let yaml = try source("Sources/RuneUI/Views/ResourceYAMLInspectorView.swift")
-        let disclosure = try source("Sources/RuneUI/Layout/RuneDisclosureSection.swift")
+        let disclosure = try source("Sources/RuneUI/Design/Components/RuneDisclosureSection.swift")
 
         for sourceURL in try swiftSourceFiles(in: "Sources/RuneUI") {
             let adopter = try String(contentsOf: sourceURL, encoding: .utf8)
@@ -221,7 +221,7 @@ final class RuneDisclosureSectionTests: XCTestCase {
         let commandPalette = try source("Sources/RuneUI/Views/CommandPaletteView.swift")
         let inspectorFind = try source("Sources/RuneUI/Views/InspectorFind.swift")
         let terminal = try source("Sources/RuneUI/Views/TerminalShellPanelView.swift")
-        let root = try source("Sources/RuneUI/Views/RuneRootView.swift")
+        let root = try RuneRootViewSource.text()
 
         XCTAssertEqual(onboarding.components(separatedBy: ".runeMinimumInteractiveTarget()").count - 1, 2)
         XCTAssertTrue(commandPalette.contains("Label(\"All Prefixes\", systemImage: \"questionmark.circle\")\n                .runeMinimumInteractiveTarget()"))
@@ -229,7 +229,7 @@ final class RuneDisclosureSectionTests: XCTestCase {
         XCTAssertFalse(terminal.contains("height: 26"))
         XCTAssertTrue(root.contains("RuneIconButton(\n                \"Previous operator resource page\""))
         XCTAssertTrue(root.contains("RuneIconButton(\n                \"Next operator resource page\""))
-        XCTAssertTrue(root.contains(".frame(minHeight: RuneUILayoutMetrics.iconButtonSize)\n                .background(Capsule()"))
+        XCTAssertTrue(root.contains(".accessibilityIdentifier(\"rune.add-cluster.button\")\n        .buttonStyle(RuneCompactButtonStyle(role: .secondary))"))
     }
 
     @MainActor

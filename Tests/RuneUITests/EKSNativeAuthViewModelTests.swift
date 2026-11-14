@@ -346,7 +346,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
     }
 
     func testAppStoreEKSFlowUsesTypedPersistentFieldsClearsDraftAndKeepsImportAvailable() throws {
-        let source = try String(contentsOf: runeRootViewURL, encoding: .utf8)
+        let source = try RuneRootViewSource.text()
         let fieldSource = try String(contentsOf: providerCredentialFieldURL, encoding: .utf8)
 
         XCTAssertTrue(source.contains("externalCommandsAllowed: RuneExternalCommandPolicy.allowsExternalCommands"))
@@ -440,7 +440,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
     }
 
     func testAppStoreAzureAndGoogleFlowsUseUserMediatedSecretsAndClearDrafts() throws {
-        let source = try String(contentsOf: runeRootViewURL, encoding: .utf8)
+        let source = try RuneRootViewSource.text()
         let fieldSource = try String(contentsOf: providerCredentialFieldURL, encoding: .utf8)
         let viewModelSource = try String(contentsOf: runeAppViewModelURL, encoding: .utf8)
         let pickerSource = try String(contentsOf: kubeConfigPickerURL, encoding: .utf8)

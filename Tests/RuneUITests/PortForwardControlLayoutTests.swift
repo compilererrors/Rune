@@ -177,15 +177,15 @@ final class PortForwardControlLayoutTests: XCTestCase {
 
     func testTerminalAndInspectorKeepStartStopInOnePrimaryLocation() throws {
         let terminalSource = try source("Sources/RuneUI/Views/TerminalPortForwardPanelView.swift")
-        let rootSource = try source("Sources/RuneUI/Views/RuneRootView.swift")
+        let rootSource = try RuneRootViewSource.text()
         let controlsSource = try source("Sources/RuneUI/Views/PortForwardControlComponents.swift")
         let rootPane = try XCTUnwrap(rootSource.slice(
-            from: "private func portForwardPane(targetKind: PortForwardTargetKind, targetName: String) -> some View",
-            to: "private var terminalPane: some View"
+            from: "func portForwardPane(targetKind: PortForwardTargetKind, targetName: String) -> some View",
+            to: "var terminalPane: some View"
         ))
         let rootSessionRow = try XCTUnwrap(rootSource.slice(
-            from: "private func portForwardSessionRow(_ session: PortForwardSession) -> some View",
-            to: "private func genericResourceList("
+            from: "func portForwardSessionRow(_ session: PortForwardSession) -> some View",
+            to: "func genericResourceList("
         ))
 
         XCTAssertEqual(terminalSource.occurrences(of: "PortForwardPrimaryActionButton("), 1)

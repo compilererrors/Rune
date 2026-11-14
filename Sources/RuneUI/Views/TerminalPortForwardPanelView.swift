@@ -176,7 +176,7 @@ struct TerminalPortForwardPanelView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             header
 
             if isExpanded {
@@ -204,13 +204,13 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
             Label("Port Forward", systemImage: "point.3.connected.trianglepath.dotted")
-                .font(.headline)
+                .runeText(.headline)
                 .lineLimit(1)
 
             Text(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
-                .font(.footnote.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .help(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
@@ -286,7 +286,7 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private var expandedControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             TerminalPodSelectorRow(
                 title: "Port-forward pod",
                 systemImage: "point.3.connected.trianglepath.dotted",
@@ -307,26 +307,26 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private var compactStatus: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
+            HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.xs) {
                 if let session = primarySession {
                     statusDot(session.status)
                     Text("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
-                        .font(.subheadline.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .lineLimit(1)
                         .help("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
                     Spacer(minLength: 0)
                     Text(session.status.rawValue.capitalized)
-                        .font(.caption.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .foregroundStyle(TerminalStatusStyling.color(session.status, palette: runeThemePalette))
                 } else {
                     statusDot(.stopped)
                     Text("No active port-forward")
-                        .font(.subheadline.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .foregroundStyle(.runeSecondary)
                     Spacer(minLength: 0)
                     Text("\(localPort) → \(remotePort)")
-                        .font(.caption.monospacedDigit())
+                        .runeText(.micro).monospacedDigit()
                         .foregroundStyle(.runeSecondary)
                 }
             }
@@ -344,16 +344,16 @@ struct TerminalPortForwardPanelView: View {
                 selectedPodStatusLabel
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, RuneSpacing.inset)
+        .padding(.vertical, RuneSpacing.tight)
         .frame(minHeight: compactStatusHeight)
         .background(RuneSurfaceBackground(kind: .editor))
     }
 
     private var selectedPodStatusLabel: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             Text(selectedPod.map(\.name) ?? "No pod selected")
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .help(selectedPod.map { "\($0.namespace)/\($0.name)" } ?? "No pod selected")
@@ -361,7 +361,7 @@ struct TerminalPortForwardPanelView: View {
             if activeOrStartingSessions.count > 1 {
                 RuneChip(verticalPadding: 2) {
                     Text("+\(activeOrStartingSessions.count - 1) more")
-                        .font(.caption2.weight(.semibold))
+                        .runeText(.microEmphasis)
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
@@ -370,10 +370,10 @@ struct TerminalPortForwardPanelView: View {
     }
 
     private var activeSessionList: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             HStack {
                 Text(activeOrStartingSessions.isEmpty && !inactiveSessions.isEmpty ? "Recent Port Forwards" : "Port Forwards")
-                    .font(.subheadline.weight(.semibold))
+                    .runeText(.microEmphasis)
                 Spacer(minLength: 0)
                 if !inactiveSessions.isEmpty {
                     Button("Clear Inactive") {
@@ -386,38 +386,38 @@ struct TerminalPortForwardPanelView: View {
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                     if portForwardSessions.isEmpty {
                         Text("No port-forward sessions started yet.")
-                            .font(.footnote)
+                            .runeText(.micro)
                             .foregroundStyle(.runeSecondary)
                             .frame(maxWidth: .infinity, minHeight: activeSessionListHeight - 8, alignment: .topLeading)
                     } else {
                         ForEach(portForwardSessions) { session in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            VStack(alignment: .leading, spacing: RuneSpacing.tight) {
+                                HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.xs) {
                                     statusDot(session.status)
-                                    VStack(alignment: .leading, spacing: 3) {
+                                    VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                                         Text("\(session.resourceLabel)  \(session.localPort):\(session.remotePort)")
-                                            .font(.subheadline.weight(.semibold))
+                                            .runeText(.microEmphasis)
                                             .lineLimit(1)
                                             .help("\(session.resourceLabel) \(session.localPort):\(session.remotePort)")
                                         Text("\(session.contextName) - \(session.namespace)")
-                                            .font(.caption)
+                                            .runeText(.micro)
                                             .foregroundStyle(.runeSecondary)
                                             .lineLimit(1)
                                             .help("\(session.contextName) - \(session.namespace)")
                                     }
                                     Spacer(minLength: 0)
                                     Text(session.status.rawValue.capitalized)
-                                        .font(.caption.weight(.semibold))
+                                        .runeText(.microEmphasis)
                                         .foregroundStyle(TerminalStatusStyling.color(session.status, palette: runeThemePalette))
                                 }
 
                                 sessionUtilityButtons(session)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, RuneSpacing.xs)
+                            .padding(.vertical, RuneSpacing.tight)
                             .background(RuneSurfaceBackground(kind: .listRow(isSelected: false)))
                         }
                     }

@@ -73,7 +73,7 @@ struct AddClusterPopoverView: View {
             RuneGlassPaneSurface(role: .content)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 13) {
+                VStack(alignment: .leading, spacing: RuneSpacing.sm) {
                     header
                     discoveryStatus
                     providerToolsSection
@@ -104,24 +104,24 @@ struct AddClusterPopoverView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: RuneSpacing.xs) {
             Image(systemName: "plus.circle.fill")
-                .font(.body.weight(.semibold))
+                .runeText(.body, weight: .semibold)
                 .foregroundStyle(.runeAccent)
                 .frame(width: 24, height: 24)
                 .background(Circle().fill(Color.accentColor.opacity(0.12)))
             Text("Add Cluster")
-                .font(.headline)
+                .runeText(.headline)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
         }
     }
 
     private var standardSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             sectionLabel("Kubeconfig files")
 
-            LazyVGrid(columns: gridColumns, spacing: 8) {
+            LazyVGrid(columns: gridColumns, spacing: RuneSpacing.xs) {
                 quickAction(
                     title: "Import File",
                     subtitle: "Choose kubeconfig",
@@ -158,10 +158,10 @@ struct AddClusterPopoverView: View {
     }
 
     private var providerToolsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             sectionLabel("Cloud providers & local clusters")
 
-            LazyVGrid(columns: gridColumns, spacing: 8) {
+            LazyVGrid(columns: gridColumns, spacing: RuneSpacing.xs) {
                 ForEach(AddClusterProviderIdentifier.allCases) { provider in
                     providerTile(provider)
                 }
@@ -174,14 +174,14 @@ struct AddClusterPopoverView: View {
             "Manual Token Server",
             isExpanded: $isManualTokenExpanded
         ) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: RuneSpacing.inset) {
                 AddClusterProviderCredentialField(
                     title: "Context name",
                     isRequired: true,
                     accessibilityIdentifier: "rune.add-cluster.manual-field.context-name"
                 ) {
                     TextField("Example: development", text: $manualContextName)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .runeTextInputCursor()
                 }
                 AddClusterProviderCredentialField(
@@ -190,7 +190,7 @@ struct AddClusterPopoverView: View {
                     accessibilityIdentifier: "rune.add-cluster.manual-field.server-url"
                 ) {
                     TextField("https://cluster.example.invalid", text: $manualServerURL)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .runeTextInputCursor()
                 }
                 AddClusterProviderCredentialField(
@@ -199,7 +199,7 @@ struct AddClusterPopoverView: View {
                     accessibilityIdentifier: "rune.add-cluster.manual-field.namespace"
                 ) {
                     TextField("Optional namespace", text: $manualNamespace)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .runeTextInputCursor()
                 }
                 AddClusterProviderCredentialField(
@@ -208,7 +208,7 @@ struct AddClusterPopoverView: View {
                     accessibilityIdentifier: "rune.add-cluster.manual-field.bearer-token"
                 ) {
                     SecureField("Required token", text: $manualBearerToken)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .accessibilityLabel("Bearer token")
                         .accessibilityHint("Required field")
                         .accessibilityIdentifier("rune.add-cluster.manual-field.bearer-token")
@@ -222,26 +222,26 @@ struct AddClusterPopoverView: View {
                 .controlSize(.regular)
                 .disabled(!canImportManualToken)
             }
-            .padding(.top, 8)
+            .padding(.top, RuneSpacing.xs)
         } label: {
             Label("Manual Token Server", systemImage: "key")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
         }
-        .padding(10)
+        .padding(RuneSpacing.inset)
         .background(RuneSurfaceBackground(kind: .inset))
     }
 
     private var gridColumns: [GridItem] {
         if dynamicTypeSize.isAccessibilitySize {
-            return [GridItem(.flexible(), spacing: 8)]
+            return [GridItem(.flexible(), spacing: RuneSpacing.xs)]
         }
-        return [GridItem(.adaptive(minimum: 170), spacing: 8)]
+        return [GridItem(.adaptive(minimum: 170), spacing: RuneSpacing.xs)]
     }
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text)
-            .font(.caption.weight(.semibold))
+            .runeText(.microEmphasis)
             .foregroundStyle(.runeSecondary)
     }
 
@@ -254,7 +254,7 @@ struct AddClusterPopoverView: View {
     }
 
     private var discoveryStatus: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             if isLoading {
                 ProgressView()
                     .controlSize(.small)
@@ -268,7 +268,7 @@ struct AddClusterPopoverView: View {
             }
 
             Text(discoveryStatusText)
-                .font(.caption.weight(.medium))
+                .runeText(.micro, weight: .medium)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .help(discoveryStatusText)
@@ -281,8 +281,8 @@ struct AddClusterPopoverView: View {
                 action: onRefresh
             )
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, RuneSpacing.inset)
+        .padding(.vertical, RuneSpacing.tight)
         .background(RuneSurfaceBackground(kind: .inset))
         .overlay {
             RoundedRectangle(
@@ -327,23 +327,23 @@ struct AddClusterPopoverView: View {
         subtitle: String,
         symbolName: String
     ) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: RuneSpacing.inset) {
             Image(systemName: symbolName)
-                .font(.body.weight(.semibold))
+                .runeText(.body, weight: .semibold)
                 .frame(width: 24, height: 24)
                 .foregroundStyle(.runeAccent)
                 .background(Circle().fill(Color.accentColor.opacity(0.11)))
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .runeText(.microEmphasis)
                 Text(subtitle)
-                    .font(.caption2)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
         }
-        .padding(10)
+        .padding(RuneSpacing.inset)
         .frame(
             maxWidth: .infinity,
             minHeight: RuneUILayoutMetrics.addClusterActionCardMinHeight,
@@ -371,18 +371,18 @@ struct AddClusterPopoverView: View {
         return Button {
             onSelectProvider(provider)
         } label: {
-            HStack(alignment: .center, spacing: 9) {
+            HStack(alignment: .center, spacing: RuneSpacing.xs) {
                 Image(systemName: provider.symbolName)
-                    .font(.body.weight(.semibold))
+                    .runeText(.body, weight: .semibold)
                     .foregroundStyle(accent)
                     .frame(width: 22, height: 22)
                     .background(Circle().fill(accent.opacity(0.12)))
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                     Text(provider.shortTitle)
-                        .font(.subheadline.weight(.semibold))
+                        .runeText(.microEmphasis)
                     Text(presentation.compactSubtitle)
-                        .font(.caption2)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                         .lineLimit(1)
                 }
@@ -390,10 +390,10 @@ struct AddClusterPopoverView: View {
                 Spacer(minLength: 0)
 
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.bold))
+                    .runeText(.micro, weight: .bold)
                     .foregroundStyle(.runeTertiary)
             }
-            .padding(10)
+            .padding(RuneSpacing.inset)
             .frame(
                 maxWidth: .infinity,
                 minHeight: RuneUILayoutMetrics.addClusterActionCardMinHeight,

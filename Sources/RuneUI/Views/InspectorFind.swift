@@ -129,8 +129,7 @@ struct InspectorFindBar: View {
                 .foregroundStyle(.runeSecondary)
         } content: {
             TextField(placeholder, text: $query)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12))
+                .textFieldStyle(RuneFormTextFieldStyle())
                 .frame(
                     minWidth: RuneFindBarMetrics.minimumSearchFieldWidth,
                     idealWidth: RuneFindBarMetrics.idealSearchFieldWidth,
@@ -146,12 +145,12 @@ struct InspectorFindBar: View {
     }
 
     private var navigationControls: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             Button {
                 prepareJumpPopover()
             } label: {
                 Text(statusText)
-                    .font(.caption.weight(.medium))
+                    .runeText(.micro, weight: .medium)
                     .foregroundStyle(.runeSecondary)
                     .monospacedDigit()
                     .runeMinimumInteractiveTarget(minWidth: 74, alignment: .trailing)
@@ -198,20 +197,20 @@ struct InspectorFindBar: View {
     }
 
     private var jumpToMatchPopover: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             Text("Go to match")
-                .font(.headline)
+                .runeText(.headline)
 
-            HStack(spacing: 8) {
+            HStack(spacing: RuneSpacing.xs) {
                 TextField("Match", text: $jumpText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .textFieldStyle(RuneFormTextFieldStyle())
+                    .fontDesign(.monospaced)
                     .frame(width: 82)
                     .onSubmit(commitJump)
                     .runeTextInputCursor()
 
                 Text("of \(searchIndex?.ranges.count ?? 0)")
-                    .font(.caption.weight(.medium))
+                    .runeText(.micro, weight: .medium)
                     .foregroundStyle(.runeSecondary)
                     .monospacedDigit()
             }
@@ -222,7 +221,7 @@ struct InspectorFindBar: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(12)
+        .padding(RuneSpacing.sm)
         .frame(width: 180)
         .runePointerCursor()
         .runeCursorScope(default: .pointer)

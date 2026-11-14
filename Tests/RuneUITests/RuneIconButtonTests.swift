@@ -60,7 +60,7 @@ final class RuneIconButtonTests: XCTestCase {
         let source = try String(contentsOfFile: runeDesignComponentsPath, encoding: .utf8)
 
         XCTAssertTrue(source.contains("struct RuneIconButton: View"))
-        XCTAssertTrue(source.contains(".font(.system(size: 11, weight: .semibold))"))
+        XCTAssertTrue(source.contains(".buttonStyle(RuneCompactButtonStyle(isSelected: isSelected == true, tint: selectedTint))"))
         XCTAssertTrue(source.contains("width: RuneUILayoutMetrics.iconButtonSize"))
         XCTAssertTrue(source.contains("height: RuneUILayoutMetrics.iconButtonSize"))
         XCTAssertTrue(source.contains(".contentShape(Rectangle())"))
@@ -69,8 +69,6 @@ final class RuneIconButtonTests: XCTestCase {
         XCTAssertTrue(source.contains(".accessibilityLabel(accessibilityLabel)"))
         XCTAssertTrue(source.contains(".accessibilityValue(isSelected ? \"Selected\" : \"Not selected\")"))
         XCTAssertTrue(source.contains(".accessibilityAddTraits(isSelected ? .isSelected : [])"))
-        XCTAssertTrue(source.contains("runeThemePalette?.mutedText"))
-        XCTAssertTrue(source.contains("runeThemePalette?.secondaryText"))
         XCTAssertTrue(source.contains("struct RuneBorderedIconButton: View"))
         XCTAssertTrue(source.contains(".buttonStyle(RuneToolbarButtonStyle(isIconOnly: true))"))
     }
@@ -83,7 +81,7 @@ final class RuneIconButtonTests: XCTestCase {
         let logTabSource = try String(contentsOfFile: terminalLogTabBarPath, encoding: .utf8)
         let sessionTabSource = try String(contentsOfFile: terminalSessionTabBarPath, encoding: .utf8)
         let appKitTableSource = try String(contentsOfFile: appKitPodTableViewPath, encoding: .utf8)
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootSource = try RuneRootViewSource.text()
 
         XCTAssertTrue(designSource.contains("RuneIconButton(\n                \"Dismiss notice\""))
         XCTAssertTrue(designSource.contains("RuneIconButton(accessibilityLabel, systemImage: \"xmark\", action: action)"))
@@ -114,7 +112,7 @@ final class RuneIconButtonTests: XCTestCase {
     }
 
     private var runeDesignComponentsPath: String {
-        repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneDesignComponents.swift").path
+        repoRoot.appendingPathComponent("Sources/RuneUI/Design/Components/RuneDesignComponents.swift").path
     }
 
     private var inspectorFindPath: String {
@@ -141,9 +139,6 @@ final class RuneIconButtonTests: XCTestCase {
         repoRoot.appendingPathComponent("Sources/RuneUI/Views/AppKitPodTableView.swift").path
     }
 
-    private var runeRootViewPath: String {
-        repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
-    }
 
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)

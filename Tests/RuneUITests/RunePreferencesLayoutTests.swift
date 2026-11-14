@@ -65,7 +65,7 @@ final class RunePreferencesLayoutTests: XCTestCase {
         let source = try String(contentsOfFile: preferencesViewPath, encoding: .utf8)
 
         XCTAssertFalse(source.contains(".id(interfaceLanguageRaw)\n        .controlSize(.small)"))
-        XCTAssertEqual(source.components(separatedBy: ".controlSize(.small)").count - 1, 4)
+        XCTAssertEqual(source.components(separatedBy: ".toggleStyle(RuneToolbarToggleStyle(isIconOnly: true))").count - 1, 4)
         XCTAssertTrue(source.contains("Toggle(\"⌘\""))
         XCTAssertTrue(source.contains("Toggle(\"⌥\""))
         XCTAssertTrue(source.contains("Toggle(\"⌃\""))
@@ -128,7 +128,7 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertFalse(themes.contains("RuneSettingsAdaptiveActionGroup"))
 
         XCTAssertTrue(source.contains("if dynamicTypeSize.isAccessibilitySize"))
-        XCTAssertTrue(source.contains("return [GridItem(.flexible(minimum: 220), spacing: 12)]"))
+        XCTAssertTrue(source.contains("return [GridItem(.flexible(minimum: 220), spacing: RuneSpacing.sm)]"))
         XCTAssertTrue(source.contains("createThemeTemplateButton"))
         XCTAssertTrue(source.contains("Label(\"New Theme\", systemImage: \"doc.badge.plus\")"))
         XCTAssertTrue(source.contains(".accessibilityLabel(\"Create theme template\")"))
@@ -242,9 +242,9 @@ final class RunePreferencesLayoutTests: XCTestCase {
         let host = NSHostingView(rootView: RuneSettingsAdaptiveRow {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Synthetic setting with a deliberately longer label")
-                    .font(.subheadline.weight(.semibold))
+                    .runeText(.microEmphasis)
                 Text("Synthetic explanatory detail remains visible and can wrap onto additional lines.")
-                    .font(.footnote)
+                    .runeText(.micro)
                     .foregroundStyle(.secondary)
             }
         } control: {
@@ -263,9 +263,9 @@ final class RunePreferencesLayoutTests: XCTestCase {
         let host = NSHostingView(rootView: RuneSettingsAdaptiveRow {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Synthetic managed files")
-                    .font(.subheadline.weight(.semibold))
+                    .runeText(.microEmphasis)
                 Text("Create, open, or reload these files from one control.")
-                    .font(.footnote)
+                    .runeText(.micro)
                     .foregroundStyle(.secondary)
             }
         } control: {

@@ -5,7 +5,7 @@ import XCTest
 
 final class RunePendingWriteConfirmationModifierTests: XCTestCase {
     func testRootUsesOneSharedPendingWritePresentationForMainAndEditorSurfaces() throws {
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootSource = try RuneRootViewSource.text()
         let modifierSource = try String(contentsOfFile: modifierPath, encoding: .utf8)
 
         XCTAssertEqual(
@@ -217,9 +217,6 @@ final class RunePendingWriteConfirmationModifierTests: XCTestCase {
         return result
     }
 
-    private var runeRootViewPath: String {
-        repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
-    }
 
     private var modifierPath: String {
         repoRoot.appendingPathComponent("Sources/RuneUI/Views/RunePendingWriteConfirmationModifier.swift").path

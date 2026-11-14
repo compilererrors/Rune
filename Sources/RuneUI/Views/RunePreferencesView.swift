@@ -35,10 +35,10 @@ private struct SettingsHelpButton: View {
         }
         .popover(isPresented: $isPopoverPresented, arrowEdge: .top) {
             Text(text)
-                .font(.footnote)
+                .runeText(.micro)
                 .foregroundStyle(.runePrimary)
                 .frame(width: 280, alignment: .leading)
-                .padding(10)
+                .padding(RuneSpacing.inset)
                 .runePointerCursor()
         }
         .accessibilityHint(text)
@@ -207,13 +207,13 @@ struct RuneSettingsMenuLabel: View {
     var subtitle: String? = nil
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: RuneSpacing.xs) {
             Image(systemName: systemImage)
                 .runeInterfaceFont(weight: .semibold)
                 .foregroundStyle(.runeSecondary)
                 .frame(width: 18)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                 Text(title)
                     .runeInterfaceFont(weight: .medium)
                     .foregroundStyle(.runePrimary)
@@ -261,23 +261,23 @@ struct RuneThemeSelectorCard: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: RuneSpacing.sm) {
+                HStack(alignment: .top, spacing: RuneSpacing.inset) {
                     Image(systemName: presentation.appearanceSymbol)
-                        .font(.system(size: 14, weight: .semibold))
+                        .runeText(.sectionTitle)
                         .foregroundStyle(accentInk(over: iconBackground))
                         .frame(width: 26, height: 26)
                         .background(iconBackground, in: Circle())
                         .help(presentation.appearanceTitle)
 
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                         Text(presentation.title)
-                            .font(.subheadline.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .foregroundStyle(palette.foreground)
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                         Text(presentation.sourceSummary)
-                            .font(.caption)
+                            .runeText(.micro)
                             .foregroundStyle(palette.secondaryText)
                             .lineLimit(1)
                     }
@@ -286,14 +286,14 @@ struct RuneThemeSelectorCard: View {
 
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: RuneGlyphSize.tile, weight: .semibold))
                             .foregroundStyle(accentInk(over: cardBackground))
                     }
                 }
 
                 swatches
             }
-            .padding(12)
+            .padding(RuneSpacing.sm)
             .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
@@ -317,7 +317,7 @@ struct RuneThemeSelectorCard: View {
     }
 
     private var swatches: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: RuneSpacing.tight) {
             swatch(palette.window)
             swatch(palette.panel)
             swatch(palette.accentFill)
@@ -329,11 +329,11 @@ struct RuneThemeSelectorCard: View {
     }
 
     private func swatch(_ color: Color) -> some View {
-        RoundedRectangle(cornerRadius: 3, style: .continuous)
+        RoundedRectangle(cornerRadius: RuneRadius.indicator, style: .continuous)
             .fill(color)
             .frame(width: 22, height: 14)
             .overlay(
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneRadius.indicator, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
             )
     }
@@ -351,7 +351,7 @@ struct RuneSettingsIntegerLimitEditor: View {
 
     var body: some View {
         RuneSettingsAdaptiveRow {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                 Text(title)
                     .runeInterfaceFont(weight: .semibold)
                 Text(detail)
@@ -360,7 +360,7 @@ struct RuneSettingsIntegerLimitEditor: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         } control: {
-            HStack(spacing: 8) {
+            HStack(spacing: RuneSpacing.xs) {
                 TextField(placeholder, value: normalizedBinding, format: .number)
                     .textFieldStyle(RuneControlTextFieldStyle())
                     .runeInterfaceFont(design: .monospaced)
@@ -470,7 +470,8 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hideManagedFieldsByDefault = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
-    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showResourceTableScrollEdgeGlow = true
+    @AppStorage(RuneSettingsKeys.showResourceTableScrollEdgeGlow) private var showResourceTableScrollEdgeGlow = false
+    @AppStorage(RuneSettingsKeys.showSplitResizeHandles) private var showSplitResizeHandles = false
     @AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw =
         RuneSettingsKeys.interfaceLanguageDefault
     @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
@@ -610,7 +611,7 @@ public struct RunePreferencesView: View {
                     title: settingsString(.settingsFontSize),
                     detail: settingsString(.settingsFontSizeDetail)
                 ) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: RuneSpacing.xs) {
                         Slider(
                             value: Binding(
                                 get: { clampedTerminalFontSize },
@@ -622,7 +623,7 @@ public struct RunePreferencesView: View {
                         .accessibilityLabel(settingsString(.settingsFontSize))
 
                         Text("\(Int(clampedTerminalFontSize.rounded())) pt")
-                            .font(.footnote.monospacedDigit())
+                            .runeText(.micro).monospacedDigit()
                             .foregroundStyle(.runeSecondary)
                             .frame(width: 38, alignment: .trailing)
 
@@ -644,13 +645,13 @@ public struct RunePreferencesView: View {
                 Divider()
 
                 if simpleMode {
-                    HStack(alignment: .top, spacing: 10) {
+                    HStack(alignment: .top, spacing: RuneSpacing.inset) {
                         Image(systemName: "bolt")
-                            .font(.caption.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .foregroundStyle(.runeSecondary)
                             .frame(width: 18, height: 18)
                         Text(settingsString(.settingsSimpleModeManagedFieldsNote))
-                            .font(.footnote)
+                            .runeText(.micro)
                             .foregroundStyle(.runeSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -677,6 +678,14 @@ public struct RunePreferencesView: View {
                     settingsString(.settingsShowResourceTableScrollEdgeGlow),
                     help: settingsString(.settingsShowResourceTableScrollEdgeGlowHelp),
                     isOn: $showResourceTableScrollEdgeGlow
+                )
+
+                Divider()
+
+                settingsToggleRow(
+                    settingsString(.settingsShowSplitResizeHandles),
+                    help: settingsString(.settingsShowSplitResizeHandlesHelp),
+                    isOn: $showSplitResizeHandles
                 )
 
                 Divider()
@@ -710,9 +719,9 @@ public struct RunePreferencesView: View {
             subtitle: settingsString(.settingsThemesSubtitle)
         ) {
             settingsSection("Choose theme") {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: RuneSpacing.md) {
                     settingsGridRow {
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                             Text("Recent")
                                 .runeInterfaceFont(weight: .semibold)
                             Text("Current: \(selectedAppearanceTheme.title)")
@@ -728,7 +737,7 @@ public struct RunePreferencesView: View {
                     LazyVGrid(
                         columns: themeGridColumns,
                         alignment: .leading,
-                        spacing: 12
+                        spacing: RuneSpacing.sm
                     ) {
                         ForEach(recentAppearanceThemes) { theme in
                             RuneThemeSelectorCard(
@@ -744,7 +753,7 @@ public struct RunePreferencesView: View {
 
             settingsSection("Custom themes") {
                 settingsGridRow {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                         Text("Theme JSON files")
                             .runeInterfaceFont(weight: .semibold)
                         Text("Create or add compatible theme files, then reload.")
@@ -795,11 +804,11 @@ public struct RunePreferencesView: View {
 
     private var themeGridColumns: [GridItem] {
         if dynamicTypeSize.isAccessibilitySize {
-            return [GridItem(.flexible(minimum: 220), spacing: 12)]
+            return [GridItem(.flexible(minimum: 220), spacing: RuneSpacing.sm)]
         }
         return [
-            GridItem(.flexible(minimum: 220), spacing: 12),
-            GridItem(.flexible(minimum: 220), spacing: 12)
+            GridItem(.flexible(minimum: 220), spacing: RuneSpacing.sm),
+            GridItem(.flexible(minimum: 220), spacing: RuneSpacing.sm)
         ]
     }
 
@@ -829,22 +838,22 @@ public struct RunePreferencesView: View {
     @ViewBuilder
     private var customThemeActions: some View {
         if dynamicTypeSize.isAccessibilitySize {
-            HStack(spacing: 8) {
+            HStack(spacing: RuneSpacing.xs) {
                 createThemeTemplateButton
                 customThemeMoreMenu
                 SettingsHelpButton(text: customThemesHelpText)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: RuneSpacing.tight) {
+                HStack(spacing: RuneSpacing.xs) {
                     createThemeTemplateButton
                         .frame(maxWidth: .infinity)
                     openThemesFolderButton
                         .frame(maxWidth: .infinity)
                 }
 
-                HStack(spacing: 8) {
+                HStack(spacing: RuneSpacing.xs) {
                     Spacer(minLength: 8)
                     reloadThemesButton
                     SettingsHelpButton(text: customThemesHelpText)
@@ -1009,46 +1018,42 @@ public struct RunePreferencesView: View {
             settingsSection("Actions") {
                 ForEach(RuneKeyBindingAction.allCases) { action in
                     settingsGridRow {
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                             Text(action.title)
-                                .font(.subheadline.weight(.semibold))
+                                .runeText(.microEmphasis)
                             Text(action.detail)
-                                .font(.footnote)
+                                .runeText(.micro)
                                 .foregroundStyle(.runeSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            HStack(spacing: 8) {
+                            HStack(spacing: RuneSpacing.xs) {
                                 Text("Current: \(shortcut(for: action).displayValue)")
-                                    .font(.caption)
+                                    .runeText(.micro)
                                     .foregroundStyle(.runeSecondary)
 
                                 if let conflict = conflictingAction(for: action) {
                                     Text("Conflicts with \(conflict.title)")
-                                        .font(.caption)
+                                        .runeText(.micro)
                                         .foregroundStyle(.runeDanger)
                                 }
                             }
                         }
                     } control: {
-                        HStack(spacing: 6) {
+                        HStack(spacing: RuneSpacing.tight) {
                             Toggle("⌘", isOn: shortcutCommandBinding(for: action))
-                                .toggleStyle(.button)
-                                .controlSize(.small)
+                                .toggleStyle(RuneToolbarToggleStyle(isIconOnly: true))
                                 .help("Require Command for this action")
 
                             Toggle("⌥", isOn: shortcutOptionBinding(for: action))
-                                .toggleStyle(.button)
-                                .controlSize(.small)
+                                .toggleStyle(RuneToolbarToggleStyle(isIconOnly: true))
                                 .help("Require Option for this action")
 
                             Toggle("⌃", isOn: shortcutControlBinding(for: action))
-                                .toggleStyle(.button)
-                                .controlSize(.small)
+                                .toggleStyle(RuneToolbarToggleStyle(isIconOnly: true))
                                 .help("Require Control for this action")
 
                             Toggle("⇧", isOn: shortcutShiftBinding(for: action))
-                                .toggleStyle(.button)
-                                .controlSize(.small)
+                                .toggleStyle(RuneToolbarToggleStyle(isIconOnly: true))
                                 .help("Require Shift for this action")
 
                             RuneToolbarPicker(title: "Key", selection: shortcutKeyBinding(for: action),
@@ -1209,11 +1214,11 @@ public struct RunePreferencesView: View {
                 Divider()
 
                 settingsGridRow {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                         Text("Log file")
-                            .font(.subheadline.weight(.semibold))
+                            .runeText(.microEmphasis)
                         Text(DebugTraceWriter.logFileURL.path)
-                            .font(.caption.monospaced())
+                            .runeText(.micro, design: .monospaced)
                             .foregroundStyle(.runeSecondary)
                             .lineLimit(2)
                             .truncationMode(.middle)
@@ -1307,7 +1312,7 @@ public struct RunePreferencesView: View {
                 detail: "\(summary). Shown in every log-window menu."
             )
         } control: {
-            HStack(spacing: 8) {
+            HStack(spacing: RuneSpacing.xs) {
                 RuneToolbarPicker(title: "Type", selection: mode,
                                   options: RuneCustomLogPresetMode.allCases.map { ($0, $0 == .lines ? "Lines" : "Time") })
                 .frame(width: 80)
@@ -1315,18 +1320,18 @@ public struct RunePreferencesView: View {
                 if mode.wrappedValue == .lines {
                     TextField("5000", text: lines)
                         .textFieldStyle(RuneControlTextFieldStyle())
-                        .font(.body.monospacedDigit())
+                        .runeText(.body).monospacedDigit()
                         .multilineTextAlignment(.trailing)
                         .frame(width: 72)
                         .help("Digits only. Use All logs in the log-window menu to load logs since the beginning.")
 
                     Text("lines")
-                        .font(.footnote)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 } else {
                     TextField("15", text: timeValue)
                         .textFieldStyle(RuneControlTextFieldStyle())
-                        .font(.body.monospacedDigit())
+                        .runeText(.body).monospacedDigit()
                         .multilineTextAlignment(.trailing)
                         .frame(width: 54)
 
@@ -1583,7 +1588,7 @@ public struct RunePreferencesView: View {
     ) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: RuneSettingsMetrics.pageSpacing) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                     Text(title)
                         .runeInterfaceFont(relativeSize: 4, weight: .semibold)
                     Text(subtitle)
@@ -1604,7 +1609,7 @@ public struct RunePreferencesView: View {
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             Text(title)
                 .runeInterfaceFont(weight: .semibold)
                 .foregroundStyle(.runeSecondary)
@@ -1652,7 +1657,7 @@ public struct RunePreferencesView: View {
 
     @ViewBuilder
     private func settingRowLabel(title: String, detail: String?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
             Text(title)
                 .runeInterfaceFont(weight: .semibold)
 

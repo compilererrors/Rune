@@ -42,9 +42,9 @@ struct ResourceYAMLEditorSurface: View {
                     )
                 case .swiftUITextEditor:
                     TextEditor(text: $text)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .runeText(.code)
                         .scrollContentBackground(.hidden)
-                        .padding(6)
+                        .padding(RuneSpacing.tight)
                 case .appKitTextView:
                     AppKitManifestTextView(
                         text: $text,
@@ -131,14 +131,12 @@ struct ResourceYAMLInspectorPane: View {
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !presentedIssues.contains(where: { $0.severity == .error })
 
+        // Edit mode changes state in place: the hint and the unsaved-edits chip
+        // live in the existing status strip, the undo button is always there
+        // (dimmed outside edit mode) and Quick Edit/Done share one frame, so
+        // entering or leaving edit mode never moves a control.
         ResourceManifestInspectorLayout {
-            if isInlineEditing {
-                ManifestInlineNote(t(.yamlEditsStayLocal)) {
-                    ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
-                }
-            } else if hasUnsavedEdits {
-                ManifestUnsavedEditsChip()
-            }
+            EmptyView()
         } toolbar: {
             ManifestActionToolbar(
                 applyTitle: t(.applyYAML),
@@ -149,19 +147,20 @@ struct ResourceYAMLInspectorPane: View {
                 statusText: statusText,
                 onApply: onApply
             ) {
-                if isInlineEditing {
+                if inlineEditorImplementation.supportsInlineEditing {
                     ManifestEditorUndoButton(
-                        canUndo: canUndoEdit,
+                        canUndo: isInlineEditing && canUndoEdit,
                         onUndo: onUndoEdit
                     )
-                }
 
-                if inlineEditorImplementation.supportsInlineEditing {
-                    Button(isInlineEditing ? t(.done) : t(.quickEdit)) {
+                    Button {
                         isInlineEditing.toggle()
+                    } label: {
+                        RuneStableLabel(isInlineEditing ? t(.done) : t(.quickEdit), reserving: [t(.quickEdit), t(.done)])
                     }
-                    .buttonStyle(RuneToolbarButtonStyle())
+                    .buttonStyle(RuneToolbarButtonStyle(isSelected: isInlineEditing))
                     .disabled(yamlText.isEmpty)
+                    .accessibilityLabel(isInlineEditing ? t(.done) : t(.quickEdit))
                 }
 
                 Button("\(t(.edit))...", action: onOpenEditor)
@@ -196,10 +195,12 @@ struct ResourceYAMLInspectorPane: View {
                 }
             }
         } status: {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: RuneSpacing.xs) {
                 YAMLValidationSummaryView(
                     issues: presentedIssues,
                     isValidating: isValidating,
+                    modeNote: isInlineEditing ? t(.yamlEditsStayLocal) : nil,
+                    hasUnsavedEdits: hasUnsavedEdits,
                     onSelectIssue: navigateToIssue
                 )
                 if let staleContentState = resolvedDocumentState.staleContentState {
@@ -308,9 +309,9 @@ struct ManifestInlineNote<Accessory: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: RuneSpacing.xs) {
             Text(text)
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -406,12 +407,12 @@ struct ResourceYAMLEditorSheetView: View {
 
         VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
             HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                     Text(t(.yamlManifest))
-                        .font(.title2.weight(.bold))
+                        .runeText(.title, weight: .bold)
                         .accessibilityAddTraits(.isHeader)
                     Text(resourceReference)
-                        .font(.subheadline)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 }
                 Spacer()
@@ -511,7 +512,7 @@ struct ResourceYAMLEditorSheetView: View {
             }
 
             Text("Dry Run sends this draft to Kubernetes for validation but never applies it. Apply YAML can write only after confirmation.")
-                .font(.footnote)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -539,9 +540,16 @@ struct ResourceYAMLEditorSheetView: View {
 }
 
 struct YAMLValidationSummaryView: View {
+    @Environment(\.runeThemePalette) private var runeThemePalette
     let issues: [YAMLValidationIssue]
     let isValidating: Bool
     let expandedListMaxHeight: CGFloat?
+    /// A short note about the current mode (for example quick edit), shown
+    /// at the trailing end of the strip so it never pushes content down.
+    let modeNote: String?
+    /// Whether the draft has unsaved edits; nil when this strip has no
+    /// unsaved indicator. The indicator keeps a reserved slot.
+    let hasUnsavedEdits: Bool?
     let onSelectIssue: (YAMLValidationIssue) -> Void
     private let maxVisibleIssues = 6
     private let inlineExpandedIssueLimit = 3
@@ -552,11 +560,15 @@ struct YAMLValidationSummaryView: View {
         isValidating: Bool,
         expandedListMaxHeight: CGFloat? = nil,
         initiallyExpanded: Bool = false,
+        modeNote: String? = nil,
+        hasUnsavedEdits: Bool? = nil,
         onSelectIssue: @escaping (YAMLValidationIssue) -> Void
     ) {
         self.issues = issues
         self.isValidating = isValidating
         self.expandedListMaxHeight = expandedListMaxHeight
+        self.modeNote = modeNote
+        self.hasUnsavedEdits = hasUnsavedEdits
         self.onSelectIssue = onSelectIssue
         _isExpanded = State(initialValue: initiallyExpanded)
     }
@@ -578,7 +590,7 @@ struct YAMLValidationSummaryView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             if issues.isEmpty {
                 validationSummaryHeader
                     .frame(
@@ -623,23 +635,36 @@ struct YAMLValidationSummaryView: View {
     }
 
     private var validationSummaryHeader: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                statusLight(color: .red, isActive: errorCount > 0)
-                statusLight(color: .orange, isActive: warningCount > 0)
-                statusLight(color: .green, isActive: !isValidating && issues.isEmpty)
+        HStack(spacing: RuneSpacing.xs) {
+            HStack(spacing: RuneSpacing.tight) {
+                statusLight(color: RuneSemanticColorRole.danger.color(in: runeThemePalette), isActive: errorCount > 0)
+                statusLight(color: RuneSemanticColorRole.warning.color(in: runeThemePalette), isActive: warningCount > 0)
+                statusLight(color: RuneSemanticColorRole.success.color(in: runeThemePalette), isActive: !isValidating && issues.isEmpty)
             }
 
             Text(summaryTitle)
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
 
             Spacer(minLength: 0)
 
-            if isValidating {
-                ProgressView()
-                    .controlSize(.small)
+            if let modeNote {
+                Text(modeNote)
+                    .runeText(.micro)
+                    .foregroundStyle(.runeSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(modeNote)
             }
+
+            if let hasUnsavedEdits {
+                ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
+            }
+
+            ProgressView()
+                .controlSize(.small)
+                .opacity(isValidating ? 1 : 0)
+                .accessibilityHidden(!isValidating)
         }
     }
 
@@ -656,23 +681,23 @@ struct YAMLValidationSummaryView: View {
     }
 
     private var issueList: some View {
-        LazyVStack(alignment: .leading, spacing: 8) {
+        LazyVStack(alignment: .leading, spacing: RuneSpacing.xs) {
             ForEach(visibleIssues) { issue in
                 Button {
                     onSelectIssue(issue)
                 } label: {
-                    HStack(alignment: .top, spacing: 8) {
+                    HStack(alignment: .top, spacing: RuneSpacing.xs) {
                         Image(systemName: symbolName(for: issue))
-                            .font(.caption)
+                            .runeText(.micro)
                             .foregroundStyle(color(for: issue))
                             .frame(width: 14, alignment: .center)
 
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                             Text(issue.message)
-                                .font(.caption)
+                                .runeText(.micro)
                                 .foregroundStyle(.runePrimary)
                             Text(locationText(for: issue))
-                                .font(.caption2)
+                                .runeText(.micro)
                                 .foregroundStyle(.runeSecondary)
                         }
 
@@ -686,11 +711,11 @@ struct YAMLValidationSummaryView: View {
 
             if expandedListMaxHeight == nil, issues.count > maxVisibleIssues {
                 Text("\(issues.count - maxVisibleIssues) more issues not shown")
-                    .font(.caption2)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
             }
         }
-        .padding(.top, 2)
+        .padding(.top, RuneSpacing.hairline)
     }
 
     private var summaryTitle: String {
@@ -729,7 +754,7 @@ struct YAMLValidationSummaryView: View {
     }
 
     private func color(for issue: YAMLValidationIssue) -> Color {
-        issue.severity == .error ? .red : .orange
+        (issue.severity == .error ? RuneSemanticColorRole.danger : .warning).color(in: runeThemePalette)
     }
 
     private func locationText(for issue: YAMLValidationIssue) -> String {

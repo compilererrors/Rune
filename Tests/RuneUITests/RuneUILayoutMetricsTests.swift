@@ -43,7 +43,7 @@ final class RuneUILayoutMetricsTests: XCTestCase {
         XCTAssertEqual(RuneUILayoutMetrics.contentControlSpacing, 8)
         XCTAssertEqual(RuneUILayoutMetrics.contentModuleSpacing, 12)
         XCTAssertEqual(RuneUILayoutMetrics.contentSectionSpacing, 16)
-        XCTAssertEqual(RuneUILayoutMetrics.resourceListToolbarMinimumHeight, 30)
+        XCTAssertEqual(RuneUILayoutMetrics.resourceListToolbarMinimumHeight, RuneControlSize.large.baseHeight)
         XCTAssertEqual(RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight, 44)
         XCTAssertGreaterThan(
             RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight,
@@ -78,7 +78,7 @@ final class RuneUILayoutMetricsTests: XCTestCase {
     }
 
     func testCornerRadiusFamilyKeepsIntentionalHierarchy() {
-        XCTAssertEqual(RuneUILayoutMetrics.paneShellCornerRadius, 12)
+        XCTAssertEqual(RuneUILayoutMetrics.paneShellCornerRadius, 14)
         XCTAssertEqual(RuneUILayoutMetrics.groupedContentCornerRadius, 10)
         XCTAssertEqual(RuneUILayoutMetrics.interactiveRowCornerRadius, 8)
         XCTAssertEqual(RuneUILayoutMetrics.tabCornerRadius, 7)
@@ -161,7 +161,7 @@ final class RuneUILayoutMetricsTests: XCTestCase {
     func testDialogMetricsRemainComfortableAtMinimumWindowSize() {
         XCTAssertEqual(RuneUILayoutMetrics.iconButtonSize, 28)
         XCTAssertEqual(RuneUILayoutMetrics.dialogIconButtonSize, RuneUILayoutMetrics.iconButtonSize)
-        XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogButtonMinHeight, 30)
+        XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogButtonMinHeight, RuneControlSize.large.baseHeight)
         XCTAssertLessThan(RuneUILayoutMetrics.dialogButtonLabelMinHeight, RuneUILayoutMetrics.dialogButtonMinHeight)
         XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogIconButtonSize, 28)
         XCTAssertGreaterThanOrEqual(RuneUILayoutMetrics.dialogFooterButtonLabelMinWidth, 72)

@@ -55,20 +55,20 @@ struct TerminalLogTabBar: View {
             Button {
                 onSelectTab(tab.id)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: RuneSpacing.tight) {
                     Text("\(number) \(tab.title)")
-                        .font(.caption.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .lineLimit(1)
                     if let subtitle = tab.subtitle {
                         Text(subtitle)
-                            .font(.caption2.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 0)
                 }
                 .padding(.leading, 40)
-                .padding(.trailing, 28)
+                .padding(.trailing, RuneSpacing.xl)
                 .frame(width: 216, height: 28, alignment: .leading)
                 .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.tabCornerRadius, style: .continuous))
             }
@@ -87,7 +87,7 @@ struct TerminalLogTabBar: View {
                 ) {
                     onToggleFavoriteTab(tab.id)
                 }
-                .padding(.leading, 4)
+                .padding(.leading, RuneSpacing.xxs)
                 Spacer(minLength: 0)
 
                 RuneIconButton(

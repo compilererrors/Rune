@@ -14,7 +14,7 @@ final class RuneAdaptiveToolbarTests: XCTestCase {
         XCTAssertEqual(RuneAdaptiveToolbarMetrics.supportedInspectorWidth, 320)
         XCTAssertEqual(RBACCanILayoutMetrics.compactPanelWidth, 264)
         XCTAssertEqual(RBACCanILayoutMetrics.compactContentWidth, 240)
-        XCTAssertGreaterThanOrEqual(RuneAdaptiveToolbarMetrics.minimumRowHeight, 30)
+        XCTAssertGreaterThanOrEqual(RuneAdaptiveToolbarMetrics.minimumRowHeight, RuneControlSize.large.baseHeight)
         XCTAssertGreaterThan(
             RuneAdaptiveToolbarMetrics.accessibilityMinimumRowHeight,
             RuneAdaptiveToolbarMetrics.minimumRowHeight
@@ -240,12 +240,12 @@ final class RuneAdaptiveToolbarTests: XCTestCase {
             compactBehavior: compactBehavior
         ) {
             Text("Primary inspector controls")
-                .font(.body)
+                .runeText(.body)
                 .padding(.vertical, 4)
                 .frame(width: 220, alignment: .leading)
         } secondary: {
             Text("Secondary inspector actions")
-                .font(.body)
+                .runeText(.body)
                 .padding(.vertical, 4)
                 .frame(width: 220, alignment: .leading)
         }

@@ -52,6 +52,15 @@ The selected set covers:
   1.2 seconds in debug and 0.6 seconds in release.
 - AWS, GCP, AKS, OIDC, and exec-credential native-auth hot paths.
 - Resource column solving and interactive resize preview.
+- A hosted 5,000-pod table: mount, ten filter swaps to 72 rows and back, and
+  101 live resize steps with visible cells reused. The release budgets are
+  0.5 seconds, 1.2 seconds and 5 ms per step.
+- Frame-by-frame scrolling of a 5,000-pod table (alone and inside the full
+  root view, with a live row update every sixth frame), a 3,000-event table
+  and a 12,000-line YAML document. In release, each surface must keep its
+  95th-percentile frame cost under 14 ms and hitch on at most 2% of frames.
+  Before the scroll work, the root-view case measured about 60 ms at the 95th
+  percentile with 17 to 21% of frames hitching.
 
 When a budget intentionally changes, update the assertion and this baseline in
 the same change, record the reason, and run the complete selected set at least

@@ -6,23 +6,27 @@ enum RuneGlassPaneRole {
     case content
     case inspector
 
-    var material: Material {
+    /// Only the window blurs. Panes are flat tints above it, which keeps the
+    /// compositor to one visual-effect layer however many panes are open.
+    var material: Material? {
         switch self {
         case .window:
-            return .ultraThinMaterial
-        case .sidebar:
-            return .thinMaterial
-        case .content, .inspector:
             return .regularMaterial
+        case .sidebar, .content, .inspector:
+            return nil
         }
     }
 
     var tint: Color {
         switch self {
         case .window:
-            return Color(nsColor: .windowBackgroundColor).opacity(0.18)
-        case .sidebar, .content, .inspector:
-            return Color(nsColor: .windowBackgroundColor).opacity(0.16)
+            return Color(nsColor: .windowBackgroundColor).opacity(0.30)
+        case .sidebar:
+            return Color(nsColor: .underPageBackgroundColor).opacity(0.38)
+        case .content:
+            return Color(nsColor: .windowBackgroundColor).opacity(0.55)
+        case .inspector:
+            return Color(nsColor: .underPageBackgroundColor).opacity(0.30)
         }
     }
 
@@ -51,8 +55,10 @@ struct RuneGlassPaneSurface: View {
 
     var body: some View {
         ZStack {
-            Rectangle()
-                .fill(role.material)
+            if let material = role.material {
+                Rectangle()
+                    .fill(material)
+            }
 
             Rectangle()
                 .fill(tint(theme: resolvedTheme))

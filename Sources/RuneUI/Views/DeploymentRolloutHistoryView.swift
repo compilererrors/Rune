@@ -39,10 +39,10 @@ struct DeploymentRolloutHistoryView: View {
     private var rawHistoryView: some View {
         ScrollView {
             Text(history)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .runeText(.code)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
-                .padding(10)
+                .padding(RuneSpacing.inset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RuneSurfaceBackground(kind: .editor))
@@ -51,7 +51,7 @@ struct DeploymentRolloutHistoryView: View {
     private func rowsView(_ rows: [DeploymentRolloutHistoryRow]) -> some View {
         ScrollView(.vertical) {
             DeploymentRolloutHistoryTable(rows: rows)
-                .padding(10)
+                .padding(RuneSpacing.inset)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -76,7 +76,7 @@ struct DeploymentRolloutHistoryTable: View {
             header
             Divider()
                 .opacity(0.45)
-                .padding(.bottom, 4)
+                .padding(.bottom, RuneSpacing.xxs)
             ForEach(rows) { row in
                 wideRow(row)
             }
@@ -84,9 +84,9 @@ struct DeploymentRolloutHistoryTable: View {
     }
 
     private var compactTable: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
             Text("Rollout revisions")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
 
             ForEach(rows) { row in
@@ -103,7 +103,7 @@ struct DeploymentRolloutHistoryTable: View {
                 weight: .semibold
             )
             Text("ReplicaSet")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
                 .frame(
                     minWidth: DeploymentRolloutHistoryLayoutMetrics.replicaSetMinimumWidth,
@@ -111,11 +111,11 @@ struct DeploymentRolloutHistoryTable: View {
                     alignment: .leading
                 )
             Text("Change Cause")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
                 .frame(width: DeploymentRolloutHistoryLayoutMetrics.changeCauseWidth, alignment: .leading)
         }
-        .padding(.bottom, 6)
+        .padding(.bottom, RuneSpacing.tight)
     }
 
     private func wideRow(_ row: DeploymentRolloutHistoryRow) -> some View {
@@ -126,7 +126,7 @@ struct DeploymentRolloutHistoryTable: View {
                 weight: .semibold
             )
             Text(row.replicaSet)
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
@@ -137,7 +137,7 @@ struct DeploymentRolloutHistoryTable: View {
                     alignment: .leading
                 )
             Text(row.changeCause.isEmpty ? "-" : row.changeCause)
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -145,17 +145,17 @@ struct DeploymentRolloutHistoryTable: View {
                 .help(row.changeCause.isEmpty ? "No change cause" : row.changeCause)
                 .frame(width: DeploymentRolloutHistoryLayoutMetrics.changeCauseWidth, alignment: .leading)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, RuneSpacing.xxs)
     }
 
     private func compactRow(_ row: DeploymentRolloutHistoryRow) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
             compactField("Revision", value: row.revision, weight: .semibold)
             compactField("ReplicaSet", value: row.replicaSet, weight: .semibold)
             compactField("Change Cause", value: row.changeCause.isEmpty ? "-" : row.changeCause)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(.horizontal, RuneSpacing.xs)
+        .padding(.vertical, RuneSpacing.tight)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RuneSurfaceBackground(kind: .listRow(isSelected: false)))
     }
@@ -165,14 +165,14 @@ struct DeploymentRolloutHistoryTable: View {
         value: String,
         weight: Font.Weight = .regular
     ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.xs) {
             Text(title)
-                .font(.caption2.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
                 .frame(width: 76, alignment: .leading)
 
             Text(value)
-                .font(.caption.weight(weight))
+                .runeText(.micro, weight: weight)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(title == "Change Cause" ? 2 : 1)
                 .truncationMode(.middle)
@@ -188,7 +188,7 @@ struct DeploymentRolloutHistoryTable: View {
         weight: Font.Weight = .regular
     ) -> some View {
         Text(text)
-            .font(.caption.monospacedDigit().weight(weight))
+            .runeText(.micro, weight: weight).monospacedDigit()
             .foregroundStyle(.runeSecondary)
             .lineLimit(1)
             .truncationMode(.middle)

@@ -47,8 +47,8 @@ struct RuneHeaderCapsule: View {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.runeThemePalette) private var runeThemePalette
-    @ScaledMetric(relativeTo: .caption) private var indicatorDiameter: CGFloat = 7
-    @ScaledMetric(relativeTo: .caption) private var symbolWidth: CGFloat = 12
+    @ScaledMetric(relativeTo: .caption) private var indicatorDiameter: CGFloat = 6
+    @ScaledMetric(relativeTo: .caption) private var symbolWidth: CGFloat = 11
 
     init(
         _ text: String,
@@ -75,7 +75,7 @@ struct RuneHeaderCapsule: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: RuneSpacing.xxs) {
             if let indicatorColor {
                 Circle()
                     .fill(indicatorColor)
@@ -83,32 +83,20 @@ struct RuneHeaderCapsule: View {
                     .accessibilityHidden(true)
             } else if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.caption.weight(.semibold))
                     .foregroundStyle(tint ?? foregroundColor ?? runeThemePalette?.secondaryText ?? Color.secondary)
                     .frame(width: symbolWidth)
                     .accessibilityHidden(true)
             }
 
             Text(text)
-                .font(.caption.weight(role.fontWeight))
-                .foregroundStyle(foregroundColor ?? runeThemePalette?.secondaryText ?? Color.secondary)
-                .lineLimit(1)
                 .truncationMode(role.prefersMiddleTruncation ? .middle : .tail)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, RuneUILayoutMetrics.headerCapsuleHorizontalPadding)
-        .padding(.vertical, verticalPadding)
-        .frame(minHeight: RuneUILayoutMetrics.headerCapsuleMinimumHeight, alignment: .center)
-        .background {
-            Capsule()
-                .fill(fill ?? runeThemePalette?.chipFill ?? Color.secondary.opacity(0.12))
-        }
-        .overlay {
-            if let stroke {
-                Capsule()
-                    .strokeBorder(stroke, lineWidth: 1)
-            }
-        }
+        .modifier(RuneBadgeSurface(
+            fill: fill,
+            foreground: foregroundColor,
+            stroke: stroke
+        ))
         .help(resolvedHelpText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel ?? "\(role.accessibilityTitle): \(text)")
@@ -116,11 +104,5 @@ struct RuneHeaderCapsule: View {
 
     var resolvedHelpText: String {
         helpText ?? text
-    }
-
-    private var verticalPadding: CGFloat {
-        dynamicTypeSize.isAccessibilitySize
-            ? RuneUILayoutMetrics.headerCapsuleAccessibilityVerticalPadding
-            : RuneUILayoutMetrics.headerCapsuleVerticalPadding
     }
 }

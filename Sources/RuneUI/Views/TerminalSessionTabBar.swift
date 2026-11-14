@@ -85,22 +85,22 @@ struct TerminalSessionTabBar: View {
             Button {
                 activateSession(session)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: RuneSpacing.tight) {
                     TerminalStatusDot(
                         color: TerminalStatusStyling.color(session.status, palette: runeThemePalette)
                     )
                     Text(presentation.primaryTitle)
-                        .font(.caption.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .lineLimit(1)
                     if let secondaryTitle = presentation.secondaryTitle {
                         Text(secondaryTitle)
-                            .font(.caption2.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                             .lineLimit(1)
                     }
                     if session.status != .connected {
                         Text(TerminalStatusStyling.title(session.status))
-                            .font(.caption2.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .foregroundStyle(
                                 TerminalStatusStyling.color(session.status, palette: runeThemePalette)
                             )
@@ -108,8 +108,8 @@ struct TerminalSessionTabBar: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.leading, 8)
-                .padding(.trailing, 28)
+                .padding(.leading, RuneSpacing.xs)
+                .padding(.trailing, RuneSpacing.xl)
                 .frame(width: 216, height: 28, alignment: .leading)
                 .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.tabCornerRadius, style: .continuous))
             }

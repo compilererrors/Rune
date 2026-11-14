@@ -116,13 +116,10 @@ final class OverviewStatCardTests: XCTestCase {
     }
 
     func testRootKeepsOverviewModuleOrderingAndNavigationWhileUsingCardComponent() throws {
-        let source = try String(
-            contentsOf: repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift"),
-            encoding: .utf8
-        )
+        let source = try RuneRootViewSource.text()
 
         XCTAssertEqual(source.components(separatedBy: "OverviewStatCard(").count - 1, 1)
-        XCTAssertTrue(source.contains("private func overviewStatCard(module: OverviewModule, index: Int)"))
+        XCTAssertTrue(source.contains("func overviewStatCard(module: OverviewModule, index: Int)"))
         XCTAssertTrue(source.contains(
             "var modules: [OverviewModule] = [.pods, .deployments, .services, .ingresses, .configMaps, .cronJobs, .nodes]"
         ))

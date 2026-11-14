@@ -2,18 +2,19 @@ import SwiftUI
 import RuneCore
 
 struct OverviewRecentEventsPanelView: View {
+    @Environment(\.runeThemePalette) private var runeThemePalette
     let events: [EventSummary]
     let onOpenEventSource: (EventSummary) -> Void
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             RuneSectionHeader(
                 "Recent Events",
                 systemImage: "bolt.badge.clock",
                 tint: events.contains(where: { $0.type.lowercased() == "warning" })
-                    ? .orange
-                    : .secondary
+                    ? RuneSemanticColorRole.warning.color(in: runeThemePalette)
+                    : (runeThemePalette?.secondaryText ?? Color.secondary)
             ) {
                 RuneHeaderCapsule(
                     events.isEmpty ? "None" : "\(min(events.count, 8)) shown",
@@ -35,23 +36,23 @@ struct OverviewRecentEventsPanelView: View {
                     Button {
                         onOpenEventSource(event)
                     } label: {
-                        HStack(alignment: .top, spacing: 8) {
+                        HStack(alignment: .top, spacing: RuneSpacing.xs) {
                             Image(systemName: event.type.lowercased() == "warning" ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                                 .foregroundStyle(event.type.lowercased() == "warning" ? RuneTextStyle.warning : .success)
                                 .frame(width: 16)
 
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                                 if let ts = event.lastTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines), !ts.isEmpty {
                                     Text(ts)
-                                        .font(.caption2.monospaced())
+                                        .runeText(.micro, design: .monospaced)
                                         .foregroundStyle(.runeTertiary)
                                 }
                                 Text(event.reason + " - " + event.objectName)
-                                    .font(.subheadline.weight(.semibold))
+                                    .runeText(.microEmphasis)
                                     .foregroundStyle(.runePrimary)
                                     .multilineTextAlignment(.leading)
                                 Text(event.message)
-                                    .font(.footnote)
+                                    .runeText(.micro)
                                     .foregroundStyle(.runeSecondary)
                                     .multilineTextAlignment(.leading)
                                     .lineLimit(2)
@@ -60,12 +61,12 @@ struct OverviewRecentEventsPanelView: View {
                             Spacer(minLength: 0)
 
                             Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
+                                .runeText(.microEmphasis)
                                 .foregroundStyle(.runeTertiary)
-                                .padding(.top, 2)
+                                .padding(.top, RuneSpacing.hairline)
                         }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 2)
+                        .padding(.vertical, RuneSpacing.xxs)
+                        .padding(.horizontal, RuneSpacing.hairline)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)

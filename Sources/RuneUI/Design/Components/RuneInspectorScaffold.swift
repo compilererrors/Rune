@@ -9,7 +9,7 @@ enum RuneInspectorBodyScrollBehavior: Sendable, Equatable {
 
 enum RuneInspectorScaffoldMetrics {
     static let supportedMinimumWidth: CGFloat = 320
-    static let sectionSpacing: CGFloat = 12
+    static let sectionSpacing: CGFloat = RuneSpacing.sm
 }
 
 enum RuneInspectorScaffoldRegion: Hashable, Sendable {
@@ -113,9 +113,9 @@ struct RuneInspectorScaffold<Info: View, Tabs: View, Actions: View, Body: View>:
     }
 
     private var identityHeader: some View {
-        HStack(alignment: .center, spacing: 6) {
+        HStack(alignment: .center, spacing: RuneSpacing.tight) {
             Text(title)
-                .font(.title2.weight(.bold))
+                .runeText(.title, weight: .bold)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)

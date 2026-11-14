@@ -39,23 +39,23 @@ struct OverviewStatCard: View {
 
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: RuneSpacing.xs) {
                 HStack {
                     Image(systemName: symbol)
                         .foregroundStyle(tint)
                     Spacer()
                     Image(systemName: "arrow.up.right.square")
-                        .font(.caption)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 }
 
                 countContent
 
                 Text(title)
-                    .font(.caption.weight(.medium))
+                    .runeText(.micro, weight: .medium)
                     .foregroundStyle(.runeSecondary)
             }
-            .padding(12)
+            .padding(RuneSpacing.sm)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RuneSurfaceKind.panel.fill(theme: resolvedTheme),
@@ -90,12 +90,12 @@ struct OverviewStatCard: View {
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.85)
-                .padding(.vertical, 5)
+                .padding(.vertical, RuneSpacing.xxs)
                 .accessibilityHidden(true)
         } else {
-            HStack(spacing: 6) {
+            HStack(spacing: RuneSpacing.tight) {
                 Text("\(count)")
-                    .font(.title2.weight(.bold))
+                    .runeText(.title, weight: .bold)
                 if isLoading {
                     ProgressView()
                         .controlSize(.small)

@@ -44,7 +44,7 @@ final class RuneCursorBehaviorContractTests: XCTestCase {
     }
 
     func testSharedFindChromeUsesPointerWhileInspectorInputsUseTextCursor() throws {
-        let chromeSource = try source(at: "Sources/RuneUI/Layout/RuneFindBarControls.swift")
+        let chromeSource = try source(at: "Sources/RuneUI/Design/Components/RuneFindBarControls.swift")
         let inspectorSource = try source(at: "Sources/RuneUI/Views/InspectorFind.swift")
         let findChrome = try block(
             in: chromeSource,
@@ -210,17 +210,17 @@ final class RuneCursorBehaviorContractTests: XCTestCase {
     }
 
     func testManualNamespaceAndProviderSheetsSeparatePointerFromInputs() throws {
-        let rootSource = try source(at: "Sources/RuneUI/Views/RuneRootView.swift")
+        let rootSource = try RuneRootViewSource.text()
         let inputSource = try source(at: "Sources/RuneUI/Views/AddClusterProviderCredentialField.swift")
         let namespaceSheet = try block(
             in: rootSource,
-            startingAt: "private var manualNamespaceSheet: some View",
-            endingBefore: "private func startLiveDebugScenarioIfNeeded"
+            startingAt: "var manualNamespaceSheet: some View",
+            endingBefore: "func startLiveDebugScenarioIfNeeded"
         )
         let providerSheet = try block(
             in: rootSource,
-            startingAt: "private func addClusterProviderSheet",
-            endingBefore: "private func addClusterCloudImportOutputView"
+            startingAt: "func addClusterProviderSheet",
+            endingBefore: "func addClusterCloudImportOutputView"
         )
         let providerTextInput = try block(
             in: inputSource,
@@ -265,7 +265,7 @@ final class RuneCursorBehaviorContractTests: XCTestCase {
 
     func testFavoriteAndComparisonPopoversUsePointerCursor() throws {
         let favoriteSource = try source(at: "Sources/RuneUI/Views/FavoritePodPicker.swift")
-        let rootSource = try source(at: "Sources/RuneUI/Views/RuneRootView.swift")
+        let rootSource = try RuneRootViewSource.text()
         let favoritePopover = try block(
             in: favoriteSource,
             startingAt: "private var podPopover: some View",
@@ -273,8 +273,8 @@ final class RuneCursorBehaviorContractTests: XCTestCase {
         )
         let comparisonPopover = try block(
             in: rootSource,
-            startingAt: "private var genericResourceComparisonPopover: some View",
-            endingBefore: "private var overviewCardModules"
+            startingAt: "var genericResourceComparisonPopover: some View",
+            endingBefore: "var overviewCardModules"
         )
 
         assertPointerSurface(favoritePopover, named: "Favorite pod popover")

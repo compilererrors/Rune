@@ -131,8 +131,9 @@ struct ManifestEditorUndoButton: View {
     var body: some View {
         Button(action: onUndo) {
             Label("Undo", systemImage: "arrow.uturn.backward")
+                .labelStyle(.iconOnly)
         }
-        .buttonStyle(RuneToolbarButtonStyle())
+        .buttonStyle(RuneToolbarButtonStyle(isIconOnly: true))
         .disabled(!canUndo)
         .help(canUndo ? "Undo the last local YAML edit (⌘Z)." : "No local YAML edit to undo.")
         .keyboardShortcut("z", modifiers: [.command])
@@ -166,7 +167,6 @@ struct ManifestYAMLActionMenus: View {
                 .help("Discard local YAML edits and return to the current loaded draft.")
         } label: {
             Label(draftTitle, systemImage: "clock.arrow.circlepath")
-                .runeInterfaceFont(relativeSize: -1, weight: .medium)
         }
 
         RuneToolbarMenu {
@@ -186,31 +186,19 @@ struct ManifestYAMLActionMenus: View {
                 .help("Save the current YAML text to the configured export folder and open it.")
         } label: {
             Label(fileTitle, systemImage: "doc")
-                .runeInterfaceFont(relativeSize: -1, weight: .medium)
         }
     }
 }
 
+/// Action groups for the manifest inspectors. Groups stay together; labels
+/// fall back to icons and then wrap to a second row instead of clipping.
 struct ManifestToolbarScrollRow<Content: View>: View {
     @ViewBuilder let content: Content
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarGroupSpacing) {
-                content
-            }
-            .fixedSize(horizontal: true, vertical: false)
+        RuneToolbarOverflowRow(spacing: RuneUILayoutMetrics.inspectorToolbarGroupSpacing) {
+            content
         }
-        .runeInterfaceFont(relativeSize: -1, weight: .medium)
-        .controlSize(usesRegularControls ? .regular : .small)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var usesRegularControls: Bool {
-        dynamicTypeSize.isAccessibilitySize
-            || interfaceFontSize > RuneInterfaceTypography.standardMenuFontSize + 1
     }
 }
 
@@ -237,24 +225,17 @@ enum ManifestToolbarGroupRole {
     }
 }
 
+/// Related controls kept on one line, on the shared quiet control card so
+/// each cluster reads as one unit.
 struct ManifestToolbarGroup<Content: View>: View {
     var role: ManifestToolbarGroupRole = .action
     @ViewBuilder let content: Content
 
     var body: some View {
-        HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
-            content
-        }
-        .padding(.horizontal, RuneUILayoutMetrics.inspectorToolbarGroupHorizontalPadding)
-        .padding(.vertical, role.verticalPadding)
-        .frame(minHeight: role.height)
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
+        RuneControlCard(minHeight: role.height, verticalPadding: role.verticalPadding) {
+            HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
+                content
+            }
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -264,23 +245,19 @@ struct ManifestStatusChip: View {
     let text: String
     var systemImage = "clock"
 
+    /// Toolbar rows run out of width first at their trailing end, so the chip
+    /// shows only the time next to its clock and keeps the full text as help.
+    private var compactText: String {
+        let prefix = "Last updated "
+        return text.hasPrefix(prefix) ? String(text.dropFirst(prefix.count)) : text
+    }
+
     var body: some View {
-        Label(text, systemImage: systemImage)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.runeSecondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
+        RuneBadge(compactText, systemImage: systemImage, inControlRow: true)
             .monospacedDigit()
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .fill(Color.primary.opacity(0.035))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
-            }
-            .fixedSize(horizontal: false, vertical: true)
+            .truncationMode(.middle)
+            .help(text)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text)
     }
 }

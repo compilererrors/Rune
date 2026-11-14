@@ -27,12 +27,12 @@ struct KubeConfigContextRemovalSheet: View {
                                 .runeInsetCard(padding: 12)
                                 .accessibilityIdentifier("rune.context-removal.error")
                         }
-                        HStack(alignment: .top, spacing: 10) {
+                        HStack(alignment: .top, spacing: RuneSpacing.inset) {
                             Image(systemName: "checkmark.shield.fill")
-                                .font(.system(size: 17, weight: .semibold))
+                                .font(.system(size: RuneGlyphSize.sheetHeader, weight: .semibold))
                                 .foregroundStyle(RuneSemanticColorRole.success.color(in: runeThemePalette))
                                 .frame(width: 20, height: 20)
-                            VStack(alignment: .leading, spacing: 3) {
+                            VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                                 Text("The cluster stays untouched")
                                     .runeInterfaceFont(weight: .semibold)
                                 Text("Only local kubeconfig entries are removed. Workloads, cloud resources, and Kubernetes API objects are never changed.")
@@ -43,7 +43,7 @@ struct KubeConfigContextRemovalSheet: View {
                         }
                         .runeInsetCard(padding: 12)
 
-                        VStack(alignment: .leading, spacing: 5) {
+                        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                             Text(affectedFilesTitle)
                                 .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                                 .foregroundStyle(.runeSecondary)
@@ -81,7 +81,7 @@ struct KubeConfigContextRemovalSheet: View {
                 .disabled(isRemoving)
 
                 Button(role: .destructive, action: onConfirm) {
-                    HStack(spacing: 7) {
+                    HStack(spacing: RuneSpacing.xs) {
                         if isRemoving {
                             ProgressView()
                                 .controlSize(.small)
@@ -105,14 +105,14 @@ struct KubeConfigContextRemovalSheet: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: RuneSpacing.sm) {
             Image(systemName: "minus.circle.fill")
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: RuneGlyphSize.dialog, weight: .semibold))
                 .foregroundStyle(RuneSemanticColorRole.danger.color(in: runeThemePalette))
                 .frame(width: 34, height: 34)
-                .background(Circle().fill(Color.red.opacity(0.12)))
+                .background(Circle().fill(RuneTextStyle.danger.opacity(0.12)))
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                 Text("Remove Local Context")
                     .runeInterfaceFont(relativeSize: 2, weight: .semibold)
                     .accessibilityAddTraits(.isHeader)
@@ -136,11 +136,11 @@ struct KubeConfigContextRemovalSheet: View {
     }
 
     private func safetyRow(_ title: String, detail: String, systemImage: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: RuneSpacing.inset) {
             Image(systemName: systemImage)
                 .foregroundStyle(.runeSecondary)
                 .frame(width: 18, height: 18)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                 Text(title)
                     .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 Text(detail)

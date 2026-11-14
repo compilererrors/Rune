@@ -1,10 +1,10 @@
 import SwiftUI
 
 enum RuneDisclosureMetrics {
-    static let headerMinimumHeight: CGFloat = 32
+    static let headerMinimumHeight: CGFloat = RuneControlHeight.row
     static let chevronLayoutWidth: CGFloat = 14
     static let chevronGlyphSize: CGFloat = 12
-    static let headerSpacing: CGFloat = 6
+    static let headerSpacing: CGFloat = RuneSpacing.tight
 }
 
 enum RuneDisclosureNavigation {

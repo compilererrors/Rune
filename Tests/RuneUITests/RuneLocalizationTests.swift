@@ -106,21 +106,21 @@ final class RuneLocalizationTests: XCTestCase {
     }
 
     func testRootAndManifestChromeReadInterfaceLanguageFromSettings() throws {
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootSource = try RuneRootViewSource.text()
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
         let manifestPresentationSource = try String(contentsOfFile: resourceManifestPresentationPath, encoding: .utf8)
 
-        XCTAssertTrue(rootSource.contains("@AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw"))
-        XCTAssertTrue(rootSource.contains("private func appString(_ key: RuneLocalizedStringKey) -> String"))
+        XCTAssertTrue(rootSource.contains("@AppStorage(RuneSettingsKeys.interfaceLanguage) var interfaceLanguageRaw"))
+        XCTAssertTrue(rootSource.contains("func appString(_ key: RuneLocalizedStringKey) -> String"))
         XCTAssertTrue(rootSource.contains("section.localizedTitle(appString)"))
         XCTAssertTrue(rootSource.contains("viewModel.state.selectedSection.localizedTitle(appString)"))
         XCTAssertTrue(rootSource.contains("kind.localizedTitle(appString)"))
-        XCTAssertTrue(rootSource.contains("tab.localizedTitle(appString)"))
+        XCTAssertTrue(rootSource.contains("$0.localizedTitle(appString)"))
         XCTAssertTrue(rootSource.contains("Button(appString(.applyYAML))"))
 
         XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.interfaceLanguage) private var interfaceLanguageRaw"))
-        XCTAssertTrue(yamlSource.contains("ManifestInlineNote(t(.yamlEditsStayLocal))"))
+        XCTAssertTrue(yamlSource.contains("modeNote: isInlineEditing ? t(.yamlEditsStayLocal) : nil"))
         XCTAssertTrue(yamlSource.contains("applyTitle: t(.applyYAML)"))
         XCTAssertTrue(yamlSource.contains("Label(t(.hideManaged), systemImage: \"eye.slash\")"))
 
@@ -218,15 +218,6 @@ final class RuneLocalizationTests: XCTestCase {
             .path
     }
 
-    private var runeRootViewPath: String {
-        let current = URL(fileURLWithPath: #filePath)
-        return current
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift")
-            .path
-    }
 
     private var kubeConfigPickerPath: String {
         let current = URL(fileURLWithPath: #filePath)

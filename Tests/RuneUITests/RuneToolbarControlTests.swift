@@ -13,19 +13,20 @@ final class RuneToolbarControlTests: XCTestCase {
                     for isSelected in [true, false] {
                         for isPressed in [true, false] {
                             for isHovered in [true, false] {
-                                for isProminent in [true, false] {
+                                for role in [RuneButtonRole.primary, .secondary, .plain, .destructive] {
                                     let colors = RuneToolbarControlColors(
                                         palette: palette, tint: tint, isEnabled: isEnabled,
                                         isSelected: isSelected, isPressed: isPressed,
-                                        isHovered: isHovered, isProminent: isProminent
+                                        isHovered: isHovered, role: role
                                     )
-                                    XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(NSColor(colors.foreground), over: NSColor(colors.background)), 4.5, appearance.title)
+                                    XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(NSColor(colors.foreground), over: NSColor(colors.contrastSurface)), 4.5, "\(appearance.title) \(role)")
                                 }
                             }
                         }
                     }
                 }
             }
+            // Default (secondary) controls carry the theme accent as their label.
             let colors = RuneToolbarControlColors(palette: palette)
             let source = try XCTUnwrap(NSColor(palette.accentFill).usingColorSpace(.sRGB))
             let foreground = try XCTUnwrap(NSColor(colors.foreground).usingColorSpace(.sRGB))
@@ -39,7 +40,7 @@ final class RuneToolbarControlTests: XCTestCase {
     @MainActor
     func testButtonsTogglesAndMenusShareVisibleHeightAcrossThemesAndTextSizes() throws {
         for theme in [RuneAppearanceTheme.paper, .graphiteBlue] {
-            for (fontSize, dynamicType, expectedHeight) in [(12.0, DynamicTypeSize.large, 30.0), (20.0, .large, 31.0), (20.0, .accessibility3, 44.0)] {
+            for (fontSize, dynamicType, expectedHeight) in [(12.0, DynamicTypeSize.large, 28.0), (20.0, .large, 32.0), (20.0, .accessibility3, 44.0)] {
                 let measurements = ToolbarMeasurements()
                 let host = NSHostingView(rootView:
                     ToolbarControlHarness(measurements: measurements)

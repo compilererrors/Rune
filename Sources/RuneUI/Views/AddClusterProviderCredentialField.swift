@@ -109,7 +109,7 @@ struct AddClusterProviderCredentialField<Content: View>: View {
     }
 
     private var inlineLabel: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.tight) {
             title
             Spacer(minLength: 4)
             if let requirementTitle {
@@ -202,13 +202,13 @@ struct AddClusterProviderCredentialTextInput: View {
         if field.input == .secureText {
             AddClusterProviderCredentialField(field: field) {
                 SecureField("", text: $text)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(RuneControlTextFieldStyle())
                     .runeTextInputCursor()
             }
         } else {
             AddClusterProviderCredentialField(field: field) {
                 TextField("", text: $text)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(RuneControlTextFieldStyle())
                     .runeTextInputCursor()
             }
         }

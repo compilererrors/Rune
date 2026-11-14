@@ -18,21 +18,23 @@ struct ContextSidebarRow: View {
     @Environment(\.runeInterfaceFontSize) private var interfaceFontSize
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             Button(action: onSelect) {
-                HStack(spacing: 8) {
+                HStack(spacing: RuneSpacing.xs) {
                     leadingIcon
                     titleStack
                     if isProduction {
                         Image(systemName: "exclamationmark.shield.fill")
-                            .font(.caption)
+                            .runeText(.micro)
                             .foregroundStyle(RuneSemanticColorRole.danger.color(in: runeThemePalette))
                             .help(isManuallyMarkedProduction ? "Marked as production" : "Production context detected")
                     }
                     Spacer()
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .padding(.horizontal, RuneSpacing.xs)
+                .padding(.vertical, RuneSpacing.xxs)
+                .frame(minHeight: RuneControlHeight.regular)
+                .contentShape(Rectangle())
                 .runeSidebarSelection(isSelected: isSelected)
             }
             .buttonStyle(.plain)
@@ -68,24 +70,23 @@ struct ContextSidebarRow: View {
     private var leadingIcon: some View {
         if let iconName {
             Image(systemName: iconName)
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(isSelected ? RuneTextStyle.accent : .secondary)
-                .frame(width: 14, height: 14)
+                .frame(width: 18, height: 14)
         } else {
-            Circle()
-                .fill(isSelected ? Color.accentColor : Color.gray.opacity(0.6))
-                .frame(width: 7, height: 7)
+            RuneStatusDot(isSelected ? (runeThemePalette?.accent ?? Color.accentColor) : (runeThemePalette?.mutedText ?? Color.secondary))
+                .frame(width: 18)
         }
     }
 
     private var titleStack: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
             Text(displayName)
-                .runeInterfaceFont(weight: .medium)
+                .runeInterfaceFont(weight: isSelected ? .semibold : .medium)
                 .lineLimit(1)
             if let secondaryLine {
                 Text(secondaryLine)
-                    .font(.system(size: max(9, interfaceFontSize - 2)))
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
             }

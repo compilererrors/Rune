@@ -161,7 +161,7 @@ struct RBACCanISimulatorPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             header
                 .rbacCanILayoutProbe(.header, enabled: onLayoutSnapshotChange != nil)
             fields
@@ -176,9 +176,9 @@ struct RBACCanISimulatorPanel: View {
     private var header: some View {
         RuneAdaptiveToolbar("RBAC access review actions") {
             Label("Can I?", systemImage: "checkmark.shield")
-                .font(.subheadline.weight(.semibold))
+                .runeText(.microEmphasis)
         } secondary: {
-            HStack(spacing: 8) {
+            HStack(spacing: RuneSpacing.xs) {
                 Button("Use Selected") {
                     viewModel.useSelectedRBACResourceForCanI()
                 }
@@ -196,25 +196,19 @@ struct RBACCanISimulatorPanel: View {
     }
 
     private var fields: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             RuneAdaptiveToolbar("RBAC access review request") {
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .center, spacing: RuneSpacing.xs) {
                     TextField("Verb", text: $viewModel.rbacCanIVerb)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .frame(width: 86)
                     TextField("Resource", text: $viewModel.rbacCanIResource)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .frame(minWidth: 130)
                 }
             } secondary: {
-                Picker("Scope", selection: $viewModel.rbacCanIScope) {
-                    ForEach(RBACCanIScope.allCases) { scope in
-                        Text(scope.title).tag(scope)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 170)
+                RuneTabBar("Scope", selection: $viewModel.rbacCanIScope, tabs: RBACCanIScope.allCases) { $0.title }
+                    .frame(width: 170)
             }
             .rbacCanILayoutProbe(.request, enabled: onLayoutSnapshotChange != nil)
 
@@ -230,35 +224,35 @@ struct RBACCanISimulatorPanel: View {
 
     private var apiGroupField: some View {
         TextField("API group", text: $viewModel.rbacCanIApiGroup)
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(RuneControlTextFieldStyle())
             .frame(maxWidth: .infinity)
     }
 
     private var subresourceField: some View {
         TextField("Subresource", text: $viewModel.rbacCanISubresource)
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(RuneControlTextFieldStyle())
             .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
     private var result: some View {
         if let result = viewModel.rbacCanIResult {
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: RuneSpacing.xs) {
                 Image(systemName: resultSymbol(result))
                     .foregroundStyle(resultColor(result))
                     .frame(width: 16)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                     Text(result.statusText)
-                        .font(.caption.weight(.semibold))
+                        .runeText(.microEmphasis)
                     Text(result.errorMessage ?? result.request.summary)
-                        .font(.caption)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else {
             Text("Runs a read-only SelfSubjectAccessReview for the selected verb, resource, and scope.")
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
         }
     }

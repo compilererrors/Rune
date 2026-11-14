@@ -292,15 +292,15 @@ struct ResourceTerminalCommonCommandRow: View {
     let onCopy: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             Button(action: insertCommand) {
-                HStack(spacing: 8) {
+                HStack(spacing: RuneSpacing.xs) {
                     Text(command)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .runeText(.code)
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     Image(systemName: "arrow.turn.down.left")
-                        .font(.caption.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .foregroundStyle(.runeSecondary)
                 }
                 .frame(
@@ -350,30 +350,30 @@ struct ResourceTerminalDetailsView: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: RuneSpacing.sm) {
             if let session {
                 let presentation = TerminalSessionDetailPresentation.make(session: session)
                 Label(presentation.targetTitle, systemImage: "terminal")
-                    .font(.subheadline.weight(.medium))
+                    .runeText(.micro, weight: .medium)
                 if let containerTitle = presentation.containerTitle {
                     Text("Container: \(containerTitle)")
-                        .font(.footnote)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 }
                 Text("Shell: \(presentation.shellTitle)")
-                    .font(.footnote)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                 Text("Status: \(presentation.statusTitle)")
-                    .font(.footnote)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                 if let lastExitCodeTitle = presentation.lastExitCodeTitle {
                     Text("Last exit code: \(lastExitCodeTitle)")
-                        .font(.footnote)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 }
             } else if let selectedPod {
                 Label("Ready for \(selectedPod.namespace)/\(selectedPod.name)", systemImage: "terminal")
-                    .font(.subheadline.weight(.medium))
+                    .runeText(.micro, weight: .medium)
                 Text("Start a shell session to use the terminal.")
                     .foregroundStyle(.runeSecondary)
             } else {
@@ -383,14 +383,14 @@ struct ResourceTerminalDetailsView: View {
 
             if let active = portForwardSessions.first(where: { $0.status == .active || $0.status == .starting }) {
                 Label("\(active.resourceLabel) \(active.localPort):\(active.remotePort)", systemImage: "point.3.connected.trianglepath.dotted")
-                    .font(.subheadline.weight(.medium))
+                    .runeText(.micro, weight: .medium)
             }
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: RuneSpacing.xs) {
                 Text("Common Commands")
-                    .font(.headline)
+                    .runeText(.headline)
 
                 ForEach(commonCommands, id: \.self) { command in
                     ResourceTerminalCommonCommandRow(
@@ -404,15 +404,15 @@ struct ResourceTerminalDetailsView: View {
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                 Text("Notes")
-                    .font(.headline)
+                    .runeText(.headline)
                 Text("CPU/MEM chips in the top header are cluster-level overview metrics, not pod-shell metrics.")
-                    .font(.footnote)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Select a command row to prefill the prompt, then edit before sending if needed.")
-                    .font(.footnote)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

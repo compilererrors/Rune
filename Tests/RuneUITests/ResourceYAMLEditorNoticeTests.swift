@@ -39,11 +39,8 @@ final class ResourceYAMLEditorNoticeTests: XCTestCase {
     func testEditorPresentationReceivesSharedNoticeAndDismissalFromAppState() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(
-            contentsOf: root.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift"),
-            encoding: .utf8
-        )
-        let start = try XCTUnwrap(source.range(of: "private func yamlManifestEditorSheet()"))
+        let source = try RuneRootViewSource.text()
+        let start = try XCTUnwrap(source.range(of: "func yamlManifestEditorSheet()"))
         let initializer = source[start.lowerBound...].prefix(4_000)
         XCTAssertTrue(initializer.contains("notice: viewModel.state.activeNotice,"))
         XCTAssertTrue(initializer.contains("onDismissNotice: { viewModel.state.clearError() },"))

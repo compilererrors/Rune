@@ -49,11 +49,11 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
     }
 
     func testRootAdoptsPresentationFieldsWithoutPlaceholderOnlyOptionalLabels() throws {
-        let rootSource = try source("Sources/RuneUI/Views/RuneRootView.swift")
+        let rootSource = try RuneRootViewSource.text()
         let componentSource = try source("Sources/RuneUI/Views/AddClusterProviderCredentialField.swift")
         let providerRegion = try XCTUnwrap(rootSource.slice(
-            from: "private func providerCredentialFields(_ fields: [AddClusterProviderField]) -> some View",
-            to: "private func providerPrimaryAction("
+            from: "func providerCredentialFields(_ fields: [AddClusterProviderField]) -> some View",
+            to: "func providerPrimaryAction("
         ))
 
         XCTAssertTrue(rootSource.contains("providerCredentialFields(presentation.fields)"))
@@ -85,7 +85,7 @@ final class AddClusterProviderCredentialFieldTests: XCTestCase {
         XCTAssertTrue(componentSource.contains("Text(titleText)"))
         XCTAssertTrue(componentSource.contains("requirementText(requirementTitle)"))
         XCTAssertTrue(componentSource.contains("standardLabelRowHeight"))
-        XCTAssertTrue(componentSource.contains("HStack(alignment: .firstTextBaseline, spacing: 6)"))
+        XCTAssertTrue(componentSource.contains("HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.tight)"))
         XCTAssertFalse(componentSource.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(componentSource.contains("dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(componentSource.contains("TextField(\"\", text: $text)"))

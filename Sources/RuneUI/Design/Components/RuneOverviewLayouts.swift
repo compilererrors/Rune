@@ -6,7 +6,7 @@ struct RuneBalancedOverviewGrid: Layout {
     let minimumItemWidth: CGFloat
     let spacing: CGFloat
 
-    init(minimumItemWidth: CGFloat = 160, spacing: CGFloat = 10) {
+    init(minimumItemWidth: CGFloat = 160, spacing: CGFloat = RuneSpacing.xs) {
         self.minimumItemWidth = minimumItemWidth
         self.spacing = spacing
     }
@@ -135,7 +135,7 @@ struct RuneBadgeFlowLayout: Layout {
     let horizontalSpacing: CGFloat
     let verticalSpacing: CGFloat
 
-    init(horizontalSpacing: CGFloat = 8, verticalSpacing: CGFloat = 8) {
+    init(horizontalSpacing: CGFloat = RuneSpacing.xs, verticalSpacing: CGFloat = RuneSpacing.xs) {
         self.horizontalSpacing = horizontalSpacing
         self.verticalSpacing = verticalSpacing
     }
@@ -236,13 +236,13 @@ struct RuneSectionHeader<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: RuneSpacing.xs) {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
+                .runeText(.headline)
                 .foregroundStyle(tint)
                 .frame(width: 18, height: 18, alignment: .center)
             Text(title)
-                .font(.headline.weight(.semibold))
+                .runeText(.headline)
             Spacer(minLength: 8)
             trailing
         }

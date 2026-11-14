@@ -131,8 +131,8 @@ struct ResourceLogsToolbar: View {
                         .init(value: preset, title: preset.title)
                     }
                 )
+                .modifier(RuneToolbarControlSurface(fillsWidth: true))
                 .frame(width: ResourceLogsLayoutMetrics.sourcePickerWidth)
-                .runeMinimumInteractiveTarget()
             }
 
             if let selectedPodID, !podOptions.isEmpty {
@@ -162,8 +162,8 @@ struct ResourceLogsToolbar: View {
                             .init(value: container, title: container)
                         }
                     )
+                    .modifier(RuneToolbarControlSurface(fillsWidth: true))
                     .frame(width: ResourceLogsLayoutMetrics.sourcePickerWidth)
-                    .runeMinimumInteractiveTarget()
                     .help(t(.chooseContainerHelp))
                 }
             }
@@ -353,8 +353,10 @@ struct ResourceLogsToolbar: View {
             }
         } label: {
             Label(t(.more), systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
         }
         .help(t(.copyAndExportLogOutputHelp))
+        .accessibilityLabel(t(.more))
     }
 
     private var language: RuneLanguage {
@@ -462,7 +464,7 @@ private struct LogToolbarPickerField<Content: View>: View {
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
             Text(title.uppercased())
                 .runeInterfaceFont(relativeSize: -2, weight: .bold)
                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
@@ -520,12 +522,11 @@ struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
         context.coordinator.update(parent: self, popup: popup)
     }
 
+    /// The same 13 pt medium label as every toolbar control.
     private var popupFont: NSFont {
         NSFont.systemFont(
-            ofSize: RuneInterfaceTypography.appKitMenuFontSize(
-                systemSmallFontSize: NSFont.smallSystemFontSize,
-                interfaceMenuFontSize: interfaceMenuFontSize
-            )
+            ofSize: interfaceMenuFontSize + RuneControlSize.large.labelRelativeSize,
+            weight: .medium
         )
     }
 
@@ -552,7 +553,11 @@ struct LogToolbarPopupPicker<Value: Hashable>: NSViewRepresentable {
 
         func attach(to popup: NSPopUpButton) {
             self.popup = popup
-            popup.controlSize = .small
+            // Drawn on the shared toolbar surface (RuneToolbarControlSurface):
+            // the popup itself is borderless and keeps only its title and arrows.
+            popup.controlSize = .regular
+            popup.isBordered = false
+            (popup.cell as? NSPopUpButtonCell)?.arrowPosition = .arrowAtCenter
             popup.setContentHuggingPriority(.defaultLow, for: .horizontal)
             popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             popup.target = self
@@ -719,7 +724,7 @@ private struct LogToolbarSourceSummary: View {
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
             Text(title.uppercased())
                 .runeInterfaceFont(relativeSize: -2, weight: .bold)
                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
@@ -770,13 +775,13 @@ struct ResourceStructuredLogSummaryPanel: View {
                 isExpanded: $isCompactSummaryExpanded
             ) {
                 summaryDetails
-                    .padding(.top, 8)
+                    .padding(.top, RuneSpacing.xs)
             } label: {
                 summaryHeader
             }
         } else {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .center, spacing: RuneSpacing.xs) {
                     summaryHeader
                     summaryControlContent
                 }
@@ -794,16 +799,16 @@ struct ResourceStructuredLogSummaryPanel: View {
     private var summaryHeader: some View {
         RuneInspectorControlGridRow {
             Image(systemName: summary.isStructured ? "curlybraces" : "text.line.first.and.arrowtriangle.forward")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
         } content: {
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: RuneSpacing.xs) {
                 Text(summary.isStructured ? "Structured logs" : "Repeated lines")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
 
                 Text(summarySubtitle)
-                    .font(.caption)
+                    .runeText(.micro)
                     .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -814,7 +819,7 @@ struct ResourceStructuredLogSummaryPanel: View {
 
     private var summaryDetails: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 6) {
+            HStack(alignment: .center, spacing: RuneSpacing.tight) {
                 summaryControlContent
             }
             .fixedSize(horizontal: true, vertical: false)
@@ -838,14 +843,12 @@ struct ResourceStructuredLogSummaryPanel: View {
             Button {
                 onSearchDuplicate(duplicate)
             } label: {
-                RuneChip(horizontalPadding: 7, verticalPadding: 2) {
-                    Label("\(duplicate.count)x", systemImage: "square.stack.3d.up")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(runeThemePalette?.accent ?? Color.accentColor)
-                }
+                Label("\(duplicate.count)x", systemImage: "square.stack.3d.up")
+                    .labelStyle(.titleAndIcon)
+                    .monospacedDigit()
+                    .padding(.horizontal, RuneSpacing.xs)
             }
-            .buttonStyle(.plain)
-            .runeMinimumInteractiveTarget()
+            .buttonStyle(RuneCompactButtonStyle())
             .help("Search repeated log line: \(duplicate.fingerprint)")
         }
     }
@@ -862,7 +865,7 @@ struct ResourceStructuredLogSummaryPanel: View {
     }
 
     private func fieldMenu(_ field: ResourceStructuredLogField) -> some View {
-        Menu {
+        RuneToolbarMenu {
             ForEach(field.sampleValues, id: \.self) { value in
                 Button {
                     onSearchFieldSample(field, value)
@@ -872,10 +875,7 @@ struct ResourceStructuredLogSummaryPanel: View {
             }
         } label: {
             Label("\(field.title) \(field.nonEmptyCount)", systemImage: "number")
-                .runeMinimumInteractiveTarget()
         }
-        .menuStyle(.borderlessButton)
-        .controlSize(.small)
         .help("Search structured field \(field.title)")
     }
 }
@@ -1558,7 +1558,7 @@ struct ResourceLogsSearchBar: View {
             }
             .keyboardShortcut("f", modifiers: [.command])
         } content: {
-            HStack(spacing: 2) {
+            HStack(spacing: RuneSpacing.hairline) {
                 TextField(
                     "",
                     text: $query,
@@ -1566,7 +1566,7 @@ struct ResourceLogsSearchBar: View {
                         .foregroundStyle(runeThemePalette?.mutedText ?? Color.secondary)
                 )
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .runeInterfaceFont(relativeSize: RuneControlSize.large.labelRelativeSize)
                 .foregroundStyle(runeThemePalette?.foreground ?? Color.primary)
                 .tint(runeThemePalette?.accent ?? Color.accentColor)
                 .focused($isSearchFocused)
@@ -1693,14 +1693,14 @@ struct ResourceLogsSearchBar: View {
     }
 
     private func jumpToMatchPopover(matchCount: Int) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             Text("Go to match")
-                .font(.headline)
+                .runeText(.headline)
 
-            HStack(spacing: 8) {
+            HStack(spacing: RuneSpacing.xs) {
                 TextField("Match", text: $jumpText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .textFieldStyle(RuneControlTextFieldStyle())
+                    .fontDesign(.monospaced)
                     .frame(width: 82)
                     .onSubmit {
                         commitJump(matchCount: matchCount)
@@ -1708,7 +1708,7 @@ struct ResourceLogsSearchBar: View {
                     .runeTextInputCursor()
 
                 Text("of \(matchCount)")
-                    .font(.caption.weight(.medium))
+                    .runeText(.micro, weight: .medium)
                     .foregroundStyle(.runeSecondary)
                     .monospacedDigit()
             }
@@ -1721,7 +1721,7 @@ struct ResourceLogsSearchBar: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(12)
+        .padding(RuneSpacing.sm)
         .frame(width: 180)
         .runePointerCursor()
     }

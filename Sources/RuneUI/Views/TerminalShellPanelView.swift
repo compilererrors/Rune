@@ -148,7 +148,7 @@ struct TerminalShellPanelView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             header
 
             TerminalSessionTabBar(
@@ -216,7 +216,7 @@ struct TerminalShellPanelView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: RuneSpacing.inset) {
             titleBlock
             Spacer(minLength: 0)
             HStack(spacing: TerminalActionLayoutMetrics.spacing) {
@@ -245,10 +245,10 @@ struct TerminalShellPanelView: View {
     }
 
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
+            HStack(spacing: RuneSpacing.xs) {
                 Label("Pod Shell", systemImage: "terminal")
-                    .font(.headline)
+                    .runeText(.headline)
                 if let session {
                     statusBadge(session.status)
                 } else if isComposingNewSession {
@@ -258,13 +258,13 @@ struct TerminalShellPanelView: View {
 
             if let activeTabLabel {
                 Text(activeTabLabel)
-                    .font(.footnote.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
                     .help(activeTabLabel)
             } else {
                 Text(isComposingNewSession ? "New shell tab" : "No active shell tab")
-                    .font(.footnote)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
             }
         }
@@ -318,9 +318,9 @@ struct TerminalShellPanelView: View {
     private var containerPicker: some View {
         if shouldShowContainerPicker {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
+                HStack(spacing: RuneSpacing.inset) {
                     Label("Container", systemImage: "shippingbox")
-                        .font(.footnote.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .foregroundStyle(.runeSecondary)
                         .frame(width: 116, alignment: .leading)
 
@@ -340,14 +340,14 @@ struct TerminalShellPanelView: View {
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal, RuneSpacing.inset)
+            .padding(.vertical, RuneSpacing.xs)
             .background(RuneSurfaceBackground(kind: .editor))
         }
     }
 
     private var inputRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             Text("$")
                 .font(.system(size: terminalFontSize, weight: .semibold, design: .monospaced))
                 .foregroundStyle(canSendInput ? Color.accentColor : .secondary)
@@ -369,17 +369,17 @@ struct TerminalShellPanelView: View {
                     Text("Type a shell command and press Return")
                         .font(.system(size: terminalFontSize, weight: .regular, design: .monospaced))
                         .foregroundStyle(.runeTertiary)
-                        .padding(.leading, 8)
+                        .padding(.leading, RuneSpacing.xs)
                         .allowsHitTesting(false)
                 }
             }
             .frame(height: terminalPromptLayout.controlHeight)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneRadius.chip, style: .continuous)
                     .fill(Color(nsColor: canSendInput ? .textBackgroundColor : .controlBackgroundColor).opacity(0.72))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                RoundedRectangle(cornerRadius: RuneRadius.chip, style: .continuous)
                     .stroke(Color.primary.opacity(canSendInput ? 0.16 : 0.08), lineWidth: 1)
             )
             .opacity(canSendInput ? 1 : 0.62)
@@ -398,9 +398,9 @@ struct TerminalShellPanelView: View {
 
     private func statusBadge(_ status: PodTerminalSessionStatus) -> some View {
         Text(TerminalStatusStyling.title(status))
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .runeText(.microEmphasis)
+            .padding(.horizontal, RuneSpacing.xs)
+            .padding(.vertical, RuneSpacing.xxs)
             .background(
                 TerminalStatusStyling.color(status, palette: runeThemePalette).opacity(0.16),
                 in: Capsule()
@@ -410,9 +410,9 @@ struct TerminalShellPanelView: View {
 
     private var draftBadge: some View {
         Text("Ready")
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .runeText(.microEmphasis)
+            .padding(.horizontal, RuneSpacing.xs)
+            .padding(.vertical, RuneSpacing.xxs)
             .background(Color.accentColor.opacity(0.14), in: Capsule())
             .foregroundStyle(.runeAccent)
     }
@@ -598,11 +598,11 @@ struct TerminalMultilinePasteNotice: View {
     @ViewBuilder
     var body: some View {
         if isActive {
-            HStack(spacing: 6) {
+            HStack(spacing: RuneSpacing.tight) {
                 Image(systemName: "return")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                 Text("Multiline paste staged. Press Return again to send.")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .lineLimit(1)
             }
             .foregroundStyle(.runeAccent)

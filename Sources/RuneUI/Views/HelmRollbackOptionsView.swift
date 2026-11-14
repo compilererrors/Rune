@@ -6,7 +6,7 @@ struct HelmRollbackOptionsView: View {
     @Binding var cleanupOnFail: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             Text("Rollback options")
                 .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 .foregroundStyle(.runeSecondary)
@@ -19,7 +19,7 @@ struct HelmRollbackOptionsView: View {
                     Text("Timeout")
                         .foregroundStyle(.runeSecondary)
                     TextField("5m", text: $timeout)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(RuneControlTextFieldStyle())
                         .runeTextInputCursor()
                         .frame(width: 86)
                         .accessibilityLabel("Rollback timeout")

@@ -980,11 +980,15 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                 windowWidth: windowWidth
             )
 
+            // Toolbars wrap instead of clipping. At 1,160 pt the centre pane is too
+            // narrow for every operator control even as icons, so they take exactly
+            // one more control row; they never clip or cascade further.
+            let wrappedRows: CGFloat = windowWidth < 1_200 ? 1 : 0
             XCTAssertEqual(
-                operatorSnapshot.tableFrame.maxY,
-                releaseSnapshot.tableFrame.maxY,
+                releaseSnapshot.tableFrame.maxY - operatorSnapshot.tableFrame.maxY,
+                wrappedRows * (RuneControlHeight.toolbar + RuneSpacing.xs),
                 accuracy: 1,
-                "Helm releases and operator resources should enter the table on the same shared grid at width \(windowWidth)."
+                "Helm releases and operator resources should enter the table on the same shared grid at width \(windowWidth), plus at most one wrapped control row."
             )
         }
     }

@@ -1471,6 +1471,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var navigationIndex: Int = -1
     private var isApplyingNavigationCheckpoint = false
     private var visiblePodsCache: [PodSummary]?
+    private var podSortMemo: PodSortMemo?
     private var visibleDeploymentsCache: [DeploymentSummary]?
     private var visibleServicesCache: [ServiceSummary]?
     private var visibleGenericResourceCaches: [KubeResourceKind: [ClusterResourceSummary]] = [:]
@@ -1819,31 +1820,42 @@ public final class RuneAppViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        func invalidateProjectionOnChange<Value>(_ publisher: Published<Value>.Publisher) {
+        // A refresh republishes many lists; only the list that changed loses its
+        // projection, so an unchanged 5,000-pod list is not re-sorted.
+        func invalidateProjectionOnChange<Value>(
+            _ publisher: Published<Value>.Publisher,
+            _ invalidate: @escaping (RuneAppViewModel) -> Void
+        ) {
             publisher.dropFirst()
-                .sink { [weak self] _ in self?.invalidateVisibleResourceCaches() }
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    invalidate(self)
+                }
                 .store(in: &cancellables)
         }
-        invalidateProjectionOnChange(state.$pods)
-        invalidateProjectionOnChange(state.$deployments)
-        invalidateProjectionOnChange(state.$services)
-        invalidateProjectionOnChange(state.$statefulSets)
-        invalidateProjectionOnChange(state.$daemonSets)
-        invalidateProjectionOnChange(state.$jobs)
-        invalidateProjectionOnChange(state.$cronJobs)
-        invalidateProjectionOnChange(state.$replicaSets)
-        invalidateProjectionOnChange(state.$persistentVolumeClaims)
-        invalidateProjectionOnChange(state.$persistentVolumes)
-        invalidateProjectionOnChange(state.$storageClasses)
-        invalidateProjectionOnChange(state.$horizontalPodAutoscalers)
-        invalidateProjectionOnChange(state.$networkPolicies)
-        invalidateProjectionOnChange(state.$endpoints)
-        invalidateProjectionOnChange(state.$ingresses)
-        invalidateProjectionOnChange(state.$configMaps)
-        invalidateProjectionOnChange(state.$secrets)
-        invalidateProjectionOnChange(state.$nodes)
-        invalidateProjectionOnChange(state.$favoriteResourceIDs)
-        invalidateProjectionOnChange(state.$resourceSearchQuery)
+        func invalidateGenericProjectionOnChange<Value>(_ publisher: Published<Value>.Publisher, kind: KubeResourceKind) {
+            invalidateProjectionOnChange(publisher) { $0.visibleGenericResourceCaches[kind] = nil }
+        }
+        invalidateProjectionOnChange(state.$pods) { $0.visiblePodsCache = nil }
+        invalidateProjectionOnChange(state.$deployments) { $0.visibleDeploymentsCache = nil }
+        invalidateProjectionOnChange(state.$services) { $0.visibleServicesCache = nil }
+        invalidateGenericProjectionOnChange(state.$statefulSets, kind: .statefulSet)
+        invalidateGenericProjectionOnChange(state.$daemonSets, kind: .daemonSet)
+        invalidateGenericProjectionOnChange(state.$jobs, kind: .job)
+        invalidateGenericProjectionOnChange(state.$cronJobs, kind: .cronJob)
+        invalidateGenericProjectionOnChange(state.$replicaSets, kind: .replicaSet)
+        invalidateGenericProjectionOnChange(state.$persistentVolumeClaims, kind: .persistentVolumeClaim)
+        invalidateGenericProjectionOnChange(state.$persistentVolumes, kind: .persistentVolume)
+        invalidateGenericProjectionOnChange(state.$storageClasses, kind: .storageClass)
+        invalidateGenericProjectionOnChange(state.$horizontalPodAutoscalers, kind: .horizontalPodAutoscaler)
+        invalidateGenericProjectionOnChange(state.$networkPolicies, kind: .networkPolicy)
+        invalidateGenericProjectionOnChange(state.$endpoints, kind: .endpoint)
+        invalidateGenericProjectionOnChange(state.$ingresses, kind: .ingress)
+        invalidateGenericProjectionOnChange(state.$configMaps, kind: .configMap)
+        invalidateGenericProjectionOnChange(state.$secrets, kind: .secret)
+        invalidateGenericProjectionOnChange(state.$nodes, kind: .node)
+        invalidateProjectionOnChange(state.$favoriteResourceIDs) { $0.invalidateVisibleResourceCaches() }
+        invalidateProjectionOnChange(state.$resourceSearchQuery) { $0.invalidateVisibleResourceCaches() }
 
         Publishers.CombineLatest3(
             state.$kubeConfigSources,
@@ -2051,6 +2063,8 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public var areAllVisiblePodsSelectedForBulkActions: Bool {
+        let selectedIDs = state.selectedPodIDs
+        guard !selectedIDs.isEmpty else { return false }
         let visibleIDs = Set(visiblePods.map(\.id))
         return !visibleIDs.isEmpty && visibleIDs.isSubset(of: state.selectedPodIDs)
     }
@@ -5658,6 +5672,11 @@ public final class RuneAppViewModel: ObservableObject {
                         continue
                     }
                     liveWatchRefreshInFlight = true
+                    await RuneLiveScrollActivity.shared.waitUntilIdle()
+                    guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else {
+                        liveWatchRefreshInFlight = false
+                        return
+                    }
                     scheduleRefreshCurrentView(
                         forceNamespaceMetadataRefresh: false,
                         debounced: true,
@@ -7615,7 +7634,8 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     public func isFavoriteResource(kind: KubeResourceKind, namespace: String?, name: String) -> Bool {
-        guard let id = favoriteResourceID(kind: kind, namespace: namespace, name: name) else { return false }
+        guard !state.favoriteResourceIDs.isEmpty,
+              let id = favoriteResourceID(kind: kind, namespace: namespace, name: name) else { return false }
         return state.isFavoriteResource(id: id)
     }
 
@@ -17042,17 +17062,81 @@ public final class RuneAppViewModel: ObservableObject {
         let ageSeconds: Int?
     }
 
+    private struct PodSortKey: Equatable {
+        let isFavorite: Bool
+        let text: String?
+        let number: Int64?
+    }
+
+    /// Order from the last pod sort plus the keys it was computed from. Live
+    /// updates usually change fields the list is not sorted by, so the order is
+    /// reused instead of re-sorting thousands of pods per update.
+    private struct PodSortMemo {
+        let column: PodListSortColumn
+        let ascending: Bool
+        let keys: [String: PodSortKey]
+        let orderedIDs: [String]
+    }
+
     private func sortedPods(_ values: [PodSummary]) -> [PodSummary] {
+        // Only the active column's key is parsed; the comparator reads no other.
+        let column = podSortColumn
+        let ascending = podSortAscending
+        let isFavorite = podFavoriteMatcher()
         let records = values.map { pod in
             PodSortRecord(
                 pod: pod,
-                isFavorite: isFavoriteResource(kind: .pod, namespace: pod.namespace, name: pod.name),
-                cpuMilli: cpuMilliValue(pod.cpuUsage),
-                memoryBytes: memoryByteValue(pod.memoryUsage),
-                ageSeconds: ageSeconds(pod.ageDescription)
+                isFavorite: isFavorite(pod),
+                cpuMilli: column == .cpu ? cpuMilliValue(pod.cpuUsage) : nil,
+                memoryBytes: column == .memory ? memoryByteValue(pod.memoryUsage) : nil,
+                ageSeconds: column == .age ? ageSeconds(pod.ageDescription) : nil
             )
         }
-        return stablySorted(records, by: podSortRecordComparator).map(\.pod)
+        var keys: [String: PodSortKey] = [:]
+        keys.reserveCapacity(records.count)
+        var idsAreUnique = true
+        for record in records {
+            let key = podSortKey(record, column: column)
+            if keys.updateValue(key, forKey: record.pod.id) != nil {
+                idsAreUnique = false
+            }
+        }
+        if idsAreUnique,
+           let memo = podSortMemo,
+           memo.column == column,
+           memo.ascending == ascending,
+           memo.keys == keys {
+            var byID: [String: PodSummary] = [:]
+            byID.reserveCapacity(records.count)
+            for record in records {
+                byID[record.pod.id] = record.pod
+            }
+            return memo.orderedIDs.compactMap { byID[$0] }
+        }
+        let sorted = stablySorted(records) { lhs, rhs in
+            podSortRecordComparator(lhs, rhs, column: column, ascending: ascending)
+        }.map(\.pod)
+        podSortMemo = idsAreUnique
+            ? PodSortMemo(column: column, ascending: ascending, keys: keys, orderedIDs: sorted.map(\.id))
+            : nil
+        return sorted
+    }
+
+    private func podSortKey(_ record: PodSortRecord, column: PodListSortColumn) -> PodSortKey {
+        switch column {
+        case .name:
+            return PodSortKey(isFavorite: record.isFavorite, text: record.pod.name, number: nil)
+        case .status:
+            return PodSortKey(isFavorite: record.isFavorite, text: record.pod.displayStatus, number: nil)
+        case .restarts:
+            return PodSortKey(isFavorite: record.isFavorite, text: nil, number: Int64(record.pod.totalRestarts))
+        case .cpu:
+            return PodSortKey(isFavorite: record.isFavorite, text: nil, number: record.cpuMilli.map(Int64.init))
+        case .memory:
+            return PodSortKey(isFavorite: record.isFavorite, text: nil, number: record.memoryBytes)
+        case .age:
+            return PodSortKey(isFavorite: record.isFavorite, text: nil, number: record.ageSeconds.map(Int64.init))
+        }
     }
 
     func podComparator(_ lhs: PodSummary, _ rhs: PodSummary) -> Bool {
@@ -17075,53 +17159,61 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func podSortRecordComparator(_ lhs: PodSortRecord, _ rhs: PodSortRecord) -> Bool {
+        podSortRecordComparator(lhs, rhs, column: podSortColumn, ascending: podSortAscending)
+    }
+
+    private func podSortRecordComparator(
+        _ lhs: PodSortRecord,
+        _ rhs: PodSortRecord,
+        column: PodListSortColumn,
+        ascending: Bool
+    ) -> Bool {
         if lhs.isFavorite != rhs.isFavorite {
             return lhs.isFavorite && !rhs.isFavorite
         }
 
-        let ascending = podSortAscending
-        let identityOrder = podIdentityComparison(lhs.pod, rhs.pod)
+        let identityOrder = { self.podIdentityComparison(lhs.pod, rhs.pod) }
 
-        switch podSortColumn {
+        switch column {
         case .name:
             return orderedBefore(
                 caseInsensitiveComparison(lhs.pod.name, rhs.pod.name),
                 ascending: ascending,
-                tieBreak: identityOrder
+                tieBreak: identityOrder()
             )
         case .status:
             return orderedBefore(
                 caseInsensitiveComparison(lhs.pod.displayStatus, rhs.pod.displayStatus),
                 ascending: ascending,
-                tieBreak: identityOrder
+                tieBreak: identityOrder()
             )
         case .restarts:
             return comparePodsMetric(
                 ascending: ascending,
                 lhsValue: lhs.pod.totalRestarts,
                 rhsValue: rhs.pod.totalRestarts,
-                tieBreak: identityOrder
+                tieBreak: identityOrder()
             )
         case .cpu:
             return comparePodsOptionalMetric(
                 ascending: ascending,
                 lhsValue: lhs.cpuMilli,
                 rhsValue: rhs.cpuMilli,
-                tieBreak: identityOrder
+                tieBreak: identityOrder()
             )
         case .memory:
             return comparePodsOptionalMetric(
                 ascending: ascending,
                 lhsValue: lhs.memoryBytes,
                 rhsValue: rhs.memoryBytes,
-                tieBreak: identityOrder
+                tieBreak: identityOrder()
             )
         case .age:
             return comparePodsOptionalMetric(
                 ascending: ascending,
                 lhsValue: lhs.ageSeconds,
                 rhsValue: rhs.ageSeconds,
-                tieBreak: identityOrder
+                tieBreak: identityOrder()
             )
         }
     }
@@ -17340,11 +17432,11 @@ public final class RuneAppViewModel: ObservableObject {
     private func orderedBefore(
         _ comparison: ComparisonResult,
         ascending: Bool = true,
-        tieBreak: ComparisonResult = .orderedSame
+        tieBreak: @autoclosure () -> ComparisonResult = .orderedSame
     ) -> Bool {
         if comparison == .orderedSame {
             // Keep identity tie-breaks canonical so changing direction does not reshuffle equal values.
-            return tieBreak == .orderedAscending
+            return tieBreak() == .orderedAscending
         }
         return ascending ? comparison == .orderedAscending : comparison == .orderedDescending
     }
@@ -17462,20 +17554,20 @@ public final class RuneAppViewModel: ObservableObject {
         ascending: Bool,
         lhsValue: T?,
         rhsValue: T?,
-        tieBreak: ComparisonResult
+        tieBreak: @autoclosure () -> ComparisonResult
     ) -> Bool {
         switch (lhsValue, rhsValue) {
         case let (l?, r?):
             if l != r {
                 return orderedBefore(comparableComparison(l, r), ascending: ascending)
             }
-            return orderedBefore(tieBreak)
+            return orderedBefore(tieBreak())
         case (_?, nil):
             return true
         case (nil, _?):
             return false
         case (nil, nil):
-            return orderedBefore(tieBreak)
+            return orderedBefore(tieBreak())
         }
     }
 
@@ -17483,12 +17575,12 @@ public final class RuneAppViewModel: ObservableObject {
         ascending: Bool,
         lhsValue: Int,
         rhsValue: Int,
-        tieBreak: ComparisonResult
+        tieBreak: @autoclosure () -> ComparisonResult
     ) -> Bool {
         if lhsValue != rhsValue {
             return orderedBefore(comparableComparison(lhsValue, rhsValue), ascending: ascending)
         }
-        return orderedBefore(tieBreak)
+        return orderedBefore(tieBreak())
     }
 
     private func cpuMilliValue(_ raw: String?) -> Int? {
@@ -17725,6 +17817,29 @@ public final class RuneAppViewModel: ObservableObject {
             normalizedNamespace.isEmpty ? "_cluster" : normalizedNamespace,
             normalizedName
         ].joined(separator: "|")
+    }
+
+    /// Favorite check for many pods at once: the context and kind part of the
+    /// favorite ID is resolved once instead of per pod.
+    func podFavoriteMatcher() -> (PodSummary) -> Bool {
+        guard !state.favoriteResourceIDs.isEmpty,
+              let contextName = state.selectedContext?.name.trimmingCharacters(in: .whitespacesAndNewlines),
+              !contextName.isEmpty
+        else { return { _ in false } }
+        let prefix = [contextName, KubeResourceKind.pod.rawValue].joined(separator: "|") + "|"
+        let suffixes = Set(state.favoriteResourceIDs.compactMap { id in
+            id.hasPrefix(prefix) ? String(id.dropFirst(prefix.count)) : nil
+        })
+        guard !suffixes.isEmpty else { return { _ in false } }
+        func normalized(_ value: String) -> String {
+            value.contains(where: \.isWhitespace) ? value.trimmingCharacters(in: .whitespacesAndNewlines) : value
+        }
+        return { pod in
+            let name = normalized(pod.name)
+            guard !name.isEmpty else { return false }
+            let namespace = normalized(pod.namespace)
+            return suffixes.contains((namespace.isEmpty ? "_cluster" : namespace) + "|" + name)
+        }
     }
 
     private func favoriteNamespaceID(_ namespace: String) -> String? {

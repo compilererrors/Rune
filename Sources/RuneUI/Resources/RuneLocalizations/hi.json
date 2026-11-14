@@ -106,6 +106,8 @@
   "settingsShowHoverTooltipsHelp": "Cluster Signals जैसे कम स्पष्ट labels, tabs और controls के लिए छोटे native hover explanations दिखाता है. Tooltips बाधा बनें तो इसे बंद करें.",
   "settingsShowResourceTableScrollEdgeGlow": "टेबल स्क्रॉल किनारों पर ग्लो दिखाएं",
   "settingsShowResourceTableScrollEdgeGlowHelp": "जब resource table में दाईं या बाईं ओर और columns उपलब्ध हों, तब किनारे पर हल्का glow दिखाता है. इसे बंद करने पर भी horizontal scrolling काम करती है.",
+  "settingsShowSplitResizeHandles": "पैनल का आकार बदलने के हैंडल दिखाएं",
+  "settingsShowSplitResizeHandlesHelp": "हर divider के पास column के किनारे पर एक छोटा हैंडल दिखाता है। divider को दोनों स्थितियों में खींचा जा सकता है।",
   "settingsSimpleMode": "Simple mode",
   "settingsSimpleModeHelp": "Fast navigation के लिए हल्का interface इस्तेमाल करता है: advanced optional panels skip होते हैं, Kubernetes managedFields read-only YAML और Describe output में hidden रहते हैं, और terminal logs compact k9s-style workflow के करीब रहते हैं.",
   "settingsSimpleModeManagedFieldsNote": "Simple mode read-only YAML और Describe views में managedFields हमेशा छिपाता है.",

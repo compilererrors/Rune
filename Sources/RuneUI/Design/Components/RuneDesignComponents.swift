@@ -142,8 +142,8 @@ struct RuneChip<Content: View>: View {
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     init(
-        horizontalPadding: CGFloat = 8,
-        verticalPadding: CGFloat = 3,
+        horizontalPadding: CGFloat = RuneSpacing.xs,
+        verticalPadding: CGFloat = RuneSpacing.xxs,
         fill: Color? = nil,
         cornerRadius: CGFloat = RuneUILayoutMetrics.compactGlyphCornerRadius,
         @ViewBuilder content: () -> Content
@@ -198,38 +198,17 @@ struct RuneIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .semibold))
                 .frame(
                     width: RuneUILayoutMetrics.iconButtonSize,
                     height: RuneUILayoutMetrics.iconButtonSize
                 )
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(foregroundColor)
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                .fill(isSelected == true ? selectionColor.opacity(0.16) : Color.clear)
-        }
-        .contentShape(Rectangle())
+        .buttonStyle(RuneCompactButtonStyle(isSelected: isSelected == true, tint: selectedTint))
         .disabled(isDisabled)
         .help(helpText)
         .accessibilityLabel(accessibilityLabel)
         .modifier(RuneIconButtonSelectionAccessibilityModifier(isSelected: isSelected))
-    }
-
-    private var selectionColor: Color {
-        selectedTint ?? runeThemePalette?.accent ?? Color.accentColor
-    }
-
-    private var foregroundColor: Color {
-        if isDisabled {
-            return runeThemePalette?.mutedText ?? Color.secondary
-        }
-        if isSelected == true {
-            return selectionColor
-        }
-        return runeThemePalette?.secondaryText ?? Color.secondary
     }
 }
 
@@ -315,117 +294,50 @@ struct RuneBulkSelectionBar<Actions: View>: View {
         self.actions = actions()
     }
 
+    /// The count, Select/Deselect Visible and clear are one joined control
+    /// that is always present and always the same size: titles reserve the
+    /// width of their alternatives and clear is disabled, not hidden, with
+    /// nothing selected. Selecting rows therefore never moves the filter,
+    /// Sort or the actions (macOS HIG: change state in place, and dim
+    /// controls that don't apply instead of removing them).
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            regularControls
-            compactControls
+        HStack(spacing: RuneSpacing.xs) {
+            RuneToolbarButtonGroup(isSelected: selectedCount > 0) {
+                RuneToolbarGroupLabel {
+                    Label {
+                        RuneStableLabel(selectedCountText, reserving: ["888 selected"])
+                            .monospacedDigit()
+                    } icon: {
+                        Image(systemName: selectedCount > 0 ? "checkmark.circle.fill" : "circle")
+                    }
+                    .labelStyle(.titleAndIcon)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(selectedCountText)
+                RuneToolbarGroupDivider()
+                // An icon segment: the count already says what is selected, and
+                // a fixed-width segment keeps the group compact and stable.
+                Button(action: onToggleVisibleSelection) {
+                    Image(systemName: "checklist")
+                }
+                .buttonStyle(RuneToolbarSegmentButtonStyle())
+                .disabled(visibleCount == 0)
+                .help(allVisibleSelected ? "Deselect all visible rows" : "Select all visible rows")
+                .accessibilityLabel(toggleTitle)
+                RuneToolbarGroupDivider()
+                Button(action: onClearSelection) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(RuneToolbarSegmentButtonStyle())
+                .disabled(selectedCount == 0)
+                .help("Clear all selected rows")
+                .accessibilityLabel("Clear selection")
+            }
+            if showsActions {
+                actions
+            }
         }
-        .buttonStyle(RuneToolbarButtonStyle())
-        .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-        .controlSize(usesRegularControls ? .regular : .small)
-        .frame(
-            maxWidth: .infinity,
-            minHeight: dynamicTypeSize.isAccessibilitySize
-                ? RuneUILayoutMetrics.resourceListToolbarAccessibilityMinimumHeight
-                : RuneUILayoutMetrics.resourceListToolbarMinimumHeight,
-            alignment: .leading
-        )
         .accessibilityElement(children: .contain)
-    }
-
-    private var regularControls: some View {
-        HStack(spacing: 8) {
-            if selectedCount > 0 {
-                selectionSummary
-            }
-            selectVisibleButton
-            if showsActions {
-                separator
-                actions
-            }
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var compactControls: some View {
-        HStack(spacing: 6) {
-            if selectedCount > 0 {
-                selectionSummary
-            }
-            compactSelectVisibleButton
-            if showsActions {
-                actions
-            }
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var compactSelectVisibleButton: some View {
-        Button {
-            onToggleVisibleSelection()
-        } label: {
-            Image(systemName: allVisibleSelected ? "xmark.square" : "checklist")
-        }
-        .frame(width: RuneUILayoutMetrics.iconButtonSize)
-        .runeMinimumInteractiveTarget()
-        .disabled(visibleCount == 0)
-        .help(allVisibleSelected ? "Deselect all visible rows" : "Select all visible rows")
-        .accessibilityLabel(toggleTitle)
-    }
-
-    private var selectionCountChip: some View {
-        RuneChip(
-            horizontalPadding: 8,
-            verticalPadding: 3,
-            fill: selectedCount > 0
-                ? (runeThemePalette?.selectionFill ?? Color.accentColor.opacity(0.14))
-                : (runeThemePalette?.chipFill ?? Color.secondary.opacity(0.10))
-        ) {
-            Label(selectedCountText, systemImage: selectedCount > 0 ? "checkmark.square.fill" : "square")
-                .runeInterfaceFont(relativeSize: -1, weight: .semibold)
-                .labelStyle(.titleAndIcon)
-                .imageScale(.small)
-                .foregroundStyle(
-                    selectedCount > 0
-                        ? (runeThemePalette?.accent ?? Color.accentColor)
-                        : (runeThemePalette?.secondaryText ?? Color.secondary)
-                )
-        }
-        .frame(height: RuneUILayoutMetrics.headerChipHeight)
-        .accessibilityLabel(selectedCountText)
-    }
-
-    private var selectionSummary: some View {
-        HStack(spacing: 2) {
-            selectionCountChip
-            RuneIconButton(
-                "Clear selection",
-                systemImage: "xmark",
-                help: "Clear all selected rows"
-            ) {
-                onClearSelection()
-            }
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var selectVisibleButton: some View {
-        Button {
-            onToggleVisibleSelection()
-        } label: {
-            Label(toggleTitle, systemImage: allVisibleSelected ? "xmark.square" : "checklist")
-        }
-        .runeMinimumInteractiveTarget()
-        .disabled(visibleCount == 0)
-        .help(allVisibleSelected ? "Deselect all visible rows" : "Select all visible rows")
-        .accessibilityLabel(toggleTitle)
-    }
-
-    private var separator: some View {
-        Rectangle()
-            .fill(runeThemePalette?.divider ?? Color(nsColor: .separatorColor).opacity(0.45))
-            .frame(width: 1, height: RuneUILayoutMetrics.headerChipHeight - 8)
-            .accessibilityHidden(true)
     }
 
     private var toggleTitle: String {
@@ -434,11 +346,6 @@ struct RuneBulkSelectionBar<Actions: View>: View {
 
     private var selectedCountText: String {
         "\(selectedCount) selected"
-    }
-
-    private var usesRegularControls: Bool {
-        dynamicTypeSize.isAccessibilitySize
-            || interfaceFontSize > RuneInterfaceTypography.standardMenuFontSize + 1
     }
 }
 
@@ -449,7 +356,7 @@ private struct RuneResourceListToolbarLayout: Layout {
     let minimumHeight: CGFloat
 
     private var inlineMinimumWidth: CGFloat {
-        RuneUILayoutMetrics.resourceFilterControlsMaximumWidth
+        RuneUILayoutMetrics.resourceFilterControlsMinimumWidth
             + RuneUILayoutMetrics.contentControlSpacing
             + RuneUILayoutMetrics.resourceListActionsRailMinimumWidth
     }
@@ -535,10 +442,19 @@ private struct RuneResourceListToolbarLayout: Layout {
     ) {
         let isInline = width >= inlineMinimumWidth
         if isInline {
-            let primaryWidth = RuneUILayoutMetrics.resourceFilterControlsMaximumWidth
+            // The filter fills the row up to the actions with the standard
+            // control gap, and only shrinks toward its minimum before the
+            // actions drop their labels. The actions keep one width in every
+            // state, so the filter never resizes when rows are selected.
+            let actionsIdealWidth = subviews[1].sizeThatFits(.unspecified).width
+            let spacing = RuneUILayoutMetrics.contentControlSpacing
+            let primaryWidth = max(
+                RuneUILayoutMetrics.resourceFilterControlsMinimumWidth,
+                width - spacing - actionsIdealWidth
+            )
             let actionsWidth = max(
                 RuneUILayoutMetrics.resourceListActionsRailMinimumWidth,
-                width - primaryWidth - RuneUILayoutMetrics.contentControlSpacing
+                width - primaryWidth - spacing
             )
             let primarySize = subviews[0].sizeThatFits(
                 ProposedViewSize(width: primaryWidth, height: nil)
@@ -594,8 +510,6 @@ struct RuneResourceListToolbar<Primary: View, Actions: View>: View {
             primary
             actionsRail
         }
-        .runeInterfaceFont(relativeSize: -1, weight: .medium)
-        .controlSize(usesRegularControls ? .regular : .small)
         .frame(
             maxWidth: .infinity,
             minHeight: minimumHeight,
@@ -639,19 +553,19 @@ struct RuneNoticeBanner: View {
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: RuneSpacing.xs) {
             Image(systemName: symbolName)
-                .font(.system(size: 14, weight: .semibold))
+                .runeText(.sectionTitle)
                 .foregroundStyle(tint)
                 .frame(width: 18, height: 18)
-                .padding(.top, 1)
+                .padding(.top, RuneSpacing.hairline)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                 Text(notice.title)
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .foregroundStyle(.runePrimary)
                 Text(notice.message)
-                    .font(.caption)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
@@ -659,17 +573,17 @@ struct RuneNoticeBanner: View {
                 if let savedFileURL = notice.savedFileURL,
                    onOpenFolder != nil || onOpenFile != nil {
                     ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 6) {
+                        HStack(spacing: RuneSpacing.tight) {
                             savedFileActions(for: savedFileURL)
                         }
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                             savedFileActions(for: savedFileURL)
                         }
                     }
                     .buttonStyle(RuneToolbarButtonStyle())
                     .controlSize(.small)
                     .runeInterfaceFont(relativeSize: -1)
-                    .padding(.top, 5)
+                    .padding(.top, RuneSpacing.xxs)
                 }
             }
 
@@ -682,8 +596,8 @@ struct RuneNoticeBanner: View {
                 action: onDismiss
             )
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
+        .padding(.horizontal, RuneSpacing.sm)
+        .padding(.vertical, RuneSpacing.xs)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
@@ -763,13 +677,13 @@ struct RuneInspectorInfoRow<Value: View>: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.xs) {
                 label
                     .frame(width: fixedLabelWidth, alignment: .leading)
                 value
             }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                 label
                 value
             }
@@ -777,12 +691,12 @@ struct RuneInspectorInfoRow<Value: View>: View {
     }
 
     private var label: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: RuneSpacing.tight) {
             Image(systemName: systemImage)
                 .foregroundStyle(.runeSecondary)
                 .frame(width: 14, alignment: .center)
             Text(title)
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
         }
     }
@@ -795,16 +709,19 @@ struct RuneInspectorActionRow<Content: View>: View {
         self.content = content()
     }
 
+    /// The inspector's actions sit on one quiet control card. The row scrolls
+    /// sideways when the pane is narrow instead of wrapping, so resizing the
+    /// pane never makes the inspector jump vertically.
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarGroupSpacing) {
-                content
+        RuneControlCard {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
+                    content
+                }
+                .fixedSize(horizontal: true, vertical: false)
             }
-            .fixedSize(horizontal: true, vertical: false)
+            .controlSize(.regular)
         }
-        .runeInterfaceFont(relativeSize: -1, weight: .medium)
-        .controlSize(.regular)
-        .buttonStyle(RuneToolbarButtonStyle())
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -872,7 +789,7 @@ struct RuneDialogActionBar<Actions: View>: View {
             .frame(maxWidth: .infinity, alignment: .trailing)
             .runeInterfaceControlSize()
         }
-        .padding(.top, 2)
+        .padding(.top, RuneSpacing.hairline)
     }
 
     private var stackedActions: some View {
@@ -917,14 +834,14 @@ struct RuneDialogCloseButton: View {
 }
 
 extension View {
-    func runePanelCard(padding: CGFloat = 12, alignment: Alignment = .leading) -> some View {
+    func runePanelCard(padding: CGFloat = RuneSpacing.sm, alignment: Alignment = .leading) -> some View {
         self
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: alignment)
             .background(RuneSurfaceBackground(kind: .panel))
     }
 
-    func runeInsetCard(padding: CGFloat = 14, alignment: Alignment = .leading) -> some View {
+    func runeInsetCard(padding: CGFloat = RuneSpacing.sm, alignment: Alignment = .leading) -> some View {
         self
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: alignment)

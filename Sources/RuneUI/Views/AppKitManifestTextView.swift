@@ -55,6 +55,10 @@ struct AppKitManifestTextView: NSViewRepresentable {
         Coordinator(parent: self)
     }
 
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        RuneRepresentableSizing.filling(proposal)
+    }
+
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = ManifestTextScrollView(frame: .zero)
         scrollView.hasVerticalScroller = true
@@ -203,12 +207,24 @@ struct YAMLLineNumberGutterMetrics {
     }
 }
 
+/// Keeps documents at their leading edge while the enclosing pane resizes, so
+/// text never looks horizontally scrolled unless the user scrolled it.
+final class ManifestTextClipView: NSClipView {
+    override func setFrameSize(_ newSize: NSSize) {
+        let wasAtLeadingEdge = bounds.origin.x <= 0.5
+        super.setFrameSize(newSize)
+        guard wasAtLeadingEdge, bounds.origin.x > 0.5 else { return }
+        scroll(to: NSPoint(x: 0, y: bounds.origin.y))
+    }
+}
+
 final class ManifestTextScrollView: NSScrollView {
     let lineNumberGutterView = YAMLLineNumberGutterOverlayView(frame: .zero)
     private weak var manifestTextView: PlainManifestTextView?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        contentView = ManifestTextClipView()
         configureGutterView()
     }
 
@@ -489,6 +505,8 @@ private final class PlainManifestTextView: NSTextView {
         isContinuousSpellCheckingEnabled = false
         isHorizontallyResizable = true
         isVerticallyResizable = true
+        // Large manifests and logs scroll to far offsets; lay out only what is shown.
+        layoutManager?.allowsNonContiguousLayout = true
         minSize = .zero
         maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         autoresizingMask = [.height]
@@ -904,9 +922,12 @@ private final class PlainManifestTextView: NSTextView {
     }
 
     func refreshViewportGeometry() {
+        let previousSize = frame.size
         updateDocumentSize()
-        invalidateIntrinsicContentSize()
-        needsDisplay = true
+        if frame.size != previousSize {
+            invalidateIntrinsicContentSize()
+            needsDisplay = true
+        }
         refreshLineNumberGutterOverlay()
     }
 
@@ -962,6 +983,13 @@ private final class PlainManifestTextView: NSTextView {
             return
         }
         if handleYAMLTabKey(event) {
+            return
+        }
+        // Read-only documents page with Space / Shift+Space; editable text
+        // keeps Space for typing.
+        if !isEditable, let direction = RuneSpacePaging.direction(for: event), let enclosingScrollView {
+            let lineHeight = layoutManager?.defaultLineHeight(for: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)) ?? 16
+            RuneSpacePaging.page(enclosingScrollView, direction: direction, lineHeight: lineHeight)
             return
         }
         super.keyDown(with: event)

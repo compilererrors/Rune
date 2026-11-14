@@ -3,7 +3,7 @@ import XCTest
 
 final class FixedTruncatedValueHoverTests: XCTestCase {
     func testFixedWorkspaceSelectorsAndRelationshipRowsExposeFullValues() throws {
-        let root = try source("Sources/RuneUI/Views/RuneRootView.swift")
+        let root = try RuneRootViewSource.text()
         let terminal = try source("Sources/RuneUI/Views/TerminalShellPanelView.swift")
         let relationships = try source("Sources/RuneUI/Views/ResourceRelationshipViews.swift")
         let rollout = try source("Sources/RuneUI/Views/DeploymentRolloutHistoryView.swift")

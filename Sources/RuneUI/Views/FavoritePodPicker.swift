@@ -125,7 +125,7 @@ struct FavoritePodPicker: View {
     }
 
     private var selectedPodButtonLabel: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RuneSpacing.xs) {
             Text(selectedPodTitle)
                 .runeInterfaceFont(weight: .medium)
                 .lineLimit(1)
@@ -136,8 +136,8 @@ struct FavoritePodPicker: View {
                 .runeInterfaceFont(relativeSize: -3, weight: .semibold)
                 .foregroundStyle(.runeSecondary)
         }
-        .padding(.leading, 8)
-        .padding(.trailing, 7)
+        .padding(.leading, RuneSpacing.xs)
+        .padding(.trailing, RuneSpacing.tight)
         .frame(
             width: max(width - RuneUILayoutMetrics.iconButtonSize, 140),
             alignment: .leading
@@ -147,26 +147,26 @@ struct FavoritePodPicker: View {
     }
 
     private var podPopover: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             Text(title)
                 .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                 .foregroundStyle(.runeSecondary)
-                .padding(.horizontal, 10)
-                .padding(.top, 8)
+                .padding(.horizontal, RuneSpacing.inset)
+                .padding(.top, RuneSpacing.xs)
 
             if sortedPods.isEmpty {
                 Text("No pods in namespace")
-                    .font(.footnote)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
-                    .padding(10)
+                    .padding(RuneSpacing.inset)
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 3) {
+                    LazyVStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                         ForEach(sortedPods) { pod in
                             podRow(pod)
                         }
                     }
-                    .padding(6)
+                    .padding(RuneSpacing.tight)
                 }
                 .frame(maxHeight: 260)
             }
@@ -176,7 +176,7 @@ struct FavoritePodPicker: View {
     }
 
     private func podRow(_ pod: PodSummary) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: RuneSpacing.tight) {
             FavoritePodFavoriteActionButton(
                 podName: pod.name,
                 isFavorite: isFavoritePod(pod),
@@ -189,13 +189,13 @@ struct FavoritePodPicker: View {
                 selection = pod.id
                 isPopoverPresented = false
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: RuneSpacing.xs) {
                     Image(systemName: pod.id == selection ? "checkmark" : "circle")
                         .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                         .foregroundStyle(pod.id == selection ? RuneTextStyle.accent : .secondary)
                         .frame(width: 14)
 
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                         Text(rowTitle(pod))
                             .runeInterfaceFont(relativeSize: -1, weight: .semibold)
                             .foregroundStyle(.runePrimary)
@@ -215,8 +215,8 @@ struct FavoritePodPicker: View {
 
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 5)
+                .padding(.horizontal, RuneSpacing.tight)
+                .padding(.vertical, RuneSpacing.xxs)
                 .contentShape(RoundedRectangle(
                     cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius,
                     style: .continuous

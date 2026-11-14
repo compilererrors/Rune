@@ -200,27 +200,13 @@ struct RuneMatchCaseButton: View {
             isSelected.toggle()
         } label: {
             Text("Aa")
-                .font(.caption.weight(.semibold))
                 .frame(
                     width: RuneUILayoutMetrics.iconButtonSize,
                     height: RuneUILayoutMetrics.iconButtonSize
                 )
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(
-            isSelected
-                ? (runeThemePalette?.accent ?? Color.accentColor)
-                : (runeThemePalette?.secondaryText ?? Color.secondary)
-        )
-        .background {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous)
-                .fill(
-                    isSelected
-                        ? (runeThemePalette?.accent ?? Color.accentColor).opacity(0.22)
-                        : Color.clear
-                )
-        }
+        .buttonStyle(RuneCompactButtonStyle(isSelected: isSelected))
         .help(helpText)
         .accessibilityLabel(helpText)
         .accessibilityValue(isSelected ? "Selected" : "Not selected")

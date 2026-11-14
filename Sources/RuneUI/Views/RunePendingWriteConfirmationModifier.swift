@@ -81,9 +81,9 @@ struct RunePendingWriteConfirmationSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: RuneSpacing.sm) {
                 Image(systemName: isDestructive ? "exclamationmark.triangle.fill" : "checkmark.shield")
-                    .font(.title2)
+                    .runeText(.title)
                     .foregroundStyle(
                         isDestructive
                             ? RuneSemanticColorRole.danger.color(in: runeThemePalette)

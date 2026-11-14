@@ -35,9 +35,7 @@ struct TerminalStatusDot: View {
     var topPadding: CGFloat = 0
 
     var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
+        RuneStatusDot(color)
             .padding(.top, topPadding)
     }
 }

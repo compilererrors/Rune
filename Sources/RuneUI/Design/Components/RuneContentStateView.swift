@@ -128,7 +128,7 @@ struct RuneContentStateView: View {
         switch variant {
         case .centered:
             verticalContent
-                .padding(20)
+                .padding(RuneSpacing.lg)
                 .frame(
                     maxWidth: .infinity,
                     minHeight: variant.minimumHeight,
@@ -137,22 +137,22 @@ struct RuneContentStateView: View {
                 )
         case .card:
             verticalContent
-                .padding(20)
+                .padding(RuneSpacing.lg)
                 .frame(maxWidth: .infinity, minHeight: variant.minimumHeight, alignment: .center)
                 .background(RuneSurfaceBackground(kind: .inset))
         case .pane:
             verticalContent
-                .padding(20)
+                .padding(RuneSpacing.lg)
                 .frame(maxWidth: .infinity, minHeight: variant.minimumHeight, alignment: .center)
         case .inline:
             inlineContent
-                .padding(.vertical, 6)
+                .padding(.vertical, RuneSpacing.tight)
                 .frame(maxWidth: .infinity, minHeight: variant.minimumHeight, alignment: .leading)
         }
     }
 
     private var verticalContent: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: RuneSpacing.sm) {
             stateGraphic(size: 22)
 
             stateText(alignment: .center)
@@ -166,7 +166,7 @@ struct RuneContentStateView: View {
     }
 
     private var inlineContent: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: RuneSpacing.xs) {
             stateGraphic(size: 16)
 
             stateText(alignment: .leading)
@@ -196,7 +196,7 @@ struct RuneContentStateView: View {
     }
 
     private func stateText(alignment: TextAlignment) -> some View {
-        VStack(alignment: alignment == .center ? .center : .leading, spacing: 4) {
+        VStack(alignment: alignment == .center ? .center : .leading, spacing: RuneSpacing.xxs) {
             Text(state.title)
                 .font(variant == .inline ? .caption.weight(.semibold) : .body.weight(.semibold))
                 .foregroundStyle(.runePrimary)

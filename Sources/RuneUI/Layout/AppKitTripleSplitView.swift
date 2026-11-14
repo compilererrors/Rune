@@ -184,6 +184,8 @@ extension AppKitTripleSplitView {
         private var sidebarVisible = true
         private var detailVisible = true
         private var isUpdatingHostedContent = false
+        private var lastAcceptedUserResize: Date?
+        static var isPrimaryMouseButtonDown: () -> Bool = { NSEvent.pressedMouseButtons & 1 == 1 }
         private var hostedContentUpdateReset: DispatchWorkItem?
 
         override func viewDidLoad() {
@@ -238,7 +240,11 @@ extension AppKitTripleSplitView {
             self.detailVisible = detailVisible
             applyVisibility()
 
-            if isInitialConfiguration || !requestedWidthsChanged || visibilityChanged {
+            if !isInitialConfiguration, !visibilityChanged, isUserDraggingDivider {
+                sidebarController.rootView = sidebar
+                contentController.rootView = content
+                detailController.rootView = detail
+            } else if isInitialConfiguration || !requestedWidthsChanged || visibilityChanged {
                 beginHostedContentUpdate()
                 sidebarController.rootView = sidebar
                 contentController.rootView = content
@@ -266,9 +272,8 @@ extension AppKitTripleSplitView {
         }
 
         override func splitViewDidResizeSubviews(_ notification: Notification) {
-            guard !pendingRestore, !isUpdatingHostedContent else {
-                return
-            }
+            guard !pendingRestore else { return }
+            guard !isUpdatingHostedContent || isUserDraggingDivider else { return }
 
             let acceptedUserResize = widthState.noteUserResize(
                 actualSidebarWidth: sidebarController.view.frame.width,
@@ -276,7 +281,17 @@ extension AppKitTripleSplitView {
                 containerWidth: splitView.bounds.width
             )
             guard acceptedUserResize else { return }
+            lastAcceptedUserResize = Date()
             scheduleWidthReport()
+        }
+
+        /// A content update that lands mid-drag must not restore the widths the
+        /// drag started from, or the divider snaps back under the pointer.
+        private var isUserDraggingDivider: Bool {
+            guard Self.isPrimaryMouseButtonDown() else { return false }
+            if NSApp.currentEvent?.type == .leftMouseDragged { return true }
+            guard let lastAcceptedUserResize else { return false }
+            return Date().timeIntervalSince(lastAcceptedUserResize) < 0.5
         }
 
         private func beginHostedContentUpdate() {

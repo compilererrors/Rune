@@ -25,7 +25,7 @@ struct OverviewClusterSignalsPanelView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             RuneSectionHeader(
                 "Cluster Signals",
                 systemImage: activeCount == 0 ? "checkmark.seal" : "exclamationmark.triangle",
@@ -75,7 +75,7 @@ struct OverviewClusterSignalsPanelView: View {
     private var panelDivider: some View {
         Divider()
             .overlay(Color.white.opacity(0.04))
-            .padding(.leading, 28)
+            .padding(.leading, RuneSpacing.xl)
     }
 
     private func signalSection(
@@ -89,7 +89,7 @@ struct OverviewClusterSignalsPanelView: View {
         let severity = items.first?.severity ?? .info
         let summary = items.first.map { $0.title + " - " + $0.detail } ?? emptyText
 
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             disclosureHeader(
                 id: id,
                 title: title,
@@ -105,7 +105,7 @@ struct OverviewClusterSignalsPanelView: View {
                 if items.isEmpty {
                     emptyTextView(emptyText)
                 } else {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                         ForEach(items) { item in
                             signalRow(item) {
                                 onOpenSignal(item)
@@ -113,11 +113,11 @@ struct OverviewClusterSignalsPanelView: View {
                             .runeHelp(overviewSignalRowHelp(item), enabled: showHoverTooltips)
                         }
                     }
-                    .padding(.leading, 28)
+                    .padding(.leading, RuneSpacing.xl)
                 }
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, RuneSpacing.xs)
     }
 
     private func gitOpsSection(
@@ -128,7 +128,7 @@ struct OverviewClusterSignalsPanelView: View {
         let summary = items.first?.detail ?? "No Flux or ArgoCD resources loaded."
         let severity = items.first?.severity ?? .info
 
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             disclosureHeader(
                 id: id,
                 title: "GitOps",
@@ -144,7 +144,7 @@ struct OverviewClusterSignalsPanelView: View {
                 if items.isEmpty {
                     emptyTextView("No Flux or ArgoCD resources loaded.")
                 } else {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                         ForEach(items) { item in
                             gitOpsRow(item) {
                                 onOpenGitOpsRollup(item)
@@ -152,11 +152,11 @@ struct OverviewClusterSignalsPanelView: View {
                             .runeHelp(overviewGitOpsRowHelp(item), enabled: showHoverTooltips)
                         }
                     }
-                    .padding(.leading, 28)
+                    .padding(.leading, RuneSpacing.xl)
                 }
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, RuneSpacing.xs)
     }
 
     private func dependencySection(
@@ -166,7 +166,7 @@ struct OverviewClusterSignalsPanelView: View {
         let isExpanded = expandedPanels.contains(id)
         let summary = items.first.map { $0.source + " to " + $0.target } ?? "No service or workload relationships loaded."
 
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             disclosureHeader(
                 id: id,
                 title: "Dependency Map",
@@ -182,7 +182,7 @@ struct OverviewClusterSignalsPanelView: View {
                 if items.isEmpty {
                     emptyTextView("No service or workload relationships loaded.")
                 } else {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                         ForEach(items) { item in
                             dependencyRow(item) {
                                 onOpenDependency(item)
@@ -190,11 +190,11 @@ struct OverviewClusterSignalsPanelView: View {
                             .runeHelp(overviewDependencyRowHelp(item), enabled: showHoverTooltips)
                         }
                     }
-                    .padding(.leading, 28)
+                    .padding(.leading, RuneSpacing.xl)
                 }
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, RuneSpacing.xs)
     }
 
     private func disclosureHeader(
@@ -218,26 +218,26 @@ struct OverviewClusterSignalsPanelView: View {
                 }
             }
         ) {
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: RuneSpacing.xs) {
                 Image(systemName: symbol)
                     .foregroundStyle(signalColor(severity))
                     .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                     Text(title)
-                        .font(.subheadline.weight(.semibold))
+                        .runeText(.microEmphasis)
                         .foregroundStyle(.runePrimary)
                         .lineLimit(1)
                     Text(summary)
-                        .font(.caption)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 Text(badge)
-                    .font(.caption.weight(.bold))
+                    .runeText(.micro, weight: .bold)
                     .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, RuneSpacing.xs)
                     .frame(height: 22)
                     .background(Color.secondary.opacity(0.12), in: Capsule())
             }
@@ -247,39 +247,37 @@ struct OverviewClusterSignalsPanelView: View {
 
     private func emptyTextView(_ text: String) -> some View {
         Text(text)
-            .font(.caption)
+            .runeText(.micro)
             .foregroundStyle(.runeSecondary)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.leading, 28)
+            .padding(.leading, RuneSpacing.xl)
     }
 
     private func signalRow(_ item: OverviewSignalItem, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(alignment: .top, spacing: 7) {
-                Circle()
-                    .fill(signalColor(item.severity))
-                    .frame(width: 7, height: 7)
-                    .padding(.top, 5)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: RuneSpacing.xs) {
+                RuneStatusDot(signalColor(item.severity))
+                    .padding(.top, RuneSpacing.xxs)
+                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
+                    HStack(spacing: RuneSpacing.tight) {
                         Text(item.title)
-                            .font(.caption.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .lineLimit(1)
                         Text(item.badge)
-                            .font(.caption2.weight(.bold))
+                            .runeText(.micro, weight: .bold)
                             .foregroundStyle(.runeSecondary)
                             .lineLimit(1)
                     }
                     Text(item.detail)
-                        .font(.caption)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                         .lineLimit(2)
                 }
                 Spacer(minLength: 6)
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .foregroundStyle(.runeTertiary)
-                    .padding(.top, 4)
+                    .padding(.top, RuneSpacing.xxs)
             }
             .frame(maxWidth: .infinity, minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
             .contentShape(Rectangle())
@@ -289,31 +287,29 @@ struct OverviewClusterSignalsPanelView: View {
 
     private func gitOpsRow(_ item: OverviewGitOpsRollupItem, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(alignment: .top, spacing: 7) {
-                Circle()
-                    .fill(signalColor(item.severity))
-                    .frame(width: 7, height: 7)
-                    .padding(.top, 5)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: RuneSpacing.xs) {
+                RuneStatusDot(signalColor(item.severity))
+                    .padding(.top, RuneSpacing.xxs)
+                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
+                    HStack(spacing: RuneSpacing.tight) {
                         Text(item.title)
-                            .font(.caption.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .lineLimit(1)
                         Text(item.badge)
-                            .font(.caption2.weight(.bold))
+                            .runeText(.micro, weight: .bold)
                             .foregroundStyle(.runeSecondary)
                             .lineLimit(1)
                     }
                     Text(item.detail)
-                        .font(.caption)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                         .lineLimit(2)
                 }
                 Spacer(minLength: 6)
                 Image(systemName: "line.3.horizontal.decrease.circle")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .foregroundStyle(.runeTertiary)
-                    .padding(.top, 3)
+                    .padding(.top, RuneSpacing.xxs)
             }
             .frame(maxWidth: .infinity, minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
             .contentShape(Rectangle())
@@ -323,33 +319,31 @@ struct OverviewClusterSignalsPanelView: View {
 
     private func dependencyRow(_ item: OverviewDependencyItem, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(alignment: .top, spacing: 7) {
-                Circle()
-                    .fill(Color.secondary.opacity(0.75))
-                    .frame(width: 7, height: 7)
-                    .padding(.top, 5)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: RuneSpacing.xs) {
+                RuneStatusDot(Color.secondary.opacity(0.75))
+                    .padding(.top, RuneSpacing.xxs)
+                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
+                    HStack(spacing: RuneSpacing.tight) {
                         Text(item.source)
-                            .font(.caption.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .lineLimit(1)
                         Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.bold))
+                            .runeText(.micro, weight: .bold)
                             .foregroundStyle(.runeTertiary)
                         Text(item.target)
-                            .font(.caption.weight(.semibold))
+                            .runeText(.microEmphasis)
                             .lineLimit(1)
                     }
                     Text(item.relation + " - " + item.detail)
-                        .font(.caption)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 6)
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .foregroundStyle(.runeTertiary)
-                    .padding(.top, 4)
+                    .padding(.top, RuneSpacing.xxs)
             }
             .frame(maxWidth: .infinity, minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
             .contentShape(Rectangle())

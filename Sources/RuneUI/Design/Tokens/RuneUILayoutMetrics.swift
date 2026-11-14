@@ -2,53 +2,54 @@ import CoreGraphics
 import RuneCore
 
 enum RuneUILayoutMetrics {
-    // Shared spacing primitives for root panes so all sections stay aligned.
-    //
-    // Corner radii — one continuous shape family (`.docs/rune-design-plan.md` §6): shells vs grouped inset vs rows/chips.
+    // Named feature metrics, expressed through the grid in RuneDesignTokens.swift.
     /// Outer rounded rect for inset cards and grouped panels (not full split columns — those use `NavigationSplitView` system chrome).
-    static let paneShellCornerRadius: CGFloat = 12
+    static let paneShellCornerRadius: CGFloat = RuneRadius.panel
     /// Inset cards inside a pane (inspector body, empty states, table row chrome).
-    static let groupedContentCornerRadius: CGFloat = 10
+    static let groupedContentCornerRadius: CGFloat = RuneRadius.card
     /// Tight interactive rows (sidebar section/context picks), log/YAML editor chrome.
-    static let interactiveRowCornerRadius: CGFloat = 8
+    static let interactiveRowCornerRadius: CGFloat = RuneRadius.control
     /// Small metadata chips and inline badges.
-    static let compactGlyphCornerRadius: CGFloat = 6
+    static let compactGlyphCornerRadius: CGFloat = RuneRadius.chip
     /// Compact terminal/log tab chrome; deliberately distinct from general interactive rows.
-    static let tabCornerRadius: CGFloat = 7
+    static let tabCornerRadius: CGFloat = RuneRadius.tab
 
     /// Root content lives in the window content area below the unified toolbar. Keep this at zero:
     /// adding a synthetic inset makes the workspace drift down and hides the bottom of sidebars,
     /// terminals, and inspector cards on smaller windows.
     static let windowContentTopInset: CGFloat = 0
-    static let paneOuterPadding: CGFloat = 16
-    static let paneInnerPadding: CGFloat = 12
-    static let sidebarPadding: CGFloat = 14
+    static let paneOuterPadding: CGFloat = RuneSpacing.md
+    static let paneInnerPadding: CGFloat = RuneSpacing.sm
+    static let sidebarPadding: CGFloat = RuneSpacing.sm
     /// Middle-pane cadence from `.docs/rune-design-plan.md` §6.6.
-    static let contentControlSpacing: CGFloat = 8
-    static let contentModuleSpacing: CGFloat = 12
-    static let contentSectionSpacing: CGFloat = 16
+    static let contentControlSpacing: CGFloat = RuneSpacing.xs
+    static let contentModuleSpacing: CGFloat = RuneSpacing.sm
+    static let contentSectionSpacing: CGFloat = RuneSpacing.md
     /// Shared inspector grid. Full sections use the regular/compact cadence,
     /// while search, insight, and find rows share one leading accessory column.
-    static let inspectorSectionSpacing: CGFloat = 10
-    static let inspectorCompactSectionSpacing: CGFloat = 8
-    static let inspectorControlRowSpacing: CGFloat = 8
-    static let inspectorWrappedActionRowSpacing: CGFloat = 4
-    static let inspectorControlRowHeight: CGFloat = 30
-    static let inspectorControlContentInset: CGFloat = 10
-    static let inspectorControlChromeVerticalPadding: CGFloat = 8
-    static let inspectorControlSurfaceVerticalPadding: CGFloat = 6
-    static let inspectorControlLeadingAccessoryWidth: CGFloat = 28
-    static let inspectorControlColumnSpacing: CGFloat = 2
-    static let inspectorOverlayInset: CGFloat = 10
+    static let inspectorSectionSpacing: CGFloat = RuneSpacing.sm
+    static let inspectorCompactSectionSpacing: CGFloat = RuneSpacing.xs
+    static let inspectorControlRowSpacing: CGFloat = RuneSpacing.xs
+    static let inspectorWrappedActionRowSpacing: CGFloat = RuneSpacing.xxs
+    static let inspectorControlRowHeight: CGFloat = RuneControlHeight.toolbar
+    static let inspectorControlContentInset: CGFloat = RuneSpacing.inset
+    static let inspectorControlChromeVerticalPadding: CGFloat = RuneSpacing.xs
+    static let inspectorControlSurfaceVerticalPadding: CGFloat = RuneSpacing.tight
+    static let inspectorControlLeadingAccessoryWidth: CGFloat = RuneControlHeight.regular
+    static let inspectorControlColumnSpacing: CGFloat = RuneSpacing.hairline
+    static let inspectorOverlayInset: CGFloat = RuneSpacing.inset
     /// Shared chrome immediately above resource tables.
-    static let resourceListToolbarMinimumHeight: CGFloat = 30
-    static let resourceListToolbarAccessibilityMinimumHeight: CGFloat = 44
+    static let resourceListToolbarMinimumHeight: CGFloat = RuneControlHeight.toolbar
+    static let resourceListToolbarAccessibilityMinimumHeight: CGFloat = RuneControlHeight.accessibility
     static let resourceFilterFieldMinimumWidth: CGFloat = 160
     static let resourceFilterFieldIdealWidth: CGFloat = 240
     static let resourceFilterFieldMaximumWidth: CGFloat = 280
     static let resourceFilterControlsMaximumWidth: CGFloat = 312
+    /// The filter gives up width (down to this) before toolbar actions lose
+    /// their labels.
+    static let resourceFilterControlsMinimumWidth: CGFloat = 200
     static let resourceListActionsRailMinimumWidth: CGFloat = 320
-    static let resourceListCompactRowSpacing: CGFloat = 6
+    static let resourceListCompactRowSpacing: CGFloat = RuneSpacing.tight
     /// Minimum width for the resource list column (`NavigationSplitView` content).
     static let splitContentColumnMinWidth: CGFloat = 360
     /// Matches first-ship column cap (`49c6517` First draft).
@@ -61,33 +62,34 @@ enum RuneUILayoutMetrics {
     /// Sidebar min / max width (`49c6517`).
     static let splitSidebarMinWidth: CGFloat = 220
     static let splitSidebarMaxWidth: CGFloat = 460
-    static let headerChipHeight: CGFloat = 28
-    static let headerChipHorizontalPadding: CGFloat = 10
-    static let headerCapsuleMinimumHeight: CGFloat = 28
-    static let headerCapsuleHorizontalPadding: CGFloat = 10
-    static let headerCapsuleVerticalPadding: CGFloat = 4
-    static let headerCapsuleAccessibilityVerticalPadding: CGFloat = 8
+    static let headerChipHeight: CGFloat = RuneControlHeight.regular
+    static let headerChipHorizontalPadding: CGFloat = RuneSpacing.inset
+    /// Header capsules are badges (`RuneBadgeSurface`): small control size.
+    static let headerCapsuleMinimumHeight: CGFloat = RuneControlSize.small.baseHeight
+    static let headerCapsuleHorizontalPadding: CGFloat = RuneSpacing.xs
+    static let headerCapsuleVerticalPadding: CGFloat = 0
+    static let headerCapsuleAccessibilityVerticalPadding: CGFloat = RuneSpacing.xxs
     static let contentHeaderMinimumScrollableWidth: CGFloat = 640
-    static let inspectorToolbarGroupSpacing: CGFloat = 8
-    static let inspectorToolbarControlSpacing: CGFloat = 8
+    static let inspectorToolbarGroupSpacing: CGFloat = RuneSpacing.xs
+    static let inspectorToolbarControlSpacing: CGFloat = RuneSpacing.xs
     static let inspectorToolbarGroupHorizontalPadding: CGFloat = inspectorControlContentInset
-    static let inspectorToolbarGroupVerticalPadding: CGFloat = 8
+    static let inspectorToolbarGroupVerticalPadding: CGFloat = RuneSpacing.xs
     static let inspectorToolbarSourceGroupHeight: CGFloat = 58
     static let inspectorToolbarActionGroupHeight: CGFloat = 44
-    static let inspectorToolbarControlMinHeight: CGFloat = 30
+    static let inspectorToolbarControlMinHeight: CGFloat = RuneControlHeight.toolbar
     /// Content inset shared by inspector document surfaces (YAML, Describe, logs, and terminal output).
-    static let inspectorDocumentHorizontalInset: CGFloat = 10
-    static let inspectorDocumentVerticalInset: CGFloat = 10
+    static let inspectorDocumentHorizontalInset: CGFloat = RuneSpacing.inset
+    static let inspectorDocumentVerticalInset: CGFloat = RuneSpacing.inset
     static let yamlSheetValidationListMaxHeight: CGFloat = 150
-    static let iconButtonSize: CGFloat = 28
+    static let iconButtonSize: CGFloat = RuneControlHeight.regular
 
     // Modal sheets and custom dialogs. Native alerts, confirmation dialogs and
     // open/save panels keep the system-provided macOS metrics.
-    static let dialogContentPadding: CGFloat = 20
+    static let dialogContentPadding: CGFloat = RuneSpacing.lg
     static let dialogSectionSpacing: CGFloat = 14
-    static let dialogControlSpacing: CGFloat = 8
-    static let dialogButtonMinHeight: CGFloat = 30
-    static let dialogButtonLabelMinHeight: CGFloat = 22
+    static let dialogControlSpacing: CGFloat = RuneSpacing.xs
+    static let dialogButtonMinHeight: CGFloat = RuneControlHeight.toolbar
+    static let dialogButtonLabelMinHeight: CGFloat = RuneControlHeight.compact
     static let dialogFooterButtonLabelMinWidth: CGFloat = 72
     static let dialogIconButtonSize: CGFloat = iconButtonSize
     static let compactDialogWidth: CGFloat = 420

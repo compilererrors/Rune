@@ -46,6 +46,13 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
                 previous: baseline,
                 current: appended
             ),
+            .replaceRows
+        )
+        XCTAssertEqual(
+            RuneAppKitResourceTableRefreshPlan.resolve(
+                previous: nil,
+                current: appended
+            ),
             .reloadAll
         )
 
@@ -56,7 +63,7 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
                 previous: baseline,
                 current: reordered
             ),
-            .reloadAll
+            .replaceRows
         )
     }
 
@@ -1137,7 +1144,7 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
 
     func testResourceTableSelectionInvalidationIsWiredForCustomHighlights() throws {
         let source = try String(contentsOfFile: appKitResourceTablePath, encoding: .utf8)
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootSource = try RuneRootViewSource.text()
 
         XCTAssertTrue(source.contains("func invalidateResourceTableSelectionDisplay("))
         XCTAssertTrue(source.contains("struct RuneAppKitResourceTableSelectionBridge"))
@@ -1753,6 +1760,10 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
         XCTAssertTrue(scrollView.hasHorizontalScroller)
         XCTAssertTrue(scrollView.horizontalOverflowStateForTesting.hasOverflow)
         XCTAssertTrue(scrollView.horizontalOverflowStateForTesting.showsTrailingIndicator)
+        XCTAssertFalse(scrollView.isHorizontalOverflowEdgeGlowVisibleForTesting, "The edge glow is off by default.")
+
+        scrollView.showsHorizontalOverflowEdgeGlow = true
+
         XCTAssertTrue(scrollView.isHorizontalOverflowEdgeGlowVisibleForTesting)
 
         scrollView.showsHorizontalOverflowEdgeGlow = false
@@ -1960,9 +1971,9 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
     }
 
     func testAppKitTextSurfacesOwnTheirScrolling() throws {
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
-        let start = try XCTUnwrap(rootSource.range(of: "private func exportableTextPane"))
-        let end = try XCTUnwrap(rootSource.range(of: "private func execPane", range: start.upperBound..<rootSource.endIndex))
+        let rootSource = try RuneRootViewSource.text()
+        let start = try XCTUnwrap(rootSource.range(of: "func exportableTextPane"))
+        let end = try XCTUnwrap(rootSource.range(of: "func execPane", range: start.upperBound..<rootSource.endIndex))
         let exportPane = String(rootSource[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(exportPane.contains("InspectorTextSurface(minHeight: 220)"))
@@ -2090,9 +2101,6 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
         repoRoot.appendingPathComponent("Sources/RuneUI/Views/AppKitPodTableView.swift").path
     }
 
-    private var runeRootViewPath: String {
-        repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
-    }
 
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)

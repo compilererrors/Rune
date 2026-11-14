@@ -242,8 +242,8 @@ struct TerminalPodControlLayout<Actions: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, RuneSpacing.inset)
+        .padding(.vertical, RuneSpacing.xs)
         .background(RuneSurfaceBackground(kind: .editor))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
@@ -266,7 +266,7 @@ struct TerminalPodControlLayout<Actions: View>: View {
 
     private var selectorLabel: some View {
         Label(title, systemImage: systemImage)
-            .font(.footnote.weight(.semibold))
+            .runeText(.microEmphasis)
             .foregroundStyle(.runeSecondary)
             .lineLimit(1)
     }

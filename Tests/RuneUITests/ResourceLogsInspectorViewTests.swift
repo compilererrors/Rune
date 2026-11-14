@@ -70,12 +70,11 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("Button(action: onSaveAllPodsZipToExportFolder)"))
         XCTAssertTrue(source.contains("Button(action: onSaveAllPodsZipAndOpen)"))
         XCTAssertTrue(source.contains("t(.copySelection)"))
-        XCTAssertTrue(source.contains(".controlSize(.small)"))
         XCTAssertTrue(source.contains(".logToolbarButtonFrame()"))
         XCTAssertTrue(source.contains(".logToolbarIconButtonFrame()"))
         XCTAssertFalse(toolbarSource.contains("idealWidth: width"))
         XCTAssertFalse(source.contains("maxHeight: RuneUILayoutMetrics.inspectorToolbarControlMinHeight"))
-        XCTAssertTrue(source.contains(".font(.caption.weight(.semibold))"))
+        XCTAssertTrue(source.contains(".runeText(.microEmphasis)"))
     }
 
     func testPodAndUnifiedLogsShareOneStatefulPaneEngine() throws {
@@ -124,11 +123,11 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)"))
         XCTAssertTrue(source.contains("LogToolbarPopupPicker("))
         XCTAssertTrue(source.contains("popup.font = parent.popupFont"))
-        XCTAssertTrue(source.contains("RuneInterfaceTypography.appKitMenuFontSize("))
+        XCTAssertTrue(source.contains("interfaceMenuFontSize + RuneControlSize.large.labelRelativeSize"))
         XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.row.opacity(0.42)"))
         XCTAssertTrue(toolbarGroupSource.contains("runeThemePalette?.stroke.opacity(0.28)"))
         XCTAssertFalse(toolbarGroupSource.contains("RoundedRectangle(cornerRadius: 9, style: .continuous)"))
-        XCTAssertTrue(source.contains("VStack(alignment: .leading, spacing: 5)"))
+        XCTAssertTrue(source.contains("VStack(alignment: .leading, spacing: RuneSpacing.tight)"))
         XCTAssertTrue(source.contains("Text(title.uppercased())"))
         XCTAssertFalse(source.contains("Circle()\\n                    .fill(statusText.lowercased()"))
     }
@@ -164,12 +163,11 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(insightsSource.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
         XCTAssertTrue(insightsSource.contains("runeThemePalette?.foreground"))
         XCTAssertTrue(insightsSource.contains("runeThemePalette?.secondaryText"))
-        XCTAssertTrue(insightsSource.contains("RuneChip("))
+        XCTAssertTrue(insightsSource.contains(".buttonStyle(RuneCompactButtonStyle())"))
         XCTAssertTrue(pickerFieldSource.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
         XCTAssertTrue(pickerFieldSource.contains("runeThemePalette?.secondaryText"))
         XCTAssertTrue(matchCaseSource.contains("@Environment(\\.runeThemePalette) private var runeThemePalette"))
-        XCTAssertTrue(matchCaseSource.contains("runeThemePalette?.accent"))
-        XCTAssertTrue(matchCaseSource.contains("runeThemePalette?.secondaryText"))
+        XCTAssertTrue(matchCaseSource.contains(".buttonStyle(RuneCompactButtonStyle(isSelected: isSelected))"))
     }
 
     @MainActor
@@ -508,7 +506,8 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
                 $0.accessibilityLabel() == "Log window" || $0.accessibilityLabel() == "Container"
             }
             XCTAssertEqual(popups.count, 2)
-            let expectedPointSize = NSFont.smallSystemFontSize + configuration.expectedOffset
+            // Log popups use the shared 13 pt toolbar label size and grow with it.
+            let expectedPointSize = NSFont.systemFontSize + configuration.expectedOffset
             for popup in popups {
                 XCTAssertFalse(popup.itemTitles.isEmpty)
                 XCTAssertEqual(
@@ -1000,7 +999,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
     func testLogInspectorShowsInterruptedStreamStateInsideOutputSurface() throws {
         let logsViewSource = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
-        let rootViewSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootViewSource = try RuneRootViewSource.text()
 
         XCTAssertTrue(logsViewSource.contains("ResourceLogsErrorView(message: errorMessage, onReload: onReload)"))
         XCTAssertTrue(logsViewSource.contains("RuneContentStateAction("))
@@ -1727,14 +1726,6 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/TerminalTabStrip.swift").path
     }
 
-    private var runeRootViewPath: String {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = testFile
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
-    }
 
     private var inspectorTextViewsPath: String {
         let testFile = URL(fileURLWithPath: #filePath)
@@ -1751,7 +1742,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        return repoRoot.appendingPathComponent("Sources/RuneUI/Layout/RuneFindBarControls.swift").path
+        return repoRoot.appendingPathComponent("Sources/RuneUI/Design/Components/RuneFindBarControls.swift").path
     }
 
     private var largeTextSurfacePath: String {

@@ -515,10 +515,10 @@ struct RuneUIComponentGallery: View {
     private var minimumWindowSidebar: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Rune UI Gallery")
-                .font(.headline)
+                .runeText(.headline)
 
             Text("Synthetic debug fixtures")
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
 
             Divider()
@@ -533,12 +533,12 @@ struct RuneUIComponentGallery: View {
             Divider()
 
             Text(RuneUIComponentGalleryFixtures.longContext)
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .lineLimit(2)
                 .truncationMode(.middle)
 
             Text(RuneUIComponentGalleryFixtures.longNamespace)
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(2)
                 .truncationMode(.middle)
@@ -546,7 +546,7 @@ struct RuneUIComponentGallery: View {
             Spacer(minLength: 8)
 
             Text("Debug-only · synthetic data")
-                .font(.caption2)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
         }
         .padding(RuneUILayoutMetrics.sidebarPadding)
@@ -602,9 +602,9 @@ struct RuneUIComponentGallery: View {
                     "Production",
                     role: .status,
                     indicatorColor: .red,
-                    tint: .red,
+                    tint: RuneSemanticColorRole.danger.color(in: nil),
                     foregroundColor: .red,
-                    fill: Color.red.opacity(0.12),
+                    fill: RuneSemanticColorRole.danger.color(in: nil).opacity(0.12),
                     accessibilityLabel: "Synthetic production state"
                 )
                 .runeGalleryLayoutProbe(.productionCapsule)
@@ -613,9 +613,9 @@ struct RuneUIComponentGallery: View {
                     "Read-only",
                     role: .status,
                     systemImage: "lock.fill",
-                    tint: .orange,
+                    tint: RuneSemanticColorRole.warning.color(in: nil),
                     foregroundColor: .orange,
-                    fill: Color.orange.opacity(0.12),
+                    fill: RuneSemanticColorRole.warning.color(in: nil).opacity(0.12),
                     accessibilityLabel: "Synthetic read-only state"
                 )
                 .runeGalleryLayoutProbe(.readOnlyCapsule)
@@ -712,7 +712,7 @@ struct RuneUIComponentGallery: View {
         RuneAdaptiveToolbar("Synthetic namespace form") {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Namespace")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                 TextField("Required", text: .constant(RuneUIComponentGalleryFixtures.longNamespace))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 210)
@@ -721,7 +721,7 @@ struct RuneUIComponentGallery: View {
         } secondary: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Actions")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .foregroundStyle(.runeSecondary)
                 HStack(spacing: 8) {
                     Button("Validate") {}
@@ -736,15 +736,8 @@ struct RuneUIComponentGallery: View {
     }
 
     private var inspectorTabs: some View {
-        RuneSegmentedPickerInScroll(
-            "Synthetic inspector tabs",
-            selection: $selectedInspectorTab,
-            labelsHidden: true
-        ) {
-            Text("Overview").tag(0)
-            Text("Manifest with long localized label").tag(1)
-            Text("Describe").tag(2)
-            Text("Events").tag(3)
+        RuneTabBar("Synthetic inspector tabs", selection: $selectedInspectorTab, tabs: [0, 1, 2, 3]) {
+            ["Overview", "Manifest with long localized label", "Describe", "Events"][$0]
         }
         .runeGalleryLayoutProbe(.tabs)
     }
@@ -754,9 +747,9 @@ struct RuneUIComponentGallery: View {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Synthetic Authentication")
-                        .font(.headline)
+                        .runeText(.headline)
                     Text("Persistent labels and bounded output")
-                        .font(.caption)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 }
 
@@ -768,7 +761,7 @@ struct RuneUIComponentGallery: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Context name · Required")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                 TextField("Context name", text: .constant(RuneUIComponentGalleryFixtures.longContext))
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Synthetic context name, required")
@@ -924,16 +917,9 @@ struct RuneUIComponentGallery: View {
                 }
             },
             tabs: {
-                RuneSegmentedPickerInScroll(
-                    "Synthetic inspector tabs",
-                    selection: $selectedInspectorTab,
-                    labelsHidden: true
-                ) {
-                    Text("Overview").tag(0)
-                    Text("Manifest with long localized label").tag(1)
-                    Text("Describe").tag(2)
-                    Text("Events").tag(3)
-                }
+                RuneTabBar("Synthetic inspector tabs", selection: $selectedInspectorTab, tabs: [0, 1, 2, 3]) {
+            ["Overview", "Manifest with long localized label", "Describe", "Events"][$0]
+        }
             },
             actions: {
                 Button("Inspect") {}
@@ -948,7 +934,7 @@ struct RuneUIComponentGallery: View {
                         "Read-only production preview",
                         role: .status,
                         systemImage: "lock.shield",
-                        tint: .orange,
+                        tint: RuneSemanticColorRole.warning.color(in: nil),
                         accessibilityLabel: "Synthetic inspector safety state"
                     )
 
@@ -983,10 +969,10 @@ struct RuneUIComponentGallery: View {
             Text(title)
             Spacer(minLength: 8)
             Text(shortcut)
-                .font(.caption.monospaced())
+                .runeText(.micro, design: .monospaced)
                 .foregroundStyle(.runeSecondary)
         }
-        .font(.subheadline.weight(selected ? .semibold : .regular))
+        .runeText(.micro, weight: selected ? .semibold : .regular)
         .padding(.horizontal, 8)
         .frame(minHeight: 30)
         .runeSidebarSelection(isSelected: selected)
@@ -999,7 +985,7 @@ struct RuneUIComponentGallery: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
             content()
         }
@@ -1050,15 +1036,15 @@ private struct RuneUIProviderPresentationGallerySurface: View {
         VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: presentation.symbolName)
-                    .font(.title2.weight(.semibold))
+                    .runeText(.title)
                     .foregroundStyle(presentation.provider.accent)
                     .frame(width: 32, height: 32)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(presentation.title)
-                        .font(.headline)
+                        .runeText(.headline)
                     Text(presentation.subtitle)
-                        .font(.caption)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 }
 
@@ -1073,7 +1059,7 @@ private struct RuneUIProviderPresentationGallerySurface: View {
             }
 
             Text(presentation.note)
-                .font(.footnote)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 

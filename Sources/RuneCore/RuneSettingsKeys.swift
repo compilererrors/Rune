@@ -69,6 +69,8 @@ public enum RuneSettingsKeys {
     public static let showHoverTooltips = "rune.settings.appearance.showHoverTooltips"
     /// When true, horizontally scrollable resource tables show a subtle glow at edges with hidden columns.
     public static let showResourceTableScrollEdgeGlow = "rune.settings.appearance.showResourceTableScrollEdgeGlow"
+    /// When true, split column edges show a small grab handle next to the divider.
+    public static let showSplitResizeHandles = "rune.settings.appearance.showSplitResizeHandles"
     /// BCP-47-ish language code for UI strings that have been migrated to Rune's local string catalog.
     public static let interfaceLanguage = "rune.settings.appearance.interfaceLanguage"
     public static let interfaceLanguageDefault = "en"
@@ -180,7 +182,8 @@ public enum RuneSettingsKeys {
             hideManagedFieldsByDefault: true,
             simpleMode: false,
             showHoverTooltips: true,
-            showResourceTableScrollEdgeGlow: true,
+            showResourceTableScrollEdgeGlow: false,
+            showSplitResizeHandles: false,
             interfaceLanguage: interfaceLanguageDefault,
             appearanceTheme: appearanceThemeDefault,
             appearanceRecentThemes: [appearanceThemeDefault],
@@ -389,8 +392,13 @@ public extension UserDefaults {
     }
 
     var runeShowResourceTableScrollEdgeGlow: Bool {
-        get { (object(forKey: RuneSettingsKeys.showResourceTableScrollEdgeGlow) as? Bool) ?? true }
+        get { (object(forKey: RuneSettingsKeys.showResourceTableScrollEdgeGlow) as? Bool) ?? false }
         set { set(newValue, forKey: RuneSettingsKeys.showResourceTableScrollEdgeGlow) }
+    }
+
+    var runeShowSplitResizeHandles: Bool {
+        get { (object(forKey: RuneSettingsKeys.showSplitResizeHandles) as? Bool) ?? false }
+        set { set(newValue, forKey: RuneSettingsKeys.showSplitResizeHandles) }
     }
 
     var runeInterfaceLanguage: String {

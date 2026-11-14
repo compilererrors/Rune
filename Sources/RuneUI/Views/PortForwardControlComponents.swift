@@ -203,13 +203,13 @@ struct PortForwardEndpointFields: View {
         placeholder: String,
         text: Binding<String>
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
             Text(title)
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
             TextField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .font(.callout.monospaced())
+                .textFieldStyle(RuneControlTextFieldStyle())
+                .fontDesign(.monospaced)
                 .frame(minHeight: minimumControlHeight)
                 .accessibilityLabel(title)
         }
@@ -217,7 +217,7 @@ struct PortForwardEndpointFields: View {
 
     private var directionIndicator: some View {
         Text("→")
-            .font(.caption.weight(.semibold))
+            .runeText(.microEmphasis)
             .foregroundStyle(.runeSecondary)
             .frame(minHeight: minimumControlHeight)
             .accessibilityHidden(true)
@@ -278,7 +278,8 @@ struct PortForwardPrimaryActionButton: View {
                 primaryActionTitle,
                 systemImage: primaryActionSystemImage,
                 density: .regular,
-                usesUniformWidth: usesUniformWidth
+                usesUniformWidth: usesUniformWidth,
+                reservedTitles: [startTitle, "Stop", "Cancel"]
             )
         }
         .buttonStyle(RuneToolbarButtonStyle())

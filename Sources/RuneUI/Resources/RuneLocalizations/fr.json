@@ -106,6 +106,8 @@
   "settingsShowHoverTooltipsHelp": "Affiche de courtes explications natives au survol pour les libelles, onglets et controles moins evidents comme Cluster Signals. Desactivez-les si elles genent.",
   "settingsShowResourceTableScrollEdgeGlow": "Afficher la lueur aux bords du defilement",
   "settingsShowResourceTableScrollEdgeGlowHelp": "Affiche une lueur discrete sur le bord gauche ou droit des tableaux de ressources lorsque d'autres colonnes sont disponibles. Le defilement horizontal reste actif si cette option est desactivee.",
+  "settingsShowSplitResizeHandles": "Afficher les poignees de redimensionnement",
+  "settingsShowSplitResizeHandlesHelp": "Affiche une petite poignee sur les bords des colonnes, a cote de chaque separateur. Le separateur reste deplacable dans tous les cas.",
   "settingsSimpleMode": "Mode simple",
   "settingsSimpleModeHelp": "Utilise une interface plus legere pour une navigation rapide: les panneaux optionnels avances sont ignores, les managedFields Kubernetes restent masques dans YAML et Describe en lecture seule, et les logs de terminal restent proches d'un flux compact style k9s.",
   "settingsSimpleModeManagedFieldsNote": "Le mode simple masque toujours managedFields dans les vues YAML et Describe en lecture seule.",

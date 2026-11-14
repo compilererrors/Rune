@@ -12,21 +12,21 @@ struct KubernetesConnectionOnboardingView: View {
     let onShowMoreOptions: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: RuneSpacing.sm) {
+            HStack(alignment: .top, spacing: RuneSpacing.sm) {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(.system(size: RuneGlyphSize.onboarding, weight: .semibold))
                     .foregroundStyle(.runeAccent)
                     .frame(width: 36, height: 36)
                     .background(Circle().fill(Color.accentColor.opacity(0.13)))
                     .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                     Text("Connect Kubernetes")
-                        .font(.title3.weight(.bold))
+                        .runeText(.title, weight: .bold)
                         .accessibilityAddTraits(.isHeader)
                     Text("Import a kubeconfig to load contexts, namespaces, and resources. Rune reviews the file before saving anything.")
-                        .font(.subheadline)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -35,16 +35,16 @@ struct KubernetesConnectionOnboardingView: View {
             Toggle("Favorite imported contexts", isOn: $favoriteImportedContexts)
                 .toggleStyle(.checkbox)
                 .controlSize(.small)
-                .font(.caption)
+                .runeText(.micro)
 
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
+                HStack(spacing: RuneSpacing.inset) {
                     importButton
                     connectionMethodsMenu
                     Spacer(minLength: 0)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: RuneSpacing.xs) {
                     importButton
                         .frame(maxWidth: .infinity, alignment: .leading)
                     connectionMethodsMenu
@@ -69,7 +69,7 @@ struct KubernetesConnectionOnboardingView: View {
     }
 
     private var connectionMethodsMenu: some View {
-        Menu {
+        RuneToolbarMenu {
             Button(action: onPaste) {
                 Label("Paste Kubeconfig", systemImage: "doc.on.clipboard")
             }
@@ -85,12 +85,10 @@ struct KubernetesConnectionOnboardingView: View {
                 Label("Provider or Manual Setup…", systemImage: "ellipsis.circle")
             }
         } label: {
-            Label("Other Connection Methods", systemImage: "chevron.down")
+            Label("Other Connection Methods", systemImage: "ellipsis.circle")
                 .runeMinimumInteractiveTarget()
         }
         .accessibilityIdentifier("rune.onboarding.connection-methods")
-        .menuStyle(.borderlessButton)
-        .fixedSize(horizontal: true, vertical: false)
         .help("Paste, import a folder, use the default kubeconfig, or configure a provider")
     }
 }

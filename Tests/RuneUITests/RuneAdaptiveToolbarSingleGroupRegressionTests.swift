@@ -153,7 +153,7 @@ private struct SingleGroupToolbarHarness: View {
         VStack(alignment: .leading, spacing: 0) {
             RuneAdaptiveToolbar("Content header") {
                 Text(title)
-                    .font(.title2.weight(.bold))
+                    .runeText(.title, weight: .bold)
                     .lineLimit(1)
                     .background(
                         SingleGroupToolbarFrameProbe(region: .primaryTitle)

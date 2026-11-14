@@ -14,9 +14,9 @@ struct AddClusterNativeContextSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             Text("Imported context")
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
 
             if options.isEmpty {
@@ -35,10 +35,10 @@ struct AddClusterNativeContextSection: View {
                         Image(systemName: "doc.badge.plus")
                     }
                 }
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(9)
+                .padding(RuneSpacing.xs)
                 .background(RuneSurfaceBackground(kind: .inset))
             } else {
                 Picker("Native authentication context", selection: $selectedBindingID) {
@@ -55,7 +55,7 @@ struct AddClusterNativeContextSection: View {
                 .controlSize(.regular)
                 .accessibilityLabel("Native authentication context")
 
-                HStack(spacing: 6) {
+                HStack(spacing: RuneSpacing.tight) {
                     if isCheckingProfiles {
                         ProgressView()
                             .controlSize(.small)
@@ -74,13 +74,13 @@ struct AddClusterNativeContextSection: View {
                         Text("Choose which imported context to connect")
                     }
                 }
-                .font(.caption)
+                .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(profileAccessibilityLabel)
             }
         }
-        .padding(10)
+        .padding(RuneSpacing.inset)
         .background(RuneSurfaceBackground(kind: .inset))
         .overlay {
             RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)

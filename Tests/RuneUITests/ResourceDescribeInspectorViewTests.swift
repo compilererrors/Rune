@@ -429,7 +429,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 
     func testYAMLQuickEditResetsForDocumentChangeButNotBaselineRefresh() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootSource = try RuneRootViewSource.text()
         let yamlPaneSource = try XCTUnwrap(yamlSource.slice(
             from: "struct ResourceYAMLInspectorPane",
             to: "struct ManifestUnsavedEditsChip"
@@ -460,9 +460,11 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarActionGroupHeight"))
         XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarSourceGroupHeight"))
         XCTAssertTrue(yamlPaneSource.contains("statusText: statusText"))
-        XCTAssertTrue(yamlPaneSource.contains("ManifestInlineNote("))
-        XCTAssertTrue(yamlPaneSource.contains("if isInlineEditing"))
-        XCTAssertTrue(yamlPaneSource.contains("} else if hasUnsavedEdits {"))
+        // Edit mode changes state in place: the hint and the unsaved chip live
+        // in the status strip instead of a line inserted above the toolbar.
+        XCTAssertTrue(yamlPaneSource.contains("modeNote: isInlineEditing ? t(.yamlEditsStayLocal) : nil"))
+        XCTAssertTrue(yamlPaneSource.contains("hasUnsavedEdits: hasUnsavedEdits,"))
+        XCTAssertFalse(yamlPaneSource.contains("ManifestInlineNote("))
         XCTAssertFalse(yamlPaneSource.contains("VStack(alignment: .leading, spacing: 6)"))
 
         XCTAssertTrue(describePaneSource.contains("ManifestActionToolbar("))
@@ -560,7 +562,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
     func testYAMLEditorsExposeDirectUndoWithOneActiveCommandShortcut() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
         let presentationSource = try String(contentsOfFile: resourceManifestPresentationPath, encoding: .utf8)
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootSource = try RuneRootViewSource.text()
         let appKitSource = try String(contentsOfFile: appKitManifestTextViewPath, encoding: .utf8)
         let yamlPaneSource = try XCTUnwrap(yamlSource.slice(
             from: "struct ResourceYAMLInspectorPane",
@@ -571,12 +573,14 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
             to: "private func navigateToIssue"
         ))
         let openSheetSource = try XCTUnwrap(rootSource.slice(
-            from: "private func openYAMLEditorSheet()",
-            to: "private func yamlManifestEditorSheet()"
+            from: "func openYAMLEditorSheet()",
+            to: "func yamlManifestEditorSheet()"
         ))
 
         XCTAssertEqual(yamlSource.occurrences(of: "ManifestEditorUndoButton("), 2)
-        XCTAssertTrue(yamlPaneSource.contains("if isInlineEditing {\n                    ManifestEditorUndoButton("))
+        // Undo is always present in quick edit-capable panes and dims outside edit mode.
+        XCTAssertTrue(yamlPaneSource.contains("if inlineEditorImplementation.supportsInlineEditing {\n                    ManifestEditorUndoButton("))
+        XCTAssertTrue(yamlPaneSource.contains("canUndo: isInlineEditing && canUndoEdit"))
         XCTAssertTrue(yamlSheetSource.contains("ManifestEditorUndoButton("))
         XCTAssertTrue(presentationSource.contains("Label(\"Undo\", systemImage: \"arrow.uturn.backward\")"))
         XCTAssertTrue(presentationSource.contains(".keyboardShortcut(\"z\", modifiers: [.command])"))
@@ -921,7 +925,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 
     func testServerDryRunControlExistsOnlyInFullYAMLEditorSheet() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootSource = try RuneRootViewSource.text()
         let quickEditPane = try XCTUnwrap(yamlSource.slice(
             from: "struct ResourceYAMLInspectorPane",
             to: "struct ManifestUnsavedEditsChip"
@@ -931,11 +935,11 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
             to: "private func navigateToIssue"
         ))
         let fullEditorWiring = try XCTUnwrap(rootSource.slice(
-            from: "private func yamlManifestEditorSheet()",
-            to: "private var yamlBlock"
+            from: "func yamlManifestEditorSheet()",
+            to: "var yamlBlock"
         ))
         let quickEditWiring = try XCTUnwrap(rootSource.slice(
-            from: "private var yamlBlock",
+            from: "var yamlBlock",
             to: "/// One pane at a time"
         ))
 
@@ -976,10 +980,10 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
     }
 
     func testRootPassesRawManifestBuffersWithExplicitDocumentStates() throws {
-        let rootSource = try String(contentsOfFile: runeRootViewPath, encoding: .utf8)
+        let rootSource = try RuneRootViewSource.text()
 
-        XCTAssertTrue(rootSource.contains("private var yamlManifestDocumentState: ManifestDocumentState"))
-        XCTAssertTrue(rootSource.contains("private var describeManifestDocumentState: ManifestDocumentState"))
+        XCTAssertTrue(rootSource.contains("var yamlManifestDocumentState: ManifestDocumentState"))
+        XCTAssertTrue(rootSource.contains("var describeManifestDocumentState: ManifestDocumentState"))
         XCTAssertTrue(rootSource.contains("yamlDisplayText: viewModel.state.resourceYAML"))
         XCTAssertTrue(rootSource.contains("describeText: viewModel.state.resourceDescribe"))
         XCTAssertEqual(rootSource.occurrences(of: "documentState: yamlManifestDocumentState"), 2)
@@ -1488,14 +1492,6 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         return repoRoot.appendingPathComponent("Sources/RuneUI/Views/ResourceManifestPresentation.swift").path
     }
 
-    private var runeRootViewPath: String {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = testFile
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        return repoRoot.appendingPathComponent("Sources/RuneUI/Views/RuneRootView.swift").path
-    }
 
     private var inspectorTextViewsPath: String {
         let testFile = URL(fileURLWithPath: #filePath)

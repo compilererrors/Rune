@@ -19,15 +19,15 @@ struct TerminalPlaceholderTabLabel: View {
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: RuneSpacing.tight) {
             Image(systemName: "plus.circle.fill")
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(runeThemePalette?.accent ?? Color.accentColor)
             Text(primaryTitle)
-                .font(.caption.weight(.semibold))
+                .runeText(.microEmphasis)
                 .lineLimit(1)
             Text(secondaryTitle)
-                .font(.caption2.weight(.semibold))
+                .runeText(.microEmphasis)
                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 .lineLimit(1)
         }
@@ -61,7 +61,7 @@ struct TerminalTabChromeModifier: ViewModifier {
                     Capsule()
                         .fill(runeThemePalette?.accent ?? Color.accentColor)
                         .frame(width: 3, height: 16)
-                        .padding(.leading, 3)
+                        .padding(.leading, RuneSpacing.xxs)
                 }
             }
     }
@@ -97,10 +97,10 @@ struct TerminalTabStrip<Content: View>: View {
     var body: some View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: RuneSpacing.tight) {
                     content()
                 }
-                .padding(.horizontal, 6)
+                .padding(.horizontal, RuneSpacing.tight)
             }
             .overlay(alignment: .trailing) {
                 Rectangle()
@@ -110,7 +110,7 @@ struct TerminalTabStrip<Content: View>: View {
 
             Button(action: onAddTab) {
                 Image(systemName: "plus")
-                    .font(.caption.weight(.semibold))
+                    .runeText(.microEmphasis)
                     .frame(width: 38, height: 28)
                     .contentShape(Rectangle())
             }
@@ -118,12 +118,12 @@ struct TerminalTabStrip<Content: View>: View {
             .controlSize(.small)
             .disabled(!canAddTab)
             .terminalTabChrome(isActive: false)
-            .padding(.leading, 6)
+            .padding(.leading, RuneSpacing.tight)
             .help(addHelp)
             .accessibilityLabel(addAccessibilityLabel)
         }
         .frame(height: 38)
-        .padding(.horizontal, 6)
+        .padding(.horizontal, RuneSpacing.tight)
         .background(RuneSurfaceBackground(kind: .inset))
     }
 }

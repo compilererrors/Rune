@@ -83,13 +83,13 @@ struct CommandPaletteView: View {
         let items = viewModel.commandPaletteItems(query: query)
 
         VStack(alignment: .leading, spacing: RuneUILayoutMetrics.dialogSectionSpacing) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: RuneSpacing.sm) {
+                VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                     Text("Command Palette")
-                        .font(.title3.weight(.semibold))
+                        .runeText(.title)
                         .accessibilityAddTraits(.isHeader)
                     Text("Search by name, or type : to browse command prefixes.")
-                        .font(.subheadline)
+                        .runeText(.micro)
                         .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 }
                 Spacer(minLength: 0)
@@ -98,7 +98,7 @@ struct CommandPaletteView: View {
                 }
             }
 
-            HStack(spacing: 10) {
+            HStack(spacing: RuneSpacing.inset) {
                 Image(systemName: query.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(":") ? "terminal" : "magnifyingglass")
                     .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                 TextField("Search commands and resources", text: $query)
@@ -113,8 +113,8 @@ struct CommandPaletteView: View {
                         executePrimaryAction(items: items)
                     }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, RuneSpacing.sm)
+            .padding(.vertical, RuneSpacing.xs)
             .frame(minHeight: 44)
             .background(
                 RoundedRectangle(cornerRadius: RuneUILayoutMetrics.paneShellCornerRadius, style: .continuous)
@@ -126,7 +126,7 @@ struct CommandPaletteView: View {
             )
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: RuneSpacing.xs) {
                     ForEach(CommandPalettePresentation.commonPrefixShortcuts) { shortcut in
                         prefixShortcut(shortcut)
                     }
@@ -137,7 +137,7 @@ struct CommandPaletteView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
+                    LazyVStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                         if items.isEmpty {
                             RuneContentStateView(
                                 query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -166,21 +166,21 @@ struct CommandPaletteView: View {
                                         viewModel.executeCommandPaletteItem(item)
                                     }
                                 } label: {
-                                    HStack(spacing: 10) {
+                                    HStack(spacing: RuneSpacing.inset) {
                                         Image(systemName: item.symbolName)
                                             .frame(width: 18)
                                             .foregroundStyle(runeThemePalette?.accent ?? Color.accentColor)
-                                        VStack(alignment: .leading, spacing: 2) {
+                                        VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                                             Text(item.title)
-                                                .font(.headline)
+                                                .runeText(.headline)
                                             Text(item.subtitle)
-                                                .font(.subheadline)
+                                                .runeText(.micro)
                                                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                                         }
                                         Spacer()
                                     }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, RuneSpacing.xs)
+                                    .padding(.vertical, RuneSpacing.tight)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .background(
                                         RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
@@ -198,7 +198,7 @@ struct CommandPaletteView: View {
                             }
                         }
                     }
-                    .padding(6)
+                    .padding(RuneSpacing.tight)
                 }
                 .focusable(true)
                 .focused($focusedTarget, equals: .results)
@@ -264,14 +264,14 @@ struct CommandPaletteView: View {
         Button {
             applyPrefix(shortcut.queryPrefix)
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: RuneSpacing.tight) {
                 Text(shortcut.queryPrefix)
-                    .font(.footnote.weight(.bold).monospaced())
+                    .runeText(.micro, weight: .bold, design: .monospaced)
                 Text(shortcut.title)
-                    .font(.footnote.weight(.medium))
+                    .runeText(.micro, weight: .medium)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, RuneSpacing.inset)
+            .padding(.vertical, RuneSpacing.tight)
             .background(runeThemePalette?.chipFill ?? Color.secondary.opacity(0.12), in: Capsule())
             .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
             .contentShape(Capsule())
@@ -302,13 +302,13 @@ struct CommandPaletteView: View {
     private var fullPrefixHelp: some View {
         let prefixItems = viewModel.commandPaletteItems(query: ":")
 
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             Text("Command Prefixes")
-                .font(.headline)
+                .runeText(.headline)
                 .accessibilityAddTraits(.isHeader)
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                     ForEach(prefixItems) { item in
                         Button {
                             guard let prefill = CommandPalettePresentation.prefillQuery(
@@ -318,21 +318,21 @@ struct CommandPaletteView: View {
                             focusedTarget = .input
                             isPrefixHelpPresented = false
                         } label: {
-                            HStack(spacing: 10) {
+                            HStack(spacing: RuneSpacing.inset) {
                                 Image(systemName: item.symbolName)
                                     .frame(width: 18)
                                     .foregroundStyle(runeThemePalette?.accent ?? Color.accentColor)
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                                     Text(item.title)
-                                        .font(.subheadline.weight(.semibold))
+                                        .runeText(.microEmphasis)
                                     Text(item.subtitle)
-                                        .font(.caption)
+                                        .runeText(.micro)
                                         .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
                                 }
                                 Spacer(minLength: 0)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, RuneSpacing.xs)
+                            .padding(.vertical, RuneSpacing.tight)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
                         }
@@ -343,7 +343,7 @@ struct CommandPaletteView: View {
             }
             .frame(minHeight: 220, idealHeight: 320, maxHeight: 420)
         }
-        .padding(14)
+        .padding(RuneSpacing.md)
         .frame(minWidth: 320, idealWidth: 380, maxWidth: 440)
         .runePointerCursor()
         .onAppear {
@@ -367,17 +367,17 @@ struct CommandPaletteView: View {
     }
 
     private func keyboardHint() -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: RuneSpacing.tight) {
             Text("Tab")
-                .font(.caption2.weight(.bold))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
+                .runeText(.micro, weight: .bold)
+                .padding(.horizontal, RuneSpacing.tight)
+                .padding(.vertical, RuneSpacing.xxs)
                 .background(runeThemePalette?.chipFill ?? Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.compactGlyphCornerRadius, style: .continuous))
             Text("focus results, arrows select, Enter runs")
-                .font(.footnote.weight(.medium))
+                .runeText(.micro, weight: .medium)
                 .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, RuneSpacing.xxs)
     }
 
     private var selectionFill: Color {
