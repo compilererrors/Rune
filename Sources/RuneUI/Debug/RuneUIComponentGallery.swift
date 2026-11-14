@@ -906,12 +906,12 @@ struct RuneUIComponentGallery: View {
             onRefresh: {},
             info: {
                 VStack(alignment: .leading, spacing: 8) {
-                    RuneInspectorInfoRow("Namespace", systemImage: "square.stack.3d.up") {
+                    RuneInspectorInfoRow("Namespace") {
                         Text(RuneUIComponentGalleryFixtures.longNamespace)
                             .lineLimit(2)
                             .truncationMode(.middle)
                     }
-                    RuneInspectorInfoRow("Status", systemImage: "checkmark.circle") {
+                    RuneInspectorInfoRow("Status") {
                         Text("Synthetic Ready")
                     }
                 }
@@ -947,7 +947,7 @@ struct RuneUIComponentGallery: View {
                     )
 
                     ForEach(1...8, id: \.self) { index in
-                        RuneInspectorInfoRow("Field \(index)", systemImage: "circle.fill") {
+                        RuneInspectorInfoRow("Field \(index)") {
                             Text("Synthetic value \(index)")
                         }
                     }

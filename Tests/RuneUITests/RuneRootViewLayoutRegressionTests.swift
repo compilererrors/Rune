@@ -2896,8 +2896,9 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
                    let scrollView = tableView.enclosingScrollView,
                    scrollView.bounds.width > 1,
                    let layout = layoutSnapshots.last(where: {
+                       // Events has one kind, so it has no kind picker row.
                        $0.section == section
-                           && $0.resourceFamilyFrame != nil
+                           && ($0.resourceFamilyFrame != nil || section == .events)
                            && $0.resourceToolbarFrame != nil
                            && $0.resourceFilterRailFrame != nil
                            && $0.resourceActionsRailFrame != nil

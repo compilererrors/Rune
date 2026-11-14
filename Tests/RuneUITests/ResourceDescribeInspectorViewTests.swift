@@ -459,7 +459,8 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarControlSpacing"))
         XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarActionGroupHeight"))
         XCTAssertTrue(presentationSource.contains("RuneUILayoutMetrics.inspectorToolbarSourceGroupHeight"))
-        XCTAssertTrue(yamlPaneSource.contains("statusText: statusText"))
+        // "Last updated" is status, so it sits in the document's status line.
+        XCTAssertTrue(yamlPaneSource.contains("updatedText: statusText"))
         // Edit mode changes state in place: the hint and the unsaved chip live
         // in the status strip instead of a line inserted above the toolbar.
         XCTAssertTrue(yamlPaneSource.contains("modeNote: isInlineEditing ? t(.yamlEditsStayLocal) : nil"))
@@ -468,7 +469,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         XCTAssertFalse(yamlPaneSource.contains("VStack(alignment: .leading, spacing: 6)"))
 
         XCTAssertTrue(describePaneSource.contains("ManifestActionToolbar("))
-        XCTAssertTrue(describePaneSource.contains("statusText: statusText"))
+        XCTAssertTrue(describePaneSource.contains("ManifestUpdatedNote(text: statusText)"))
         XCTAssertTrue(describePaneSource.contains("Label(\"Edit YAML…\", systemImage: \"square.and.pencil\")"))
         XCTAssertFalse(describePaneSource.contains(".confirmationDialog("))
         XCTAssertTrue(describePaneSource.contains("if let staleContentState = documentState.staleContentState"))
@@ -492,10 +493,11 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
     func testYAMLPaneExposesManagedFieldsToggleWithoutHidingDuringEdit() throws {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
 
-        XCTAssertTrue(yamlSource.contains("ManifestManagedFieldsToggle("))
-        XCTAssertTrue(yamlSource.contains("Label(t(.hideManaged), systemImage: \"eye.slash\")"))
+        // The option lives in the YAML overflow menu (declutter) and is still
+        // disabled while editing so line numbers stay exact.
+        XCTAssertTrue(yamlSource.contains("hidesManagedFields: !simpleMode && filteredYAML.removedBlockCount > 0 ? $hidesManagedFields : nil"))
         XCTAssertTrue(yamlSource.contains("KubernetesManagedFieldsDisplayFilter.removingManagedFields"))
-        XCTAssertTrue(yamlSource.contains("isDisabled: isInlineEditing"))
+        XCTAssertTrue(yamlSource.contains("managedFieldsDisabled: isInlineEditing"))
         XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
         XCTAssertTrue(yamlSource.contains("let canHideManagedFields = filteredYAML.removedBlockCount > 0 && !isInlineEditing"))
         XCTAssertFalse(yamlSource.contains("hidesManagedFields = false"))
@@ -505,8 +507,9 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         let describeSource = try String(contentsOfFile: resourceDescribeInspectorViewPath, encoding: .utf8)
 
         XCTAssertTrue(describeSource.contains("DescribeManagedFieldsDisplayFilter.removingManagedFields"))
-        XCTAssertTrue(describeSource.contains("ManifestManagedFieldsToggle("))
-        XCTAssertTrue(describeSource.contains("isDisabled: managedFieldsFilter.removedBlockCount == 0"))
+        // The option sits in Describe's one overflow menu.
+        XCTAssertTrue(describeSource.contains("Toggle(t(.hideManaged), isOn: $hidesManagedFields)"))
+        XCTAssertTrue(describeSource.contains(".disabled(managedFieldsFilter.removedBlockCount == 0)"))
         XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault)"))
         XCTAssertTrue(describeSource.contains("@AppStorage(RuneSettingsKeys.simpleMode)"))
         XCTAssertTrue(describeSource.contains("let effectiveHidesManagedFields = simpleMode || hidesManagedFields"))
@@ -546,7 +549,10 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         let yamlSource = try String(contentsOfFile: resourceYAMLInspectorViewPath, encoding: .utf8)
         let presentationSource = try String(contentsOfFile: resourceManifestPresentationPath, encoding: .utf8)
 
-        XCTAssertEqual(yamlSource.occurrences(of: "ManifestYAMLActionMenus("), 2)
+        // The inspector folds Draft, File and the managed-fields option into one
+        // overflow menu; the editor sheet keeps the labelled menus.
+        XCTAssertEqual(yamlSource.occurrences(of: "ManifestYAMLActionMenus("), 1)
+        XCTAssertEqual(yamlSource.occurrences(of: "ManifestYAMLMoreMenu("), 1)
         XCTAssertTrue(presentationSource.contains("Label(draftTitle, systemImage: \"clock.arrow.circlepath\")"))
         XCTAssertTrue(presentationSource.contains("Button(\"Apply Last Fetched YAML\", action: onReapplySnapshot)"))
         XCTAssertFalse(presentationSource.contains("Button(\"Undo Draft Edit\", action: onUndoEdit)"))

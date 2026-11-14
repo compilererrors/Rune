@@ -168,9 +168,9 @@ struct RuneFindBarChrome<Primary: View, Secondary: View>: View {
         .controlSize(.small)
         .padding(.horizontal, RuneUILayoutMetrics.inspectorControlContentInset)
         .padding(.vertical, RuneUILayoutMetrics.inspectorControlChromeVerticalPadding)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.findBarCornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: RuneUILayoutMetrics.findBarCornerRadius, style: .continuous)
                 .stroke(Color.primary.opacity(0.16), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.16), radius: 10, x: 0, y: 5)

@@ -21,18 +21,23 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("case terminalCompact"))
         XCTAssertTrue(source.contains("private var terminalCompactBody: some View"))
         XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorCompactSectionSpacing"))
-        XCTAssertTrue(source.contains("RuneUILayoutMetrics.inspectorSectionSpacing"))
+        // The toolbar and search sit in the log document's attached bar, spaced like the bar.
+        XCTAssertTrue(source.contains("RuneUILayoutMetrics.documentFrameBarVerticalInset"))
         XCTAssertTrue(source.contains("LogToolbarGroup"))
         XCTAssertTrue(source.contains("LogToolbarGroup(role: .source)"))
         XCTAssertTrue(source.contains("LogToolbarGroup {"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.window), role: .window)"))
         XCTAssertTrue(source.contains("LogToolbarPickerField(title: t(.container), role: .container)"))
         XCTAssertTrue(source.contains("static let sourcePickerWidth: CGFloat = 180"))
+        // Fixed picker widths apply outside a document frame; inside it the
+        // pickers share the bar's width.
         XCTAssertEqual(
-            source.components(separatedBy: ".frame(width: ResourceLogsLayoutMetrics.sourcePickerWidth)").count - 1,
+            source.components(separatedBy: ".frame(width: isEmbedded ? nil : ResourceLogsLayoutMetrics.sourcePickerWidth)").count - 1,
             2
         )
-        XCTAssertEqual(source.components(separatedBy: "LogToolbarPopupPicker(").count - 1, 2)
+        // Window and container in the standalone toolbar; container and range
+        // in the log viewer header.
+        XCTAssertEqual(source.components(separatedBy: "LogToolbarPopupPicker(").count - 1, 4)
         XCTAssertTrue(source.contains("func makeNSView(context: Context) -> NSPopUpButton"))
         XCTAssertTrue(source.contains("LogToolbarStatusIndicator("))
         XCTAssertTrue(source.contains("private struct LogToolbarStatusIndicator"))
@@ -536,7 +541,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(source.contains("@State private var searchFocusRequestID = 0"))
         XCTAssertTrue(source.contains("applyLogSearchQuery"))
-        XCTAssertTrue(source.contains("searchFocusRequestID: searchFocusRequestID"))
+        XCTAssertTrue(source.contains("focusRequestID: searchFocusRequestID"))
         XCTAssertEqual(searchBarSource.components(separatedBy: "TextField(").count - 1, 2)
         XCTAssertTrue(searchBarSource.contains("prompt: Text(placeholder)"))
         XCTAssertTrue(source.contains("@State private var searchTask: Task<Void, Never>?"))
@@ -1126,7 +1131,9 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             to: "private var sourceControls: some View"
         ))
 
-        XCTAssertTrue(compactBody.contains("LogToolbarScrollRow {\n                primaryControls"))
+        // The source row scrolls on its own and fills the bar inside a document frame.
+        XCTAssertTrue(compactBody.contains("sourceRow\n                .controlSize(toolbarControlSize)"))
+        XCTAssertTrue(source.contains("LogToolbarScrollRow {\n                primaryControls"))
         XCTAssertTrue(compactBody.contains("toolbarActions\n                .controlSize(toolbarControlSize)"))
         XCTAssertFalse(compactBody.contains("LogToolbarScrollRow {\n                modeControls"))
         XCTAssertFalse(source.contains("private var modeControls: some View"))
@@ -1168,11 +1175,11 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     func testTerminalLogTabsExposePodNamesOnHover() throws {
         let tabBarSource = try String(contentsOfFile: terminalLogTabBarPath, encoding: .utf8)
 
-        XCTAssertTrue(tabBarSource.contains("Text(\"\\(number) \\(tab.title)\")"))
+        // Titles are the pod name with the namespace as secondary text, no index.
+        XCTAssertTrue(tabBarSource.contains("TerminalTabTitle(primaryTitle: tab.title, secondaryTitle: tab.subtitle)"))
         XCTAssertTrue(tabBarSource.contains(".help(tab.helpText)"))
-        XCTAssertTrue(tabBarSource.contains("Text(subtitle)"))
         XCTAssertTrue(tabBarSource.contains("\"Close log tab for \\(tab.title)\""))
-        XCTAssertTrue(tabBarSource.contains("RuneIconButton("))
+        XCTAssertTrue(tabBarSource.contains("TerminalTabAccessoryButton("))
     }
 
     func testTerminalLogTabsUseRuneSurfaceChrome() throws {
@@ -1182,10 +1189,11 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(tabBarSource.contains("TerminalTabStrip("))
         XCTAssertTrue(tabBarSource.contains(".terminalTabChrome(isActive: tab.id == activeTabID)"))
-        XCTAssertTrue(tabStripSource.contains("RuneSurfaceBackground(kind: .inset)"))
-        XCTAssertTrue(tabStripSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
-        XCTAssertTrue(tabStripSource.contains("Capsule()"))
-        XCTAssertTrue(tabStripSource.contains(".frame(width: 3, height: 16)"))
+        // Document tabs on the surface edge: the selected tab takes the
+        // surface fill and opens into it, instead of a row pill with a bar.
+        XCTAssertTrue(tabStripSource.contains("surfaceRole.fill(palette: runeThemePalette, colorScheme: colorScheme)"))
+        XCTAssertFalse(tabStripSource.contains("RuneOpenBottomTabOutline("), "the selected tab has no border")
+        XCTAssertFalse(tabStripSource.contains(".frame(width: 3, height: 16)"))
         XCTAssertFalse(tabBarSource.contains("RuneSurfaceBackground(kind: .editor)"))
         XCTAssertFalse(tabBarSource.contains(".frame(height: 2)"))
         XCTAssertFalse(logsInspectorSource.contains("struct TerminalLogTabBar: View"))
@@ -1283,7 +1291,8 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
         XCTAssertTrue(source.contains("ResourceStructuredLogAnalyzer.analyze(text:"))
         XCTAssertTrue(source.contains("ResourceStructuredLogSummaryPanel("))
-        XCTAssertTrue(source.contains("structuredSummary: structuredLogSummary"))
+        // Insights are the log's bottom status line.
+        XCTAssertTrue(source.contains("summary: structuredLogSummary"))
         XCTAssertTrue(source.contains("ResourceStructuredLogFieldSearch.query(field: field, value: value)"))
         XCTAssertTrue(source.contains("onSearchFieldSample"))
         XCTAssertTrue(source.contains("onSearchDuplicate"))
@@ -1293,7 +1302,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         let source = try String(contentsOfFile: resourceLogsInspectorViewPath, encoding: .utf8)
 
         XCTAssertTrue(source.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
-        XCTAssertTrue(source.contains("showsInsights: !simpleMode"))
+        XCTAssertTrue(source.contains("!simpleMode && !hidesInsightsLine"))
         XCTAssertTrue(source.contains(".onChange(of: simpleMode)"))
         XCTAssertTrue(source.contains("scheduleStructuredSummary(for: logText, debounced: false)"))
         XCTAssertTrue(source.contains("guard !simpleMode else"))
@@ -1306,7 +1315,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("matchPositionText(selectedIndex: selectedMatchIndex)"))
         XCTAssertTrue(source.contains("guard searchSummary.hasMatches else { return \"No results\" }"))
         XCTAssertFalse(source.contains("ResourceLogsSearchSummaryBar("))
-        XCTAssertTrue(source.contains("selectedSearchMatchIndex: $selectedSearchMatchIndex"))
+        XCTAssertTrue(source.contains("selectedMatchIndex: $selectedSearchMatchIndex"))
         XCTAssertTrue(source.contains(".monospacedDigit()"))
         XCTAssertTrue(source.contains("@State private var isJumpPopoverPresented = false"))
         XCTAssertTrue(source.contains("prepareJumpPopover(for: searchSummary)"))

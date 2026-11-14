@@ -1490,6 +1490,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var navigationSelectionRestoreTask: Task<Void, Never>?
     private var resourceDetailsTask: Task<Void, Never>?
     private var resourceYAMLDryRunTask: Task<Void, Never>?
+    private var resourceYAMLValidationTask: Task<Void, Never>?
     private var activeResourceYAMLDryRunRequestID: UUID?
     private var resourceYAMLDryRunScope: ResourceYAMLDryRunScope?
     private var rbacCanITask: Task<Void, Never>?
@@ -1792,10 +1793,14 @@ public final class RuneAppViewModel: ObservableObject {
         persistOnChange($operatorResourceSortAscending)
         persistOnChange($operatorResourceFocus)
 
+        // Every change to the YAML (typing, Quick Edit, the editor sheet, a
+        // draft restore, a document switch) schedules one validation of that
+        // exact text. A newer change cancels the older run, and results are
+        // published only while the text is still current, so the problems
+        // shown always belong to the text on screen.
         state.$resourceYAML
             .sink { [weak self] yaml in
                 guard let self else { return }
-                let validationGeneration = self.state.resourceYAMLValidationGeneration
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     await Task.yield()
@@ -1804,10 +1809,7 @@ public final class RuneAppViewModel: ObservableObject {
                        !self.resourceYAMLDryRunScopeMatchesCurrentState(dryRunScope) {
                         self.invalidateResourceYAMLDryRun()
                     }
-                    guard self.state.resourceYAMLValidationGeneration == validationGeneration else {
-                        return
-                    }
-                    self.validateResourceYAMLDraftLocally(yaml)
+                    self.scheduleResourceYAMLValidation(yaml)
                 }
             }
             .store(in: &cancellables)
@@ -15412,40 +15414,48 @@ public final class RuneAppViewModel: ObservableObject {
         }
     }
 
-    /// Typing validation is local. Kubernetes dry-run runs only after an explicit
+    /// Typing validation is local (a real YAML parser plus Kubernetes checks,
+    /// see `YAMLValidator`). Kubernetes dry-run runs only after an explicit
     /// Dry Run action or as part of the guarded Apply flow.
-    private func validateResourceYAMLDraftLocally(_ yaml: String) {
-        let localIssues = YAMLLanguageService.analyze(yaml).validationIssues
-        state.setResourceYAMLValidationIssues(localIssues)
-        state.finishResourceYAMLValidation()
-
-        let trimmed = yaml.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              let resource = currentWritableResource()
-        else {
+    func scheduleResourceYAMLValidation(_ yaml: String) {
+        resourceYAMLValidationTask?.cancel()
+        let target = resourceYAMLValidationTarget()
+        guard !yaml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            state.setResourceYAMLValidationIssues([])
+            state.finishResourceYAMLValidation()
             return
         }
-
-        guard !localIssues.contains(where: { $0.severity == .error }) else {
-            return
+        state.beginResourceYAMLValidation()
+        let delay: UInt64 = yaml.utf16.count > 200_000 ? 250_000_000 : Self.resourceYAMLValidationDebounceNanoseconds
+        resourceYAMLValidationTask = Task { @MainActor [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: delay)
+            }
+            guard !Task.isCancelled else { return }
+            let issues = await Task.detached(priority: .userInitiated) {
+                YAMLValidator.validate(yaml, target: target)
+            }.value
+            guard let self, !Task.isCancelled, self.state.resourceYAML == yaml else { return }
+            self.state.setResourceYAMLValidationIssues(issues)
+            self.state.finishResourceYAMLValidation()
         }
+    }
 
-        do {
-            try validateResourceYAMLTarget(
-                yaml,
-                expectedKind: resource.0,
-                expectedName: resource.1
-            )
-        } catch {
-            let targetIssue = YAMLValidationIssue(
-                source: .kubernetes,
-                severity: .error,
-                message: error.localizedDescription
-            )
-            state.setResourceYAMLValidationIssues(
-                Self.deduplicatedYAMLValidationIssues(localIssues + [targetIssue])
-            )
+    /// Short enough to feel immediate, long enough not to validate every keystroke.
+    nonisolated static let resourceYAMLValidationDebounceNanoseconds: UInt64 = 120_000_000
+
+    private func resourceYAMLValidationTarget() -> YAMLValidationTarget? {
+        guard let resource = currentWritableResource() else { return nil }
+        let referenceNamespace = currentResourceReference()?.namespace?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let namespace: String? = if !resource.0.isNamespaced {
+            nil
+        } else if let referenceNamespace, !referenceNamespace.isEmpty {
+            referenceNamespace
+        } else {
+            state.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        return YAMLValidationTarget(kind: resource.0.singularTypeName, name: resource.1, namespace: namespace)
     }
 
     private func invalidateResourceYAMLDryRun() {

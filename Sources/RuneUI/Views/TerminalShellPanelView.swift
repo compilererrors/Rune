@@ -2,6 +2,16 @@ import AppKit
 import SwiftUI
 import RuneCore
 
+/// When a shell connects. Picking a pod (or opening a tab for one) connects
+/// at once, except where opening a shell should stay a deliberate click:
+/// read-only mode and production contexts. There, and whenever a tab is not
+/// connected, the terminal itself shows the Connect action.
+enum TerminalShellConnectPolicy {
+    static func autoConnects(isReadOnly: Bool, isProduction: Bool, canApplyMutations: Bool) -> Bool {
+        !isReadOnly && !isProduction && canApplyMutations
+    }
+}
+
 struct TerminalShellPanelView: View {
     let session: PodTerminalSession?
     let sessions: [PodTerminalSession]
@@ -32,6 +42,7 @@ struct TerminalShellPanelView: View {
     let isFavoritePod: (PodSummary) -> Bool
     let onToggleFavoritePod: (PodSummary) -> Void
     var onOpenSelectedPodLogs: ((PodSummary) -> Void)? = nil
+    var autoConnects = false
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var storedTerminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @Environment(\.runeThemePalette) private var runeThemePalette
     @Environment(\.colorScheme) private var colorScheme
@@ -140,6 +151,38 @@ struct TerminalShellPanelView: View {
         return selectedPod == nil || !canApplyMutations || !canOpenSession
     }
 
+    private var hasTranscript: Bool {
+        session?.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private var showsConnectPrompt: Bool {
+        guard selectedPod != nil || session != nil else { return false }
+        guard let session else { return true }
+        return session.status != .connected
+    }
+
+    private var connectPromptState: TerminalConnectPrompt.State {
+        switch session?.status {
+        case .connecting: return .connecting
+        case .failed: return .failed
+        case .disconnected: return .disconnected
+        default: return .notConnected
+        }
+    }
+
+    private var connectPromptActionTitle: String {
+        switch session?.status {
+        case .connecting: return "Cancel"
+        case .failed, .disconnected: return "Reconnect"
+        default: return selectedPodExistingSession == nil ? "Connect" : "Open Tab"
+        }
+    }
+
+    private var connectPromptPodTitle: String {
+        if let session { return session.podName }
+        return selectedPod?.name ?? ""
+    }
+
     private var transcriptPlaceholder: String {
         if selectedPod == nil && session == nil {
             return "Select a pod in this namespace, then connect the new shell tab."
@@ -148,41 +191,54 @@ struct TerminalShellPanelView: View {
         return "No shell session yet."
     }
 
+    /// One container: a header line, then the terminal as a framed console:
+    /// a slim session bar (pod and Connect), the shell tabs on the
+    /// transcript's top edge, the transcript, and the prompt as its bottom
+    /// line. Rare actions live in the header's one overflow menu.
     var body: some View {
         VStack(alignment: .leading, spacing: RuneSpacing.inset) {
             header
 
-            TerminalSessionTabBar(
-                sessions: sessions,
-                activeSessionID: activeSessionID,
-                isComposingNewSession: isComposingNewSession,
-                selectedPod: selectedPod,
-                canApplyMutations: canApplyMutations,
-                onSelectSession: onSelectSession,
-                onCloseSession: onCloseSession,
-                onComposeNewSession: onComposeNewSession
-            )
+            RuneDocumentFrame(role: .terminal) {
+                VStack(alignment: .leading, spacing: RuneSpacing.tight) {
+                    TerminalSessionControlRow(
+                        title: "Session",
+                        systemImage: "terminal",
+                        pods: availablePods,
+                        terminalSessions: sessions,
+                        primaryActionTitle: primaryActionTitle,
+                        primaryActionSystemImage: primaryActionSystemImage,
+                        isPrimaryActionDisabled: primaryActionDisabled,
+                        isClearDisabled: session?.transcript.isEmpty ?? true,
+                        isFavoritePod: isFavoritePod,
+                        onToggleFavoritePod: onToggleFavoritePod,
+                        onPrimaryAction: performPrimaryAction,
+                        onClear: onClearTranscript,
+                        selection: $selectedShellPodID,
+                        showsClear: false,
+                        showsPrimaryAction: false
+                    )
 
-            TerminalSessionControlRow(
-                title: "Session",
-                systemImage: "terminal",
-                pods: availablePods,
-                terminalSessions: sessions,
-                primaryActionTitle: primaryActionTitle,
-                primaryActionSystemImage: primaryActionSystemImage,
-                isPrimaryActionDisabled: primaryActionDisabled,
-                isClearDisabled: session?.transcript.isEmpty ?? true,
-                isFavoritePod: isFavoritePod,
-                onToggleFavoritePod: onToggleFavoritePod,
-                onPrimaryAction: performPrimaryAction,
-                onClear: onClearTranscript,
-                selection: $selectedShellPodID
-            )
-
-            containerPicker
-
+                    containerPicker
+                }
+            } tabs: {
+                TerminalSessionTabBar(
+                    sessions: sessions,
+                    activeSessionID: activeSessionID,
+                    isComposingNewSession: isComposingNewSession,
+                    selectedPod: selectedPod,
+                    canApplyMutations: canApplyMutations,
+                    onSelectSession: onSelectSession,
+                    onCloseSession: onCloseSession,
+                    onComposeNewSession: onComposeNewSession,
+                    onDisconnectSession: { id in
+                        onSelectSession(id)
+                        onDisconnect()
+                    }
+                )
+            } content: {
             TerminalTranscriptSurface(
-                text: session?.transcript.isEmpty == false ? session?.transcript ?? "" : transcriptPlaceholder,
+                text: session?.transcript.isEmpty == false ? session?.transcript ?? "" : (showsConnectPrompt ? "" : transcriptPlaceholder),
                 height: transcriptHeight,
                 resetID: "terminal:\(session?.id ?? "empty")",
                 fontSize: terminalFontSize,
@@ -190,11 +246,30 @@ struct TerminalShellPanelView: View {
                 onInputSequence: onSendControlSequence,
                 onResizeGrid: reportTerminalResize
             )
-
-            multilinePasteConfirmationNote
-            inputRow
+            .overlay(alignment: hasTranscript ? .bottom : .center) {
+                // Connect belongs to this terminal, so it sits on it: centred
+                // on an empty tab, a slim bar over the end of a finished one.
+                if showsConnectPrompt {
+                    TerminalConnectPrompt(
+                        podTitle: connectPromptPodTitle,
+                        state: connectPromptState,
+                        failureReason: session?.lastDiagnostic?.summary,
+                        isCompact: hasTranscript,
+                        isActionDisabled: primaryActionDisabled,
+                        actionTitle: connectPromptActionTitle,
+                        action: performPrimaryAction
+                    )
+                    .padding(RuneSpacing.sm)
+                }
+            }
+            } status: {
+                VStack(alignment: .leading, spacing: RuneSpacing.tight) {
+                    multilinePasteConfirmationNote
+                    inputRow
+                }
+            }
         }
-        .runePanelCard(padding: RuneUILayoutMetrics.paneInnerPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             syncContainerSelectionToActiveSession()
             syncShellPodSelectionToActiveSession()
@@ -214,65 +289,62 @@ struct TerminalShellPanelView: View {
         .onChange(of: session?.status) { _, _ in
             focusPromptIfConnected()
         }
+        .onChange(of: isComposingNewSession) { _, isComposing in
+            if isComposing {
+                autoConnectComposedTabIfNeeded()
+            }
+        }
     }
 
+    /// Title and state on the left; one overflow menu on the right for the
+    /// rare actions (logs handoff, clear, export), so the header stays quiet.
     private var header: some View {
-        HStack(alignment: .top, spacing: RuneSpacing.inset) {
+        HStack(alignment: .center, spacing: RuneSpacing.inset) {
             titleBlock
             Spacer(minLength: 0)
-            HStack(spacing: TerminalActionLayoutMetrics.spacing) {
-                if let selectedPod, onOpenSelectedPodLogs != nil {
-                    RuneBorderedIconButton(
-                        "Show \(selectedPod.name) in Logs",
-                        systemImage: "doc.text.magnifyingglass",
-                        help: "Show logs for \(selectedPod.namespace)/\(selectedPod.name)"
-                    ) {
-                        openSelectedPodLogs()
-                    }
-                    .accessibilityIdentifier("terminal-shell-open-pod-logs")
-                }
-                exportMenu
-                RuneBorderedIconButton(
-                    "Save Active to Export Folder",
-                    systemImage: "folder.badge.plus",
-                    help: "Save the active terminal transcript directly to the default export folder."
-                ) {
-                    onSaveActiveTranscriptToExportFolder()
-                }
-                .disabled(!canSaveActiveTranscript)
-                .accessibilityIdentifier("terminal-quick-save")
-            }
+            exportMenu
         }
     }
 
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
-            HStack(spacing: RuneSpacing.xs) {
-                Label("Pod Shell", systemImage: "terminal")
-                    .runeText(.headline)
-                if let session {
-                    statusBadge(session.status)
-                } else if isComposingNewSession {
-                    draftBadge
-                }
-            }
-
-            if let activeTabLabel {
-                Text(activeTabLabel)
-                    .runeText(.microEmphasis)
-                    .foregroundStyle(.runeSecondary)
-                    .lineLimit(1)
-                    .help(activeTabLabel)
-            } else {
-                Text(isComposingNewSession ? "New shell tab" : "No active shell tab")
-                    .runeText(.micro)
-                    .foregroundStyle(.runeSecondary)
+        HStack(spacing: RuneSpacing.xs) {
+            Label("Pod Shell", systemImage: "terminal")
+                .runeText(.headline)
+            if let session {
+                statusBadge(session.status)
+            } else if isComposingNewSession {
+                draftBadge
             }
         }
+        .help(activeTabLabel ?? (isComposingNewSession ? "New shell tab" : "No active shell tab"))
     }
 
     private var exportMenu: some View {
         RuneToolbarMenu {
+            if let selectedPod, onOpenSelectedPodLogs != nil {
+                Button("Show \(selectedPod.name) in Logs") {
+                    openSelectedPodLogs()
+                }
+                .help("Show logs for \(selectedPod.namespace)/\(selectedPod.name)")
+                .accessibilityIdentifier("terminal-shell-open-pod-logs")
+            }
+
+            if canStopActiveSession {
+                Button("Disconnect") {
+                    onDisconnect()
+                }
+                .accessibilityIdentifier("terminal-session-disconnect")
+            }
+
+            Button("Clear Output") {
+                onClearTranscript()
+            }
+            .keyboardShortcut("k", modifiers: [.command])
+            .disabled(session?.transcript.isEmpty ?? true)
+            .accessibilityIdentifier("terminal-session-clear")
+
+            Divider()
+
             Button("Save Active Transcript") {
                 onSaveActiveTranscript()
             }
@@ -305,9 +377,11 @@ struct TerminalShellPanelView: View {
             }
             .disabled(!canSaveAllTranscripts)
         } label: {
-            Label("Export", systemImage: "square.and.arrow.down")
+            Label("More", systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
         }
-        .help("Export terminal transcripts")
+        .help("Logs, clear and export")
+        .accessibilityLabel("More shell actions")
     }
 
     func openSelectedPodLogs() {
@@ -341,9 +415,6 @@ struct TerminalShellPanelView: View {
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
-            .padding(.horizontal, RuneSpacing.inset)
-            .padding(.vertical, RuneSpacing.xs)
-            .background(RuneSurfaceBackground(kind: .editor))
         }
     }
 
@@ -570,9 +641,20 @@ struct TerminalShellPanelView: View {
             "\($0.namespace)/\($0.podName)" == podID && $0.containerName == containerName
         }) {
             onSelectSession(matchingSession.id)
+        } else if autoConnects, let pod = availablePods.first(where: { $0.id == podID }) {
+            // Choosing a pod is the intent to open its shell.
+            onStartSession(pod, containerName)
         } else {
             onComposeNewSession()
         }
+    }
+
+    /// A new tab for a pod connects at once where auto-connect applies.
+    private func autoConnectComposedTabIfNeeded() {
+        guard autoConnects, isComposingNewSession, session == nil,
+              let selectedPod, selectedPodExistingSession == nil, canApplyMutations else { return }
+        let containerName = selectedTerminalContainerName.isEmpty ? nil : selectedTerminalContainerName
+        onStartSession(selectedPod, containerName)
     }
 
     private func performPrimaryAction() {
@@ -912,5 +994,103 @@ private final class TerminalPromptTextView: NSTextView {
         string = newValue
         setSelectedRange(NSRange(location: newValue.utf16.count, length: 0))
         onTextReplacement?(newValue)
+    }
+}
+
+/// The connect action on the terminal surface itself: the pod, its state,
+/// why it failed, and one primary button. Centred on an empty tab; a slim
+/// bar at the bottom of a tab that still shows its transcript.
+struct TerminalConnectPrompt: View {
+    enum State: Equatable {
+        case notConnected
+        case connecting
+        case disconnected
+        case failed
+
+        var title: String {
+            switch self {
+            case .notConnected: return "Not connected"
+            case .connecting: return "Connecting…"
+            case .disconnected: return "Disconnected"
+            case .failed: return "Connection failed"
+            }
+        }
+    }
+
+    let podTitle: String
+    let state: State
+    let failureReason: String?
+    let isCompact: Bool
+    let isActionDisabled: Bool
+    let actionTitle: String
+    let action: () -> Void
+    @Environment(\.runeThemePalette) private var palette
+
+    var body: some View {
+        Group {
+            if isCompact {
+                HStack(spacing: RuneSpacing.sm) {
+                    statusLine
+                    Spacer(minLength: RuneSpacing.xs)
+                    actionButton
+                }
+                .padding(.horizontal, RuneSpacing.sm)
+                .padding(.vertical, RuneSpacing.xs)
+                .frame(maxWidth: .infinity)
+            } else {
+                VStack(spacing: RuneSpacing.sm) {
+                    Image(systemName: "terminal")
+                        .runeText(.title)
+                        .foregroundStyle(.runeSecondary)
+                    Text(podTitle)
+                        .runeText(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    statusLine
+                    if let failureReason, state == .failed, !failureReason.isEmpty {
+                        Text(failureReason)
+                            .runeText(.caption)
+                            .foregroundStyle(.runeSecondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(3)
+                            .frame(maxWidth: 360)
+                    }
+                    actionButton
+                }
+                .padding(RuneSpacing.lg)
+            }
+        }
+        .modifier(RuneCardSurface())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(podTitle), \(state.title)")
+        .accessibilityIdentifier("terminal-connect-prompt")
+    }
+
+    private var statusLine: some View {
+        HStack(spacing: RuneSpacing.tight) {
+            if state == .connecting {
+                ProgressView().controlSize(.small)
+            } else {
+                Circle()
+                    .fill(state == .failed ? RuneSemanticColorRole.danger.color(in: palette) : Color.secondary)
+                    .frame(width: 7, height: 7)
+            }
+            Text(isCompact ? "\(podTitle) · \(state.title)" : state.title)
+                .runeText(.caption)
+                .foregroundStyle(.runeSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private var actionButton: some View {
+        Button(action: action) {
+            Label(actionTitle, systemImage: state == .connecting ? "xmark" : "play.fill")
+        }
+        .buttonStyle(RuneToolbarButtonStyle(isProminent: state != .connecting))
+        .controlSize(.regular)
+        .disabled(isActionDisabled)
+        .keyboardShortcut(state == .connecting ? nil : .defaultAction)
+        .accessibilityIdentifier("terminal-session-primary-action")
     }
 }

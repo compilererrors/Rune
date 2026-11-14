@@ -139,10 +139,13 @@ struct RuneControlCard<Content: View>: View {
 /// a raised surface) and the group radius. No shadow, so scrolling past cards
 /// costs nothing extra.
 struct RuneCardSurface: ViewModifier {
+    /// Group radius for cards holding controls; status strips without
+    /// nested controls pass `RuneRadius.card`.
+    var cornerRadius: CGFloat = RuneUILayoutMetrics.controlCardCornerRadius
     @Environment(\.runeThemePalette) private var palette
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: RuneUILayoutMetrics.controlCardCornerRadius, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         let edge = palette?.stroke ?? Color(nsColor: .separatorColor)
         content
             .background(shape.fill(palette?.raisedSurface ?? Color.primary.opacity(0.04)))

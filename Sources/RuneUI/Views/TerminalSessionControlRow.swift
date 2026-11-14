@@ -150,6 +150,10 @@ struct TerminalSessionControlRow: View {
     let onPrimaryAction: () -> Void
     let onClear: () -> Void
     @Binding var selection: String
+    /// Off where Clear lives in the surrounding overflow menu (Pod Shell).
+    var showsClear = true
+    /// Off where Connect sits on the terminal surface itself (Pod Shell).
+    var showsPrimaryAction = true
 
     var body: some View {
         TerminalPodControlLayout(
@@ -173,6 +177,7 @@ struct TerminalSessionControlRow: View {
 
     private var actionButtons: some View {
         HStack(spacing: TerminalActionLayoutMetrics.spacing) {
+            if showsPrimaryAction {
             Button(action: onPrimaryAction) {
                 TerminalActionButtonLabel(
                     primaryActionTitle,
@@ -185,7 +190,9 @@ struct TerminalSessionControlRow: View {
             .disabled(isPrimaryActionDisabled)
             .help(primaryActionTitle)
             .accessibilityIdentifier("terminal-session-primary-action")
+            }
 
+            if showsClear {
             Button(action: onClear) {
                 TerminalActionButtonLabel(
                     "Clear",
@@ -199,6 +206,7 @@ struct TerminalSessionControlRow: View {
             .help("Clear active terminal output")
             .keyboardShortcut("k", modifiers: [.command])
             .accessibilityIdentifier("terminal-session-clear")
+            }
         }
         .fixedSize(horizontal: true, vertical: false)
     }

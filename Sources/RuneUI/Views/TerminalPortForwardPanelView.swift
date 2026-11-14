@@ -252,36 +252,26 @@ struct TerminalPortForwardPanelView: View {
         )
     }
 
+    /// Well-known secondary actions are icon buttons with tooltips; Start
+    /// keeps its label as the one primary action.
     private var expansionButton: some View {
-        Button {
+        RuneIconButton(
+            isExpanded ? "Minimize port-forward controls" : "Expand port-forward controls",
+            systemImage: isExpanded ? "chevron.up" : "chevron.down"
+        ) {
             isExpanded.toggle()
-        } label: {
-            TerminalActionButtonLabel(
-                isExpanded ? "Minimize" : "Expand",
-                systemImage: isExpanded ? "chevron.up" : "chevron.down",
-                density: .regular
-            )
         }
-        .buttonStyle(RuneToolbarButtonStyle())
-        .terminalActionControl(.regular)
-        .help(isExpanded ? "Minimize port-forward controls" : "Expand port-forward controls")
         .accessibilityIdentifier("terminal-port-forward-expand")
     }
 
     private var copyDraftKubectlButton: some View {
-        Button {
+        RuneIconButton(
+            "Copy kubectl port-forward command",
+            systemImage: "doc.on.doc",
+            isDisabled: selectedPod == nil
+        ) {
             copyDraftPortForwardCommand()
-        } label: {
-            TerminalActionButtonLabel(
-                "Copy kubectl",
-                systemImage: "doc.on.doc",
-                density: .regular
-            )
         }
-        .buttonStyle(RuneToolbarButtonStyle())
-        .terminalActionControl(.regular)
-        .disabled(selectedPod == nil)
-        .help("Copy kubectl port-forward command")
         .accessibilityIdentifier("terminal-port-forward-copy-command")
     }
 
@@ -340,14 +330,11 @@ struct TerminalPortForwardPanelView: View {
                     selectedPodStatusLabel
                     sessionUtilityButtons(session)
                 }
-            } else {
-                selectedPodStatusLabel
             }
         }
-        .padding(.horizontal, RuneSpacing.inset)
-        .padding(.vertical, RuneSpacing.tight)
-        .frame(minHeight: compactStatusHeight)
-        .background(RuneSurfaceBackground(kind: .editor))
+        // A status line inside the card, not a box in the card; the pod is
+        // already named under the title, so it is not repeated here.
+        .frame(minHeight: compactStatusHeight, alignment: .topLeading)
     }
 
     private var selectedPodStatusLabel: some View {

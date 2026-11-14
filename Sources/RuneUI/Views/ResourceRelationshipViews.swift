@@ -28,10 +28,10 @@ struct ResourceRelationshipSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
-            Text(title)
-                .runeText(.microEmphasis)
-                .foregroundStyle(.runeSecondary)
+        // A section like the fact grids: header, then rows divided by
+        // hairlines, with no card around them.
+        VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
+            RuneSectionLabel(title)
 
             if usesBoundedInnerScroll {
                 ScrollView(.vertical) {
@@ -46,8 +46,6 @@ struct ResourceRelationshipSection<Content: View>: View {
                 relationshipRows
             }
         }
-        .padding(RuneSpacing.inset)
-        .background(RuneSurfaceBackground(kind: .editor))
     }
 
     private var usesBoundedInnerScroll: Bool {
@@ -56,8 +54,12 @@ struct ResourceRelationshipSection<Content: View>: View {
     }
 
     private var relationshipRows: some View {
-        LazyVStack(alignment: .leading, spacing: ResourceRelationshipLayoutMetrics.rowSpacing) {
+        LazyVStack(alignment: .leading, spacing: 0) {
             content
+        }
+        // Rows draw the hairline above them; hide the first one.
+        .mask {
+            Rectangle().padding(.top, 1)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
@@ -141,6 +143,9 @@ struct ResourceRelationshipLinkButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .top) {
+            RuneHairline()
+        }
         .accessibilityLabel(title)
         .accessibilityValue(subtitle)
         .accessibilityHint("Opens the related resource in the inspector")
@@ -172,6 +177,9 @@ struct ResourceRelationshipEmptyRow: View {
             minHeight: ResourceRelationshipLinkButton.minimumHeight,
             alignment: .leading
         )
+        .overlay(alignment: .top) {
+            RuneHairline()
+        }
         .accessibilityElement(children: .combine)
     }
 }

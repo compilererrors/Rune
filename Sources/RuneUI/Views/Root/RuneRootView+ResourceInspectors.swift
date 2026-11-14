@@ -10,13 +10,15 @@ extension RuneRootView {
             if let pod = viewModel.state.selectedPod {
                 RuneInspectorScaffold(
                     title: pod.name,
+                    subtitle: inspectorSubtitle("Pod", namespace: pod.namespace),
+                    status: RuneInspectorStatus(pod.displayStatus),
                     copyAccessibilityLabel: "Copy Pod name",
                     bodyScrollBehavior: podInspectorTab == .overview ? .vertical : .selfManaged,
                     showsActions: podInspectorTab == .overview,
                     onCopy: { copyToClipboard(pod.name) },
                     onRefresh: refreshDetailPane,
                     info: {
-                        podInspectorCoreInfo(pod)
+                        EmptyView()
                     },
                     tabs: {
                     RuneTabBar("", selection: $podInspectorTab, tabs: PodInspectorTab.allCases) { $0.localizedTitle(appString) }
@@ -102,13 +104,15 @@ extension RuneRootView {
             if let deployment = viewModel.state.selectedDeployment {
                 RuneInspectorScaffold(
                     title: deployment.name,
+                    subtitle: inspectorSubtitle("Deployment", namespace: deployment.namespace),
+                    status: deploymentInspectorStatus(deployment),
                     copyAccessibilityLabel: "Copy Deployment name",
                     bodyScrollBehavior: deploymentInspectorTab == .overview ? .vertical : .selfManaged,
                     showsActions: deploymentInspectorTab == .overview,
                     onCopy: { copyToClipboard(deployment.name) },
                     onRefresh: refreshDetailPane,
                     info: {
-                        deploymentInspectorCoreInfo(deployment)
+                        EmptyView()
                     },
                     tabs: {
                     RuneTabBar("", selection: $deploymentInspectorTab, tabs: DeploymentInspectorTab.allCases) { $0.localizedTitle(appString) }
@@ -206,13 +210,14 @@ extension RuneRootView {
             if let service = viewModel.state.selectedService {
                 RuneInspectorScaffold(
                     title: service.name,
+                    subtitle: inspectorSubtitle("Service", namespace: service.namespace),
                     copyAccessibilityLabel: "Copy Service name",
                     bodyScrollBehavior: serviceInspectorTab == .overview ? .vertical : .selfManaged,
                     showsActions: serviceInspectorTab == .overview,
                     onCopy: { copyToClipboard(service.name) },
                     onRefresh: refreshDetailPane,
                     info: {
-                        serviceInspectorCoreInfo(service)
+                        EmptyView()
                     },
                     tabs: {
                     RuneTabBar("", selection: $serviceInspectorTab, tabs: ServiceInspectorTab.allCases) { $0.localizedTitle(appString) }
@@ -225,7 +230,8 @@ extension RuneRootView {
                     Group {
                         switch serviceInspectorTab {
                         case .overview:
-                            VStack(alignment: .leading, spacing: RuneSpacing.sm) {
+                            VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorGroupSpacing) {
+                                serviceInspectorCoreInfo(service)
                                 let relatedPods = viewModel.selectedServiceRelatedPods
                                 if !relatedPods.isEmpty {
                                     RelatedPodsRelationshipSection(pods: relatedPods, open: viewModel.openServiceRelatedPod)
@@ -310,12 +316,9 @@ extension RuneRootView {
     }
 
     func serviceInspectorCoreInfo(_ service: ServiceSummary) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
-            if shouldShowResourceNamespaceLabel(service.namespace) {
-                inspectorInfoRow("Namespace", value: service.namespace, symbol: "square.stack.3d.up")
-            }
-            inspectorInfoRow("Type", value: service.type, symbol: "point.3.connected.trianglepath.dotted")
-            inspectorInfoRow("Cluster IP", value: service.clusterIP, symbol: "network")
+        RuneFactGrid("Details") {
+            inspectorInfoRow("Type", value: service.type)
+            inspectorInfoRow("Cluster IP", value: service.clusterIP)
         }
     }
 
@@ -338,38 +341,45 @@ extension RuneRootView {
         .disabled(!viewModel.canApplyClusterMutations)
     }
 
+    /// The message is the focus: facts as a short grid with the object as a
+    /// link, then the message as readable, wrapping text.
     var eventDetails: some View {
         Group {
             if let event = viewModel.state.selectedEvent {
                 RuneInspectorScaffold(
                     title: event.reason,
+                    subtitle: eventInspectorSubtitle(event),
+                    status: RuneInspectorStatus(event.type, tone: event.type.lowercased() == "warning" ? .warning : .neutral),
                     copyAccessibilityLabel: "Copy event reason",
                     bodyScrollBehavior: .vertical,
                     showsTabs: false,
-                    showsActions: !event.objectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    showsActions: false,
                     onCopy: { copyToClipboard(event.reason) },
                     onRefresh: refreshDetailPane,
                     info: {
-                        eventInspectorCoreInfo(event)
+                        EmptyView()
                     },
                     tabs: {
                         EmptyView()
                     },
                     actions: {
-                        Button(eventGoToResourceButtonTitle(for: event)) {
-                            viewModel.openEventSource(event)
-                        }
-                        .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
-                        .help("Switches section and selects the involved object when it appears in the list.")
+                        EmptyView()
                     },
                     content: {
-                        Text(event.message.isEmpty ? "No event message" : event.message)
-                            .runeText(.code)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(RuneSpacing.inset)
-                            .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorGroupSpacing) {
+                            VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
+                                RuneSectionLabel("Message")
+                                Text(event.message.isEmpty ? "No event message" : event.message)
+                                    .runeText(.body)
+                                    .foregroundStyle(event.message.isEmpty ? .runeSecondary : .runePrimary)
+                                    .textSelection(.enabled)
+                                    .lineSpacing(RuneSpacing.hairline)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityIdentifier("event-inspector-message")
+                            }
+                            eventInspectorCoreInfo(event)
+                        }
                     }
                 )
             } else {
@@ -385,19 +395,28 @@ extension RuneRootView {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    func eventInspectorSubtitle(_ event: EventSummary) -> String {
+        inspectorSubtitle("Event · \(eventInvolvedObjectLabel(event))", namespace: event.involvedNamespace)
+    }
+
+    func eventInvolvedObjectLabel(_ event: EventSummary) -> String {
+        let kind = event.involvedKind?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return kind.isEmpty ? event.objectName : "\(kind)/\(event.objectName)"
+    }
+
     func eventInspectorCoreInfo(_ event: EventSummary) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
-            if let timestamp = event.lastTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines), !timestamp.isEmpty {
-                inspectorInfoRow("Time", value: timestamp, symbol: "clock")
+        RuneFactGrid("Details") {
+            let object = eventInvolvedObjectLabel(event)
+            if !event.objectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                RuneInspectorInfoRow("Object", copyValue: object, onCopy: copyToClipboard) {
+                    RuneFactLink(object, help: "\(eventGoToResourceButtonTitle(for: event)): switches section and selects it when it appears in the list.") {
+                        viewModel.openEventSource(event)
+                    }
+                    .accessibilityLabel(eventGoToResourceButtonTitle(for: event))
+                }
             }
-            inspectorInfoRow("Type", value: event.type, symbol: "exclamationmark.bubble")
-
-            let kind = event.involvedKind?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let object = kind.isEmpty ? event.objectName : "\(kind) / \(event.objectName)"
-            inspectorInfoRow("Object", value: object, symbol: "cube")
-
-            if let namespace = event.involvedNamespace?.trimmingCharacters(in: .whitespacesAndNewlines), !namespace.isEmpty {
-                inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
+            if let timestamp = event.lastTimestamp?.trimmingCharacters(in: .whitespacesAndNewlines), !timestamp.isEmpty {
+                inspectorInfoRow("Time", value: timestamp)
             }
         }
     }
@@ -433,20 +452,15 @@ extension RuneRootView {
             if let resource {
                 RuneInspectorScaffold(
                     title: resource.name,
+                    subtitle: inspectorSubtitle(resource.kind.singularTypeName, namespace: resource.namespace),
+                    status: genericResourceStatus(resource),
                     copyAccessibilityLabel: "Copy \(resource.kind.localizedTitle(appString)) name",
                     bodyScrollBehavior: genericResourceManifestTab == .overview ? .vertical : .selfManaged,
                     showsActions: genericResourceManifestTab == .overview && resource.kind == .configMap,
                     onCopy: { copyToClipboard(resource.name) },
                     onRefresh: refreshDetailPane,
                     info: {
-                        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
-                            if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
-                                inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
-                            }
-                            let labels = resource.kind.summaryFieldLabels
-                            inspectorInfoRow(labels.primary.title, value: resource.primaryText, symbol: labels.primary.symbol)
-                            inspectorInfoRow(labels.secondary.title, value: resource.secondaryText, symbol: labels.secondary.symbol)
-                        }
+                        EmptyView()
                     },
                     tabs: {
                         RuneTabBar(appString(.manifest), selection: $genericResourceManifestTab, tabs: GenericResourceManifestTab.allCases) { $0.localizedTitle(appString) }
@@ -478,11 +492,27 @@ extension RuneRootView {
         }
     }
 
+    /// Kinds whose first summary field is their status show it as the pill.
+    func genericResourceStatus(_ resource: ClusterResourceSummary) -> RuneInspectorStatus? {
+        guard resource.kind.summaryFieldLabels.primary.title == "Status" else { return nil }
+        let text = resource.primaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : RuneInspectorStatus(text)
+    }
+
     func genericResourceOverview<Supplementary: View>(
         resource: ClusterResourceSummary,
         @ViewBuilder supplementary: () -> Supplementary
     ) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.sm) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorGroupSpacing) {
+            RuneFactGrid("Details") {
+                let labels = resource.kind.summaryFieldLabels
+                // A status field is the header pill, not a row.
+                if genericResourceStatus(resource) == nil {
+                    inspectorInfoRow(labels.primary.title, value: resource.primaryText)
+                }
+                inspectorInfoRow(labels.secondary.title, value: resource.secondaryText)
+            }
+
             supplementary()
 
             let relatedEvents = viewModel.relatedEvents(for: resource)

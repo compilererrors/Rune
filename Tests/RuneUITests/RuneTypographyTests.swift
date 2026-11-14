@@ -209,7 +209,8 @@ final class RuneTypographyTests: XCTestCase {
         let importSource = try source(at: "Sources/RuneUI/Views/KubeConfigImportReviewPanel.swift")
         let nativeContextSource = try source(at: "Sources/RuneUI/Views/AddClusterNativeContextSection.swift")
 
-        XCTAssertTrue(designSource.contains("Text(title)\n                .runeText(.micro)\n                .foregroundStyle(.runeSecondary)"))
+        // Fact-grid labels are caption size and regular weight, as in Get Info.
+        XCTAssertTrue(designSource.contains("Text(title)\n            .runeText(.caption)\n            .foregroundStyle(.runeSecondary)"))
         XCTAssertTrue(importSource.contains("Text(context.name)\n                                .runeText(.micro)\n                                .foregroundStyle(.runeSecondary)"))
         XCTAssertTrue(importSource.contains("Duplicate handling requires an explicit choice before saving:"))
         XCTAssertTrue(nativeContextSource.contains("Text(\"Imported context\")\n                .runeText(.micro)\n                .foregroundStyle(.runeSecondary)"))
@@ -217,8 +218,7 @@ final class RuneTypographyTests: XCTestCase {
 
     private func fittingSize(dynamicTypeSize: DynamicTypeSize) -> CGSize {
         let host = NSHostingView(rootView: RuneInspectorInfoRow(
-            "Namespace and environment",
-            systemImage: "square.stack.3d.up"
+            "Namespace and environment"
         ) {
             Text("A long localized value that must remain readable")
                 .fixedSize(horizontal: false, vertical: true)

@@ -294,30 +294,83 @@ struct RuneWrappingLayout: Layout {
     }
 }
 
+/// One row with the last child flush right when everything fits on one
+/// line; its ideal width is the packed width, so `ViewThatFits` still moves
+/// on to a compact variant when the row is too narrow.
+struct RuneJustifiedRowLayout: Layout {
+    var spacing: CGFloat = RuneSpacing.xs
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let packed = sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(0, sizes.count - 1))
+        let height = sizes.map(\.height).max() ?? 0
+        guard let width = proposal.width, width.isFinite else {
+            return CGSize(width: packed, height: height)
+        }
+        return CGSize(width: max(width, packed), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        var x = bounds.minX
+        for (index, size) in sizes.enumerated() {
+            let isLast = index == sizes.count - 1 && sizes.count > 1
+            let originX = isLast ? max(x, bounds.maxX - size.width) : x
+            subviews[index].place(
+                at: CGPoint(x: originX, y: bounds.minY + (bounds.height - size.height) / 2),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(size)
+            )
+            x += size.width + spacing
+        }
+    }
+}
+
 /// One toolbar row that never clips: full labels when they fit, then icons
 /// only (labels stay as help and accessibility names), then wrapping onto
-/// more rows, with labels while each control still fits on its own.
+/// more rows, with labels while each control still fits on its own. With
+/// `justifiesLastItem`, the last group sits at the trailing edge while the
+/// row is on one line (an editor bar: edit actions left, document right).
 struct RuneToolbarOverflowRow<Content: View>: View {
     var spacing: CGFloat = RuneSpacing.xs
+    var justifiesLastItem = false
     @ViewBuilder let content: Content
 
-    init(spacing: CGFloat = RuneSpacing.xs, @ViewBuilder content: () -> Content) {
+    init(spacing: CGFloat = RuneSpacing.xs, justifiesLastItem: Bool = false, @ViewBuilder content: () -> Content) {
         self.spacing = spacing
+        self.justifiesLastItem = justifiesLastItem
         self.content = content()
     }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: spacing) { content }
-                .fixedSize()
-                .labelStyle(.titleAndIcon)
-            HStack(alignment: .center, spacing: spacing) { content }
-                .fixedSize()
-                .labelStyle(.iconOnly)
-            RuneWrappingLayout(spacing: spacing) { content }
-                .labelStyle(.titleAndIcon)
-            RuneWrappingLayout(spacing: spacing) { content }
-                .labelStyle(.iconOnly)
+        Group {
+            if justifiesLastItem {
+                ViewThatFits(in: .horizontal) {
+                    RuneJustifiedRowLayout(spacing: spacing) { content }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .labelStyle(.titleAndIcon)
+                    RuneJustifiedRowLayout(spacing: spacing) { content }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .labelStyle(.iconOnly)
+                    RuneWrappingLayout(spacing: spacing) { content }
+                        .labelStyle(.titleAndIcon)
+                    RuneWrappingLayout(spacing: spacing) { content }
+                        .labelStyle(.iconOnly)
+                }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: spacing) { content }
+                        .fixedSize()
+                        .labelStyle(.titleAndIcon)
+                    HStack(alignment: .center, spacing: spacing) { content }
+                        .fixedSize()
+                        .labelStyle(.iconOnly)
+                    RuneWrappingLayout(spacing: spacing) { content }
+                        .labelStyle(.titleAndIcon)
+                    RuneWrappingLayout(spacing: spacing) { content }
+                        .labelStyle(.iconOnly)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

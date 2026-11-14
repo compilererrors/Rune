@@ -13,9 +13,11 @@ struct InspectorTextSurface<Content: View>: View {
     @ViewBuilder var content: () -> Content
     @Environment(\.runeThemePalette) private var palette
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.runeDocumentFrameEmbedded) private var isEmbedded
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: RuneRadius.card, style: .continuous)
+        // Inside a document frame the frame draws the edge and the corners.
+        let shape = RoundedRectangle(cornerRadius: isEmbedded ? 0 : RuneRadius.card, style: .continuous)
         GeometryReader { proxy in
             content()
                 .frame(
@@ -26,7 +28,7 @@ struct InspectorTextSurface<Content: View>: View {
                 .background(shape.fill(role.fill(palette: palette, colorScheme: colorScheme)))
                 .overlay {
                     shape
-                        .strokeBorder(role.frame(palette: palette), lineWidth: 1)
+                        .strokeBorder(role.frame(palette: palette), lineWidth: isEmbedded ? 0 : 1)
                         .allowsHitTesting(false)
                 }
                 .clipShape(shape)

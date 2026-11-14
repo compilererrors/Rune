@@ -59,7 +59,12 @@ extension RuneRootView {
             onSaveAllTerminalTranscriptsAndOpen: { viewModel.saveAllTerminalTranscriptsZipToExportFolder(openAfterSave: true) },
             isFavoritePod: isFavoritePod,
             onToggleFavoritePod: toggleFavoritePod,
-            onOpenSelectedPodLogs: openTerminalLogs
+            onOpenSelectedPodLogs: openTerminalLogs,
+            autoConnectsShell: TerminalShellConnectPolicy.autoConnects(
+                isReadOnly: viewModel.state.isReadOnlyMode,
+                isProduction: viewModel.isProductionContext,
+                canApplyMutations: viewModel.canApplyClusterMutations
+            )
         )
         .id("terminal")
         .onAppear(perform: reconcileTerminalPodSelections)
@@ -87,48 +92,63 @@ extension RuneRootView {
         reconcileTerminalLogTabs()
     }
 
+    /// The inspector names what it shows: the session's target pod, in the
+    /// same header block as every other inspector (name, "Pod · namespace",
+    /// status pill, copy, refresh).
     var terminalDetails: some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.sm) {
-            HStack(spacing: RuneSpacing.xs) {
-                Text(appString(.terminal))
-                    .runeText(.title, weight: .bold)
-                Spacer(minLength: 0)
-                if terminalInspectorTab == .logs, let pod = terminalLogActivePod {
-                    RuneBorderedIconButton(
-                        "Use \(pod.name) in Pod Shell",
-                        systemImage: "terminal",
-                        help: "Use \(pod.namespace)/\(pod.name) in Pod Shell"
-                    ) {
-                        openTerminalShell(for: pod)
-                    }
-                    .accessibilityIdentifier("terminal-logs-use-pod-in-shell")
-                }
-            }
+        Group {
+            if let pod = terminalInspectorPod {
+                RuneInspectorScaffold(
+                    title: pod.name,
+                    subtitle: inspectorSubtitle("Pod", namespace: pod.namespace),
+                    status: RuneInspectorStatus(pod.displayStatus),
+                    copyAccessibilityLabel: "Copy pod name",
+                    bodyScrollBehavior: .selfManaged,
+                    // The logs hand-off lives in the log viewer's More menu.
+                    showsActions: false,
+                    onCopy: { copyToClipboard(pod.name) },
+                    onRefresh: refreshDetailPane,
+                    info: {
+                        EmptyView()
+                    },
+                    tabs: {
+                        RuneTabBar("", selection: $terminalInspectorTab, tabs: TerminalInspectorTab.allCases) { $0.localizedTitle(appString) }
+                            .accessibilityLabel("Terminal Inspector")
+                    },
+                    actions: {
+                        EmptyView()
+                    },
+                    content: {
+                        Group {
+                            switch terminalInspectorTab {
+                            case .commands:
+                                ResourceTerminalDetailsView(
+                                    session: viewModel.state.terminalSession,
+                                    selectedPod: terminalInspectorPod,
+                                    portForwardSessions: viewModel.state.portForwardSessions,
+                                    onFillCommand: { command in
+                                        viewModel.applySuggestedTerminalCommand(command, sendImmediately: false)
+                                    }
+                                )
 
-            RuneTabBar("", selection: $terminalInspectorTab, tabs: TerminalInspectorTab.allCases) { $0.localizedTitle(appString) }
-            .accessibilityLabel("Terminal Inspector")
+                            case .logs:
+                                terminalPodLogsDetails
 
-            Group {
-                switch terminalInspectorTab {
-                case .commands:
-                    ResourceTerminalDetailsView(
-                        session: viewModel.state.terminalSession,
-                        selectedPod: terminalInspectorPod,
-                        portForwardSessions: viewModel.state.portForwardSessions,
-                        onFillCommand: { command in
-                            viewModel.applySuggestedTerminalCommand(command, sendImmediately: false)
+                            case .yaml:
+                                terminalPodYAMLDetails
+                            }
                         }
-                    )
-
-                case .logs:
-                    terminalPodLogsDetails
-
-                case .yaml:
-                    terminalPodYAMLDetails
-                }
-            }
-            .transaction { transaction in
-                transaction.animation = nil
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
+                    }
+                )
+            } else {
+                RuneContentStateView(.empty(
+                    title: "No pod targeted",
+                    message: "Choose a pod for the shell or its logs to inspect it here."
+                ))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -161,17 +181,8 @@ extension RuneRootView {
     var terminalPodLogsDetails: some View {
         if let pod = terminalLogActivePod {
             let podOptions = terminalLogPodOptions()
+            // The pod tabs switch the log document, so they sit on its top edge.
             VStack(alignment: .leading, spacing: RuneSpacing.sm) {
-                TerminalLogTabBar(
-                    tabs: terminalLogTabPresentations,
-                    activeTabID: terminalLogTabState.activeTabID,
-                    canAddTab: !viewModel.state.pods.isEmpty,
-                    onSelectTab: selectTerminalLogTab,
-                    onCloseTab: closeTerminalLogTab,
-                    onToggleFavoriteTab: toggleFavoriteTerminalLogTab,
-                    onAddTab: addTerminalLogTab
-                )
-
                 PodLogsInspectorPane(
                     selectedLogPreset: $viewModel.selectedLogPreset,
                     includePreviousLogs: $viewModel.includePreviousLogs,
@@ -208,6 +219,16 @@ extension RuneRootView {
                     onCopyAll: { viewModel.copyCurrentLogsToClipboard() },
                     onToggleStreamPause: { viewModel.toggleLogStreamPause() }
                 )
+                .environment(\.runeSurfaceTabs, AnyView(terminalLogTabBar))
+                .environment(\.runeLogExtraActions, [
+                    RuneLogExtraAction(
+                        id: "terminal-logs-use-pod-in-shell",
+                        title: "Use in Pod Shell",
+                        systemImage: "terminal",
+                        help: "Use \(pod.namespace)/\(pod.name) in Pod Shell",
+                        action: { openTerminalShell(for: pod) }
+                    )
+                ])
                 .onAppear {
                     ensureTerminalLogTabs(for: pod)
                     reloadActiveTerminalLogPod()
@@ -233,6 +254,18 @@ extension RuneRootView {
                 )
             }
         }
+    }
+
+    var terminalLogTabBar: some View {
+        TerminalLogTabBar(
+            tabs: terminalLogTabPresentations,
+            activeTabID: terminalLogTabState.activeTabID,
+            canAddTab: !viewModel.state.pods.isEmpty,
+            onSelectTab: selectTerminalLogTab,
+            onCloseTab: closeTerminalLogTab,
+            onToggleFavoriteTab: toggleFavoriteTerminalLogTab,
+            onAddTab: addTerminalLogTab
+        )
     }
 
     func terminalLogPodOptions() -> [PodSummary] {

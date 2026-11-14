@@ -45,7 +45,7 @@ struct ResourceDescribeInspectorPane: View {
                 applyHelp: hasUnsavedEdits
                     ? "Sends the manifest to the cluster. Closing the editor or this tab does not."
                     : "No local YAML changes to apply.",
-                statusText: statusText,
+                statusText: nil,
                 onApply: onApply
             ) {
                 Button {
@@ -58,26 +58,34 @@ struct ResourceDescribeInspectorPane: View {
                 .disabled(yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .help("Open this resource's editable YAML. Changes stay local until you choose Apply.")
             } secondaryActions: {
-                if !simpleMode {
-                    ManifestManagedFieldsToggle(
-                        hidesManagedFields: $hidesManagedFields,
-                        isDisabled: managedFieldsFilter.removedBlockCount == 0
-                    )
-                }
-
+                // Export and the managed-fields option in one overflow menu.
                 RuneToolbarMenu {
                     Button("\(t(.exportDescribe))...", action: onExport)
                     Button("Save Describe to Export Folder", action: onExportToExportFolder)
                     Button("Save Describe and Open", action: onExportAndOpen)
+                    if !simpleMode {
+                        Divider()
+                        Toggle(t(.hideManaged), isOn: $hidesManagedFields)
+                            .disabled(managedFieldsFilter.removedBlockCount == 0)
+                    }
                 } label: {
-                    Label(t(.exportDescribe), systemImage: "square.and.arrow.down")
+                    Label("More", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
                 }
                 .disabled(describeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help("Export the current describe output to a file.")
+                .help("Export and view options")
+                .accessibilityLabel("More describe actions")
             }
         } status: {
-            if let staleContentState = documentState.staleContentState {
-                RuneContentStateView(staleContentState, variant: .inline)
+            VStack(alignment: .leading, spacing: RuneSpacing.xs) {
+                HStack(spacing: RuneSpacing.xs) {
+                    Spacer(minLength: 0)
+                    ManifestUpdatedNote(text: statusText)
+                }
+                .frame(minHeight: RuneDisclosureMetrics.headerMinimumHeight)
+                if let staleContentState = documentState.staleContentState {
+                    RuneContentStateView(staleContentState, variant: .inline)
+                }
             }
         } surface: {
             FindableInspectorSurface(

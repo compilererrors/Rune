@@ -125,7 +125,11 @@ struct ResourceYAMLInspectorPane: View {
             text: yamlText,
             externalIssues: validationIssues
         )
-        let surfaceIssues = effectiveHidesManagedFields && canHideManagedFields ? [] : presentedIssues
+        // With managed fields hidden, markers move onto the filtered lines
+        // instead of disappearing.
+        let surfaceIssues = effectiveHidesManagedFields && canHideManagedFields
+            ? filteredYAML.mapIssues(presentedIssues, source: documentText)
+            : presentedIssues
         let canApplyYAML = canApplyMutations
             && hasUnsavedEdits
             && !yamlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -144,7 +148,7 @@ struct ResourceYAMLInspectorPane: View {
                 applyHelp: hasUnsavedEdits
                     ? "Sends the manifest to the cluster. Closing the editor or this tab does not."
                     : "No local YAML changes to apply.",
-                statusText: statusText,
+                statusText: nil,
                 onApply: onApply
             ) {
                 if inlineEditorImplementation.supportsInlineEditing {
@@ -163,16 +167,26 @@ struct ResourceYAMLInspectorPane: View {
                     .accessibilityLabel(isInlineEditing ? t(.done) : t(.quickEdit))
                 }
 
-                Button("\(t(.edit))...", action: onOpenEditor)
-                    .buttonStyle(RuneToolbarButtonStyle())
-                    .disabled(yamlText.isEmpty)
+                // Opens the same draft in a large, resizable editor with the
+                // same bar and validation; closing it keeps the edits.
+                Button(action: onOpenEditor) {
+                    Label("Expand", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .buttonStyle(RuneToolbarButtonStyle())
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .disabled(yamlText.isEmpty)
+                .help("Open the YAML in a large editor (⇧⌘↩)")
+                .accessibilityIdentifier("resource-yaml-expand-editor")
             } secondaryActions: {
-                ManifestYAMLActionMenus(
+                ManifestYAMLMoreMenu(
                     draftTitle: t(.draft),
                     fileTitle: t(.file),
+                    hideManagedTitle: t(.hideManaged),
                     yamlTextIsEmpty: yamlText.isEmpty,
                     hasUnsavedEdits: hasUnsavedEdits,
                     canReapplySnapshot: canReapplySnapshot,
+                    hidesManagedFields: !simpleMode && filteredYAML.removedBlockCount > 0 ? $hidesManagedFields : nil,
+                    managedFieldsDisabled: isInlineEditing,
                     onReapplySnapshot: onReapplySnapshot,
                     onRevert: {
                         onRevert()
@@ -186,13 +200,6 @@ struct ResourceYAMLInspectorPane: View {
                     onExportToExportFolder: onExportToExportFolder,
                     onExportAndOpen: onExportAndOpen
                 )
-
-                if !simpleMode, filteredYAML.removedBlockCount > 0 {
-                    ManifestManagedFieldsToggle(
-                        hidesManagedFields: $hidesManagedFields,
-                        isDisabled: isInlineEditing
-                    )
-                }
             }
         } status: {
             VStack(alignment: .leading, spacing: RuneSpacing.xs) {
@@ -201,6 +208,7 @@ struct ResourceYAMLInspectorPane: View {
                     isValidating: isValidating,
                     modeNote: isInlineEditing ? t(.yamlEditsStayLocal) : nil,
                     hasUnsavedEdits: hasUnsavedEdits,
+                    updatedText: statusText,
                     onSelectIssue: navigateToIssue
                 )
                 if let staleContentState = resolvedDocumentState.staleContentState {
@@ -434,82 +442,87 @@ struct ResourceYAMLEditorSheetView: View {
                     .accessibilityIdentifier("rune.yaml-editor.notice")
             }
 
-            ManifestActionToolbar(
-                applyTitle: t(.applyYAML),
-                canApply: canApplyYAML,
-                applyHelp: hasUnsavedEdits
-                    ? "Sends the manifest to the cluster. Closing this sheet does not."
-                    : "No local YAML changes to apply.",
-                statusText: dryRunStatus,
-                onApply: onApply
-            ) {
-                Button(action: onDryRun) {
-                    Label("Dry Run", systemImage: "checkmark.shield")
-                }
-                .buttonStyle(RuneToolbarButtonStyle())
-                .disabled(!canDryRun || isRunningDryRun)
-                .help(
-                    isRunningDryRun
-                        ? "Kubernetes is checking this draft."
-                        : "Checks this draft with Kubernetes. Nothing is applied."
-                )
-                .accessibilityIdentifier("resource-yaml-server-dry-run")
+            // The same document frame as the inspector: actions attached on
+            // top, the editor, and problems as the bottom line.
+            RuneDocumentFrame {
+                ManifestActionToolbar(
+                    applyTitle: t(.applyYAML),
+                    canApply: canApplyYAML,
+                    applyHelp: hasUnsavedEdits
+                        ? "Sends the manifest to the cluster. Closing this sheet does not."
+                        : "No local YAML changes to apply.",
+                    statusText: dryRunStatus,
+                    onApply: onApply
+                ) {
+                    Button(action: onDryRun) {
+                        Label("Dry Run", systemImage: "checkmark.shield")
+                    }
+                    .buttonStyle(RuneToolbarButtonStyle())
+                    .disabled(!canDryRun || isRunningDryRun)
+                    .help(
+                        isRunningDryRun
+                            ? "Kubernetes is checking this draft."
+                            : "Checks this draft with Kubernetes. Nothing is applied."
+                    )
+                    .accessibilityIdentifier("resource-yaml-server-dry-run")
 
-                ManifestEditorUndoButton(
-                    canUndo: canUndoEdit,
-                    onUndo: onUndoEdit
-                )
-            } secondaryActions: {
-                ManifestYAMLActionMenus(
-                    draftTitle: t(.draft),
-                    fileTitle: t(.file),
-                    yamlTextIsEmpty: yamlText.isEmpty,
-                    hasUnsavedEdits: hasUnsavedEdits,
-                    canReapplySnapshot: canReapplySnapshot,
-                    onReapplySnapshot: onReapplySnapshot,
-                    onRevert: onRevert,
-                    onImport: onImport,
-                    onExport: onExport,
-                    onExportToExportFolder: onExportToExportFolder,
-                    onExportAndOpen: onExportAndOpen
-                )
-            }
-
-            YAMLValidationSummaryView(
-                issues: presentedIssues,
-                isValidating: isValidating,
-                expandedListMaxHeight: RuneUILayoutMetrics.yamlSheetValidationListMaxHeight,
-                onSelectIssue: navigateToIssue
-            )
-
-            FindableInspectorSurface(
-                text: yamlText,
-                placeholder: t(.findInYAML),
-                query: $findQuery,
-                matchCase: $findMatchCase,
-                selectedMatchIndex: $selectedFindMatchIndex,
-                isFindPresented: $isFindPresented
-            ) { searchIndex, searchNavigationRevision in
-                ManifestDocumentSurface(state: resolvedDocumentState) {
-                    ResourceYAMLEditorSurface(
-                        text: $yamlText,
-                        displayText: yamlText,
-                        readOnlyResetID: "yaml-sheet:\(resourceReference)",
-                        inlineEditing: true,
-                        implementation: .appKitTextView,
-                        validationIssues: presentedIssues,
-                        navigationRequest: issueNavigationRequest,
-                        searchQuery: findQuery,
-                        searchMatchCase: findMatchCase,
-                        selectedSearchMatchIndex: selectedFindMatchIndex,
-                        searchIndex: searchIndex,
-                        searchNavigationRevision: searchNavigationRevision,
-                        editorRestorationRequest: editorRestorationRequest,
-                        onEditorEdit: onEditorEdit,
-                        onUndoCommand: onUndoEdit
+                    ManifestEditorUndoButton(
+                        canUndo: canUndoEdit,
+                        onUndo: onUndoEdit
+                    )
+                } secondaryActions: {
+                    ManifestYAMLActionMenus(
+                        draftTitle: t(.draft),
+                        fileTitle: t(.file),
+                        yamlTextIsEmpty: yamlText.isEmpty,
+                        hasUnsavedEdits: hasUnsavedEdits,
+                        canReapplySnapshot: canReapplySnapshot,
+                        onReapplySnapshot: onReapplySnapshot,
+                        onRevert: onRevert,
+                        onImport: onImport,
+                        onExport: onExport,
+                        onExportToExportFolder: onExportToExportFolder,
+                        onExportAndOpen: onExportAndOpen
                     )
                 }
+            } content: {
+                FindableInspectorSurface(
+                    text: yamlText,
+                    placeholder: t(.findInYAML),
+                    query: $findQuery,
+                    matchCase: $findMatchCase,
+                    selectedMatchIndex: $selectedFindMatchIndex,
+                    isFindPresented: $isFindPresented
+                ) { searchIndex, searchNavigationRevision in
+                    ManifestDocumentSurface(state: resolvedDocumentState) {
+                        ResourceYAMLEditorSurface(
+                            text: $yamlText,
+                            displayText: yamlText,
+                            readOnlyResetID: "yaml-sheet:\(resourceReference)",
+                            inlineEditing: true,
+                            implementation: .appKitTextView,
+                            validationIssues: presentedIssues,
+                            navigationRequest: issueNavigationRequest,
+                            searchQuery: findQuery,
+                            searchMatchCase: findMatchCase,
+                            selectedSearchMatchIndex: selectedFindMatchIndex,
+                            searchIndex: searchIndex,
+                            searchNavigationRevision: searchNavigationRevision,
+                            editorRestorationRequest: editorRestorationRequest,
+                            onEditorEdit: onEditorEdit,
+                            onUndoCommand: onUndoEdit
+                        )
+                    }
+                }
+            } status: {
+                YAMLValidationSummaryView(
+                    issues: presentedIssues,
+                    isValidating: isValidating,
+                    expandedListMaxHeight: RuneUILayoutMetrics.yamlSheetValidationListMaxHeight,
+                    onSelectIssue: navigateToIssue
+                )
             }
+            .layoutPriority(1)
 
             Text("Dry Run sends this draft to Kubernetes for validation but never applies it. Apply YAML can write only after confirmation.")
                 .runeText(.micro)
@@ -517,9 +530,14 @@ struct ResourceYAMLEditorSheetView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(RuneUILayoutMetrics.dialogContentPadding)
+        // A large editor that can be resized in both directions.
         .frame(
-            width: RuneUILayoutMetrics.wideDialogWidth,
-            height: RuneUILayoutMetrics.wideDialogHeight
+            minWidth: RuneUILayoutMetrics.wideDialogWidth,
+            idealWidth: RuneUILayoutMetrics.yamlEditorIdealWidth,
+            maxWidth: .infinity,
+            minHeight: RuneUILayoutMetrics.wideDialogHeight,
+            idealHeight: RuneUILayoutMetrics.yamlEditorIdealHeight,
+            maxHeight: .infinity
         )
         .background(.regularMaterial)
         .runePointerCursor()
@@ -539,8 +557,26 @@ struct ResourceYAMLEditorSheetView: View {
     }
 }
 
+/// On its own the summary is a quiet card; as a document's status line the
+/// frame is the container, so it adds nothing around itself.
+private struct YAMLValidationSummaryChrome: ViewModifier {
+    let isEmbedded: Bool
+
+    func body(content: Content) -> some View {
+        if isEmbedded {
+            content
+        } else {
+            content
+                .padding(.horizontal, RuneUILayoutMetrics.inspectorControlContentInset)
+                .padding(.vertical, RuneUILayoutMetrics.inspectorControlChromeVerticalPadding)
+                .modifier(RuneCardSurface(cornerRadius: RuneRadius.card))
+        }
+    }
+}
+
 struct YAMLValidationSummaryView: View {
     @Environment(\.runeThemePalette) private var runeThemePalette
+    @Environment(\.runeDocumentFrameEmbedded) private var isEmbedded
     let issues: [YAMLValidationIssue]
     let isValidating: Bool
     let expandedListMaxHeight: CGFloat?
@@ -550,10 +586,13 @@ struct YAMLValidationSummaryView: View {
     /// Whether the draft has unsaved edits; nil when this strip has no
     /// unsaved indicator. The indicator keeps a reserved slot.
     let hasUnsavedEdits: Bool?
+    /// "Last updated …" when the summary is a document's status line.
+    let updatedText: String?
     let onSelectIssue: (YAMLValidationIssue) -> Void
     private let maxVisibleIssues = 6
     private let inlineExpandedIssueLimit = 3
     @State private var isExpanded = false
+    @State private var nextIssueIndex = 0
 
     init(
         issues: [YAMLValidationIssue],
@@ -562,8 +601,10 @@ struct YAMLValidationSummaryView: View {
         initiallyExpanded: Bool = false,
         modeNote: String? = nil,
         hasUnsavedEdits: Bool? = nil,
+        updatedText: String? = nil,
         onSelectIssue: @escaping (YAMLValidationIssue) -> Void
     ) {
+        self.updatedText = updatedText
         self.issues = issues
         self.isValidating = isValidating
         self.expandedListMaxHeight = expandedListMaxHeight
@@ -617,10 +658,9 @@ struct YAMLValidationSummaryView: View {
                 expandedIssues
             }
         }
-        .padding(.horizontal, RuneUILayoutMetrics.inspectorControlContentInset)
-        .padding(.vertical, RuneUILayoutMetrics.inspectorControlChromeVerticalPadding)
-        .modifier(RuneCardSurface())
+        .modifier(YAMLValidationSummaryChrome(isEmbedded: isEmbedded))
         .onChange(of: issueSignature) { _, _ in
+            nextIssueIndex = 0
             if issues.isEmpty {
                 isExpanded = false
             }
@@ -655,6 +695,21 @@ struct YAMLValidationSummaryView: View {
 
             if let hasUnsavedEdits {
                 ManifestUnsavedEditsSlot(isVisible: hasUnsavedEdits)
+            }
+
+            if !issues.isEmpty {
+                // Jumps through the problems in order, wrapping at the end.
+                RuneIconButton("Go to next problem", systemImage: "arrow.down.circle") {
+                    let issue = issues[nextIssueIndex % issues.count]
+                    nextIssueIndex += 1
+                    onSelectIssue(issue)
+                }
+                .accessibilityIdentifier("yaml-next-problem")
+            }
+
+            if let updatedText, !updatedText.isEmpty {
+                ManifestUpdatedNote(text: updatedText)
+                    .layoutPriority(-1)
             }
 
             ProgressView()
@@ -778,11 +833,12 @@ struct YAMLValidationSummaryView: View {
 }
 
 private enum YAMLIssuePresentation {
+    /// The issues the view model validated for the current text (YAMLValidator
+    /// plus any server dry-run results). The view never re-analyses on its
+    /// own, so the status line, the list and the markers always agree.
     static func presentedIssues(text: String, externalIssues: [YAMLValidationIssue]) -> [YAMLValidationIssue] {
-        let localIssues = YAMLLanguageService.analyze(text).validationIssues
-        let remoteIssues = externalIssues.filter { $0.source != .syntax }
         var seen: Set<String> = []
-        return (localIssues + remoteIssues).filter { issue in
+        return externalIssues.filter { issue in
             seen.insert(issue.id).inserted
         }
     }
@@ -791,14 +847,50 @@ private enum YAMLIssuePresentation {
 struct KubernetesManagedFieldsDisplayFilter {
     let text: String
     let removedBlockCount: Int
+    /// For each line of `text`, its 1-based line number in the source, so
+    /// validation issues can be shown on the filtered view.
+    var keptSourceLines: [Int] = []
+
+    /// Moves issues found in the full document onto the filtered text. Issues
+    /// inside the hidden blocks are dropped from the view (the status line
+    /// still counts them).
+    func mapIssues(_ issues: [YAMLValidationIssue], source: String) -> [YAMLValidationIssue] {
+        guard removedBlockCount > 0 else { return issues }
+        let sourceIndex = YAMLValidationLineIndex(source)
+        let filteredIndex = YAMLValidationLineIndex(text)
+        var filteredLineForSource: [Int: Int] = [:]
+        for (offset, sourceLine) in keptSourceLines.enumerated() {
+            filteredLineForSource[sourceLine] = offset + 1
+        }
+        return issues.compactMap { issue in
+            guard let line = issue.line, let filteredLine = filteredLineForSource[line] else { return nil }
+            var range: YAMLValidationRange?
+            if let sourceRange = issue.range {
+                let withinLine = sourceRange.location - sourceIndex.utf16Offset(line: line, column: 1)
+                range = YAMLValidationRange(
+                    location: filteredIndex.utf16Offset(line: filteredLine, column: 1) + max(0, withinLine),
+                    length: sourceRange.length
+                )
+            }
+            return YAMLValidationIssue(
+                source: issue.source,
+                severity: issue.severity,
+                message: issue.message,
+                line: filteredLine,
+                column: issue.column,
+                range: range
+            )
+        }
+    }
 
     static func removingManagedFields(from source: String) -> KubernetesManagedFieldsDisplayFilter {
         let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var output: [String] = []
+        var keptSourceLines: [Int] = []
         var removedBlocks = 0
         var skippingIndent: Int?
 
-        for line in lines {
+        for (lineOffset, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             let indent = line.prefix { $0 == " " }.count
 
@@ -821,11 +913,13 @@ struct KubernetesManagedFieldsDisplayFilter {
             }
 
             output.append(line)
+            keptSourceLines.append(lineOffset + 1)
         }
 
         return KubernetesManagedFieldsDisplayFilter(
             text: output.joined(separator: "\n"),
-            removedBlockCount: removedBlocks
+            removedBlockCount: removedBlocks,
+            keptSourceLines: keptSourceLines
         )
     }
 }

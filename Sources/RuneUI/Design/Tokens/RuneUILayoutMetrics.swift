@@ -6,10 +6,24 @@ enum RuneUILayoutMetrics {
     /// Outer rounded rect for inset cards and grouped panels (not full split columns — those use `NavigationSplitView` system chrome).
     static let paneShellCornerRadius: CGFloat = RuneRadius.panel
     /// Inset cards inside a pane (inspector body, empty states, table row chrome).
-    static let groupedContentCornerRadius: CGFloat = RuneRadius.card
+    static let groupedContentCornerRadius: CGFloat = RuneRadius.group
     /// Tight interactive rows (sidebar section/context picks), log/YAML editor chrome.
     static let interactiveRowCornerRadius: CGFloat = RuneRadius.control
     static let controlCardCornerRadius: CGFloat = RuneRadius.group
+    /// The find bar holds 24 pt controls (6 pt corners) 8 pt from its edge.
+    static let findBarCornerRadius: CGFloat = RuneRadius.concentric(inner: RuneRadius.chip, inset: RuneSpacing.xs)
+    /// Terminal session tabs (7 pt corners) sit 5 pt inside their 38 pt strip.
+    static let terminalTabStripCornerRadius: CGFloat = RuneRadius.concentric(inner: RuneRadius.tab, inset: 5)
+    /// A framed document with its attached header bar: the bar's controls sit
+    /// `documentFrameBarInset` in from the frame, so the frame's corners are
+    /// concentric with the control corners.
+    static let documentFrameBarInset: CGFloat = RuneSpacing.tight
+    /// The expanded YAML editor opens large and resizes freely.
+    static let yamlEditorIdealWidth: CGFloat = 1_120
+    static let yamlEditorIdealHeight: CGFloat = 820
+    static let documentFrameBarVerticalInset: CGFloat = RuneSpacing.tight
+    static let documentFrameStatusVerticalInset: CGFloat = RuneSpacing.xxs
+    static let documentFrameCornerRadius: CGFloat = RuneRadius.concentric(inner: RuneRadius.control, inset: documentFrameBarInset)
     /// Small metadata chips and inline badges.
     static let compactGlyphCornerRadius: CGFloat = RuneRadius.chip
     /// Compact terminal/log tab chrome; deliberately distinct from general interactive rows.
@@ -29,6 +43,9 @@ enum RuneUILayoutMetrics {
     /// Shared inspector grid. Full sections use the regular/compact cadence,
     /// while search, insight, and find rows share one leading accessory column.
     static let inspectorSectionSpacing: CGFloat = RuneSpacing.sm
+    /// Between the sections of an inspector overview (facts, relationships):
+    /// wider than the space inside a section, so space alone groups them.
+    static let inspectorGroupSpacing: CGFloat = RuneSpacing.lg
     static let inspectorCompactSectionSpacing: CGFloat = RuneSpacing.xs
     static let inspectorControlRowSpacing: CGFloat = RuneSpacing.xs
     static let inspectorWrappedActionRowSpacing: CGFloat = RuneSpacing.xxs
@@ -83,6 +100,10 @@ enum RuneUILayoutMetrics {
     static let inspectorDocumentVerticalInset: CGFloat = RuneSpacing.inset
     static let yamlSheetValidationListMaxHeight: CGFloat = 150
     static let iconButtonSize: CGFloat = RuneControlHeight.regular
+    /// Fact grids: one label column wide enough for "App version" or
+    /// "Cluster IP", and rows tall enough to read without boxes.
+    static let factLabelWidth: CGFloat = 96
+    static let factRowVerticalPadding: CGFloat = RuneSpacing.tight
 
     // Modal sheets and custom dialogs. Native alerts, confirmation dialogs and
     // open/save panels keep the system-provided macOS metrics.

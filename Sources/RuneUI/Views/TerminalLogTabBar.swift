@@ -51,57 +51,37 @@ struct TerminalLogTabBar: View {
     }
 
     private func tabButton(_ tab: TerminalLogTabPresentation, number: Int) -> some View {
-        ZStack {
-            Button {
-                onSelectTab(tab.id)
-            } label: {
-                HStack(spacing: RuneSpacing.tight) {
-                    Text("\(number) \(tab.title)")
-                        .runeText(.microEmphasis)
-                        .lineLimit(1)
-                    if let subtitle = tab.subtitle {
-                        Text(subtitle)
-                            .runeText(.microEmphasis)
-                            .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, 40)
-                .padding(.trailing, RuneSpacing.xl)
-                .frame(width: 216, height: 28, alignment: .leading)
-                .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.tabCornerRadius, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help(tab.helpText)
-            .accessibilityLabel(tab.accessibilityLabel)
-            .accessibilityAddTraits(tab.id == activeTabID ? [.isSelected, .isButton] : .isButton)
-
+        Button {
+            onSelectTab(tab.id)
+        } label: {
+            TerminalTabTitle(primaryTitle: tab.title, secondaryTitle: tab.subtitle)
+        }
+        .buttonStyle(.plain)
+        .help(tab.helpText)
+        .accessibilityLabel(tab.accessibilityLabel)
+        .accessibilityAddTraits(tab.id == activeTabID ? [.isSelected, .isButton] : .isButton)
+        .overlay {
             HStack(spacing: 0) {
-                RuneIconButton(
-                    tab.isFavorite ? "Remove Log Target Favorite" : "Favorite Log Target",
+                // Close at the leading edge, favourite at the trailing edge,
+                // both on hover (a favourite stays visible).
+                TerminalTabAccessoryButton(accessibilityLabel: "Close log tab for \(tab.title)", systemImage: "xmark") {
+                    onCloseTab(tab.id)
+                }
+                .terminalTabRevealOnHover()
+                Spacer(minLength: 0)
+                TerminalTabAccessoryButton(
+                    accessibilityLabel: tab.isFavorite ? "Remove Log Target Favorite" : "Favorite Log Target",
                     systemImage: tab.isFavorite ? "star.fill" : "star",
-                    help: tab.isFavorite ? "Remove log target favorite" : "Favorite log target",
-                    isSelected: tab.isFavorite,
-                    selectedTint: .yellow
+                    tint: tab.isFavorite ? .yellow : nil,
+                    isSelected: tab.isFavorite
                 ) {
                     onToggleFavoriteTab(tab.id)
                 }
-                .padding(.leading, RuneSpacing.xxs)
-                Spacer(minLength: 0)
-
-                RuneIconButton(
-                    "Close log tab for \(tab.title)",
-                    systemImage: "xmark"
-                ) {
-                    onCloseTab(tab.id)
-                }
+                .terminalTabRevealOnHover(alwaysVisible: tab.isFavorite)
             }
-            .frame(width: 216, height: 28)
+            .padding(.horizontal, RuneSpacing.hairline)
         }
-        .frame(width: 216, height: 28, alignment: .leading)
         .terminalTabChrome(isActive: tab.id == activeTabID)
-        .help(tab.helpText)
         .accessibilityElement(children: .contain)
     }
 }

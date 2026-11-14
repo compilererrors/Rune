@@ -410,6 +410,9 @@ private final class PlainManifestTextView: NSTextView {
     private var lastAppliedSearchKey = ""
     private var lastSearchNavigationRevision: Int?
     private var pendingEditPresentation: ResourceYAMLEditorPresentation?
+    /// Log header separator lines ("────…"), drawn as rules across the full
+    /// surface width instead of a fixed run of characters.
+    private var separatorLineRanges: [NSRange] = []
     var onUndoCommand: (() -> Void)?
 
     override var isOpaque: Bool { false }
@@ -417,6 +420,9 @@ private final class PlainManifestTextView: NSTextView {
     override func drawBackground(in rect: NSRect) {
         NSColor.clear.setFill()
         rect.fill()
+        if contentStyle == .ansiLogs, !separatorLineRanges.isEmpty {
+            drawSeparatorRules(in: rect)
+        }
         guard contentStyle == .yaml else { return }
         drawIndentGuides(in: rect)
         drawIssueMarkers(in: rect)
@@ -693,6 +699,11 @@ private final class PlainManifestTextView: NSTextView {
                 foreground: manifestPalette.foreground,
                 backgrounds: manifestPalette.textBackgrounds
             ))
+            separatorLineRanges = Self.separatorLineRanges(in: storage.string)
+            for range in separatorLineRanges {
+                // The characters stay for copy and save; the rule is drawn instead.
+                storage.addAttribute(.foregroundColor, value: NSColor.clear, range: range)
+            }
             activeValidationIssues = []
             updateDocumentSize()
             invalidateIntrinsicContentSize()
@@ -714,9 +725,10 @@ private final class PlainManifestTextView: NSTextView {
             let analysis = usesViewportAnalysis
                 ? YAMLLanguageService.analyzeFragment(source, range: styleRange)
                 : YAMLLanguageService.analyze(source)
-            let issues = deduplicatedIssues(
-                analysis.validationIssues + externalValidationIssues.filter { $0.source != .syntax }
-            )
+            // One source of truth: the issues the view model validated for
+            // this text (YAMLValidator), never a second, partial analysis of
+            // the visible fragment, so markers match the status line.
+            let issues = locatedIssues(deduplicatedIssues(externalValidationIssues), in: storage.string as NSString)
             activeValidationIssues = issues
             applyYAMLHighlighting(in: storage, fullRange: fullRange, analysis: analysis)
             applyYAMLDiagnostics(in: storage, issues: issues)
@@ -1237,8 +1249,41 @@ private final class PlainManifestTextView: NSTextView {
 
     private func applyYAMLDiagnostics(in storage: NSTextStorage, issues: [YAMLValidationIssue]) {
         for issue in issues {
-            guard let range = issue.range?.nsRange else { continue }
+            guard let range = issue.range?.nsRange, NSMaxRange(range) <= storage.length else { continue }
             storage.addAttributes(issue.attributes(palette: manifestPalette), range: range)
+            // Hovering the underlined text shows the message.
+            storage.addAttribute(.toolTip, value: issue.message, range: range)
+        }
+    }
+
+    /// Gives every issue a range inside the current text: issues with only a
+    /// line get that line's content; ranges past the end (from text that has
+    /// since changed) are dropped until the next validation lands.
+    private func locatedIssues(_ issues: [YAMLValidationIssue], in text: NSString) -> [YAMLValidationIssue] {
+        issues.compactMap { issue in
+            if let range = issue.range?.nsRange {
+                return NSMaxRange(range) <= text.length ? issue : nil
+            }
+            guard let line = issue.line, line >= 1 else { return nil }
+            var location = 0
+            var currentLine = 1
+            while currentLine < line, location < text.length {
+                location = NSMaxRange(text.lineRange(for: NSRange(location: location, length: 0)))
+                currentLine += 1
+            }
+            guard currentLine == line, location <= text.length else { return nil }
+            let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
+            let trimmed = trimmedLineRange(lineRange, in: text)
+            let range = trimmed.length > 0 ? trimmed : NSRange(location: lineRange.location, length: min(1, text.length - lineRange.location))
+            guard range.length > 0 else { return nil }
+            return YAMLValidationIssue(
+                source: issue.source,
+                severity: issue.severity,
+                message: issue.message,
+                line: issue.line,
+                column: issue.column,
+                range: YAMLValidationRange(location: range.location, length: range.length)
+            )
         }
     }
 
@@ -1270,6 +1315,37 @@ private final class PlainManifestTextView: NSTextView {
                 value: self.manifestPalette.describeColon,
                 range: NSRange(location: colonLocation, length: 1)
             )
+        }
+    }
+
+    static func separatorLineRanges(in text: String) -> [NSRange] {
+        guard text.contains("────") else { return [] }
+        let nsText = text as NSString
+        var ranges: [NSRange] = []
+        nsText.enumerateSubstrings(in: NSRange(location: 0, length: nsText.length), options: [.byLines, .substringNotRequired]) { _, lineRange, _, _ in
+            guard lineRange.length >= 8, nsText.character(at: lineRange.location) == 0x2500 else { return }
+            let line = nsText.substring(with: lineRange)
+            if line.unicodeScalars.allSatisfy({ $0.value == 0x2500 }) {
+                ranges.append(lineRange)
+            }
+        }
+        return ranges
+    }
+
+    private func drawSeparatorRules(in rect: NSRect) {
+        guard let layoutManager, let textContainer else { return }
+        let origin = textContainerOrigin
+        let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: rect.offsetBy(dx: -origin.x, dy: -origin.y), in: textContainer)
+        let visibleCharacters = layoutManager.characterRange(forGlyphRange: visibleGlyphs, actualGlyphRange: nil)
+        let leading = origin.x + textContainer.lineFragmentPadding
+        let trailing = max(bounds.maxX, visibleRect.maxX) - textContainerInset.width
+        guard trailing > leading else { return }
+        manifestPalette.comment.withAlphaComponent(0.55).setFill()
+        for range in separatorLineRanges where NSIntersectionRange(range, visibleCharacters).length > 0 {
+            let glyphIndex = layoutManager.glyphIndexForCharacter(at: range.location)
+            let line = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            let y = (origin.y + line.midY).rounded(.down)
+            NSRect(x: leading, y: y, width: trailing - leading, height: 1).fill()
         }
     }
 
@@ -1328,7 +1404,7 @@ private final class PlainManifestTextView: NSTextView {
                 lineRect: lineRect.offsetBy(dx: textOrigin.x, dy: textOrigin.y)
             )
             manifestPalette.tabMarkerBackground.setFill()
-            NSBezierPath(roundedRect: pillRect, xRadius: 4, yRadius: 4).fill()
+            NSBezierPath(roundedRect: pillRect, xRadius: RuneRadius.inline, yRadius: RuneRadius.inline).fill()
 
             let markerSize = marker.size()
             marker.draw(

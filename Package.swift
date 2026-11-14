@@ -76,7 +76,8 @@ let package = Package(
                 "RuneDiagnostics",
                 "RuneStore",
                 "RuneSecurity",
-                "RuneExport"
+                "RuneExport",
+                .product(name: "Yams", package: "Yams")
             ],
             exclude: [
                 "Design/README.md"

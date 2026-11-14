@@ -14,7 +14,19 @@ extension RuneRootView {
                 Group {
                     switch viewModel.state.selectedSection {
                     case .overview:
-                        overviewDetails
+                        if hasAvailableKubernetesContexts {
+                            overviewDetails
+                        } else {
+                            // Without a cluster there is nothing to act on: one
+                            // empty state, not actions that cannot do anything.
+                            inspectorEmptyState(
+                                .empty(
+                                    title: "No cluster selected",
+                                    message: "Import a kubeconfig or add a cluster to inspect it here."
+                                ),
+                                symbol: "point.3.connected.trianglepath.dotted"
+                            )
+                        }
                     case .workloads:
                         workloadDetails
                     case .networking:
@@ -65,13 +77,26 @@ extension RuneRootView {
 
     var overviewDetails: some View {
         VStack(alignment: .leading, spacing: RuneSpacing.sm) {
-            Text("Overview")
-                .runeText(.title, weight: .bold)
-
-            VStack(alignment: .leading, spacing: RuneSpacing.xs) {
-                inspectorInfoRow("Context", value: viewModel.state.selectedContext?.name ?? "-", symbol: "network")
-                inspectorInfoRow("Namespace", value: viewModel.state.selectedNamespace, symbol: "square.stack.3d.up")
-                inspectorInfoRow("Mode", value: viewModel.state.isReadOnlyMode ? "Read-only" : "Read/Write", symbol: "lock.shield")
+            // The overview inspector describes the current cluster context.
+            VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
+                Text(viewModel.state.selectedContext?.name ?? "No cluster selected")
+                    .runeText(.title, weight: .bold)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .accessibilityIdentifier("overview-inspector-title")
+                // The same header block as every inspector: the context is the
+                // title, so the facts below never repeat it; mode is the pill.
+                HStack(spacing: RuneSpacing.xs) {
+                    Text(inspectorSubtitle("Cluster", namespace: viewModel.state.selectedNamespace))
+                        .runeText(.caption)
+                        .foregroundStyle(.runeSecondary)
+                        .lineLimit(1)
+                    RuneBadge(
+                        viewModel.state.isReadOnlyMode ? "Read-only" : "Read/Write",
+                        tone: viewModel.state.isReadOnlyMode ? .warning : .neutral
+                    )
+                    .accessibilityLabel("Mode: \(viewModel.state.isReadOnlyMode ? "Read-only" : "Read/Write")")
+                }
             }
 
             inspectorActionButtonRow {
@@ -464,8 +489,6 @@ extension RuneRootView {
             if !simpleMode {
                 RBACCanISimulatorPanel(viewModel: viewModel)
             }
-
-            Divider()
         }
     }
 
@@ -476,6 +499,8 @@ extension RuneRootView {
             } else if let release = viewModel.state.selectedHelmRelease {
                 RuneInspectorScaffold(
                     title: release.name,
+                    subtitle: inspectorSubtitle("Helm release", namespace: release.namespace),
+                    status: RuneInspectorStatus(release.status.capitalized, tone: RuneInspectorStatus.tone(for: release.status)),
                     copyAccessibilityLabel: "Copy Helm release name",
                     bodyScrollBehavior: helmInspectorTab == .overview || helmInspectorTab == .history
                         ? .vertical
@@ -484,7 +509,7 @@ extension RuneRootView {
                     onCopy: { copyToClipboard(release.name) },
                     onRefresh: refreshDetailPane,
                     info: {
-                        helmReleaseCoreInfo(release)
+                        EmptyView()
                     },
                     tabs: {
                         RuneTabBar("", selection: $helmInspectorTab, tabs: HelmInspectorTab.allCases) { $0.localizedTitle(appString) }
@@ -496,7 +521,7 @@ extension RuneRootView {
                     content: {
                         switch helmInspectorTab {
                         case .overview:
-                            inspectorInfoRow("Updated", value: release.updated, symbol: "calendar.badge.clock")
+                            helmReleaseCoreInfo(release)
                         case .values:
                             exportableTextPane(
                                 text: viewModel.state.helmValues,
@@ -525,15 +550,14 @@ extension RuneRootView {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    /// Every release fact in one grid on Overview; status is the header pill
+    /// and the namespace is in the subtitle, so neither repeats here.
     func helmReleaseCoreInfo(_ release: HelmReleaseSummary) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
-            if shouldShowResourceNamespaceLabel(release.namespace) {
-                inspectorInfoRow("Namespace", value: release.namespace, symbol: "square.stack.3d.up")
-            }
-            inspectorInfoRow("Status", value: release.status.capitalized, symbol: "checkmark.seal")
-            inspectorInfoRow("Chart", value: release.chart, symbol: "shippingbox")
-            inspectorInfoRow("App Version", value: release.appVersion, symbol: "tag")
-            inspectorInfoRow("Revision", value: String(release.revision), symbol: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+        RuneFactGrid("Release") {
+            inspectorInfoRow("Chart", value: release.chart)
+            inspectorInfoRow("App version", value: release.appVersion)
+            inspectorInfoRow("Revision", value: String(release.revision))
+            inspectorInfoRow("Updated", value: release.updated)
         }
     }
 
@@ -565,16 +589,20 @@ extension RuneRootView {
                 symbol: "clock.arrow.circlepath"
             )
         } else {
-            VStack(alignment: .leading, spacing: RuneSpacing.inset) {
-                HelmRollbackOptionsView(
-                    wait: $viewModel.helmRollbackWait,
-                    timeout: $viewModel.helmRollbackTimeoutInput,
-                    cleanupOnFail: $viewModel.helmRollbackCleanupOnFail
-                )
-                .padding(RuneSpacing.inset)
-                .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+            // Rollback options are one control cluster; revisions are rows
+            // divided by hairlines under a section header, not a stack of cards.
+            VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorGroupSpacing) {
+                RuneControlCard(fillsWidth: true) {
+                    HelmRollbackOptionsView(
+                        wait: $viewModel.helmRollbackWait,
+                        timeout: $viewModel.helmRollbackTimeoutInput,
+                        cleanupOnFail: $viewModel.helmRollbackCleanupOnFail
+                    )
+                }
 
-                LazyVStack(alignment: .leading, spacing: RuneSpacing.inset) {
+                VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
+                RuneSectionLabel("Revisions")
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(viewModel.state.helmHistory) { entry in
                         VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                             HStack {
@@ -598,9 +626,16 @@ extension RuneRootView {
                                 .runeText(.micro)
                                 .foregroundStyle(.runeSecondary)
                         }
-                        .padding(RuneSpacing.inset)
-                        .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                        .padding(.vertical, RuneSpacing.xs)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .overlay(alignment: .top) {
+                            RuneHairline()
+                        }
                     }
+                }
+                .mask {
+                    Rectangle().padding(.top, 1)
+                }
                 }
             }
         }
@@ -609,22 +644,15 @@ extension RuneRootView {
     func operatorResourceDetails(resource: OperatorResourceSummary) -> some View {
         RuneInspectorScaffold(
             title: resource.name,
+            subtitle: inspectorSubtitle(resource.kind, namespace: resource.namespace),
+            status: resource.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : RuneInspectorStatus(resource.status),
             copyAccessibilityLabel: "Copy \(resource.kind) name",
             bodyScrollBehavior: genericResourceManifestTab == .overview ? .vertical : .selfManaged,
             showsActions: false,
             onCopy: { copyToClipboard(resource.name) },
             onRefresh: refreshDetailPane,
             info: {
-                VStack(alignment: .leading, spacing: RuneSpacing.tight) {
-                    inspectorInfoRow("Family", value: resource.family, symbol: "shippingbox")
-                    if let namespace = resource.namespace, shouldShowResourceNamespaceLabel(namespace) {
-                        inspectorInfoRow("Namespace", value: namespace, symbol: "square.stack.3d.up")
-                    } else if resource.namespace == nil {
-                        inspectorInfoRow("Scope", value: "Cluster", symbol: "square.stack.3d.up")
-                    }
-                    inspectorInfoRow("Status", value: resource.status, symbol: "checkmark.seal")
-                    inspectorInfoRow("API Path", value: resource.apiPath, symbol: "curlybraces")
-                }
+                EmptyView()
             },
             tabs: {
                 RuneTabBar(appString(.manifest), selection: $genericResourceManifestTab, tabs: GenericResourceManifestTab.allCases) { $0.localizedTitle(appString) }
@@ -645,19 +673,27 @@ extension RuneRootView {
     }
 
     func operatorResourceOverview(_ resource: OperatorResourceSummary) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorGroupSpacing) {
             if !resource.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(resource.message)
-                    .runeText(.caption)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(RuneSpacing.inset)
-                    .background(editorFill, in: RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
+                    RuneSectionLabel("Message")
+                    Text(resource.message)
+                        .runeText(.body)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
 
-            ForEach(Array(resource.printerColumns.enumerated()), id: \.offset) { _, column in
-                inspectorInfoRow(column.title, value: column.value, symbol: "list.bullet.rectangle")
+            RuneFactGrid("Details") {
+                inspectorInfoRow("Family", value: resource.family)
+                if resource.namespace == nil {
+                    inspectorInfoRow("Scope", value: "Cluster")
+                }
+                inspectorInfoRow("API path", value: resource.apiPath)
+                ForEach(Array(resource.printerColumns.enumerated()), id: \.offset) { _, column in
+                    inspectorInfoRow(column.title, value: column.value)
+                }
             }
         }
     }

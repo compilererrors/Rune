@@ -72,6 +72,16 @@ extension RuneSurfaceRole {
         }
     }
 
+    /// The recessed strip that a surface's tabs sit on: a step deeper than
+    /// the raised bars, so the selected tab (in the surface's own fill) reads
+    /// as lifted out of it.
+    func tabStripFill(palette: RuneThemePalette?, colorScheme: ColorScheme) -> Color {
+        let isDark = palette?.isDarkPalette ?? (colorScheme == .dark)
+        let base = RuneSurfaceRole.pane.fill(palette: palette, colorScheme: colorScheme)
+        let baseRGB = RuneThemeContrast.RGB(NSColor(base))
+        return RuneThemeContrast.RGB(NSColor.black).over(baseRGB, opacity: isDark ? 0.22 : 0.06).color
+    }
+
     func frame(palette: RuneThemePalette?) -> Color {
         if let palette { return palette.documentFrame }
         return Color(nsColor: .separatorColor).opacity(0.9)

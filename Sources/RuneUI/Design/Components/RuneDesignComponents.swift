@@ -86,14 +86,18 @@ enum RuneSurfaceKind {
 
 struct RuneSurfaceBackground: View {
     let kind: RuneSurfaceKind
+    /// A concentric radius for a container whose inset differs from the
+    /// kind's default (for example the terminal tab strip).
+    var cornerRadius: CGFloat? = nil
     @Environment(\.runeResolvedTheme) private var resolvedTheme
 
     var body: some View {
-        RoundedRectangle(cornerRadius: kind.cornerRadius, style: .continuous)
+        let radius = cornerRadius ?? kind.cornerRadius
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
             .fill(kind.fill(theme: resolvedTheme))
             .overlay {
                 if let stroke = kind.stroke(theme: resolvedTheme) {
-                    RoundedRectangle(cornerRadius: kind.cornerRadius, style: .continuous)
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
                         .strokeBorder(stroke, lineWidth: 1)
                 }
             }
@@ -657,48 +661,213 @@ struct RuneNoticeBanner: View {
     }
 }
 
+/// One row of a fact grid: a label in a fixed column and its value, with a
+/// hairline above it. Copy lives in the context menu and in a button that
+/// appears on hover, as in Finder's Get Info and Xcode's inspectors, so the
+/// grid stays quiet until you reach for a value.
 struct RuneInspectorInfoRow<Value: View>: View {
     let title: String
-    let systemImage: String
     let fixedLabelWidth: CGFloat?
+    let copyValue: String?
+    let onCopy: ((String) -> Void)?
     @ViewBuilder var value: Value
+    @State private var isHovered = false
 
     init(
         _ title: String,
-        systemImage: String,
-        fixedLabelWidth: CGFloat? = 118,
+        fixedLabelWidth: CGFloat? = RuneUILayoutMetrics.factLabelWidth,
+        copyValue: String? = nil,
+        onCopy: ((String) -> Void)? = nil,
         @ViewBuilder value: () -> Value
     ) {
         self.title = title
-        self.systemImage = systemImage
         self.fixedLabelWidth = fixedLabelWidth
+        self.copyValue = copyValue
+        self.onCopy = onCopy
         self.value = value()
     }
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.xs) {
+            HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.sm) {
                 label
                     .frame(width: fixedLabelWidth, alignment: .leading)
-                value
+                valueColumn
             }
 
-            VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
+            VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                 label
-                value
+                valueColumn
             }
         }
+        .padding(.vertical, RuneUILayoutMetrics.factRowVerticalPadding)
+        .padding(.trailing, canCopy ? RuneUILayoutMetrics.iconButtonSize : 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .top) {
+            RuneHairline()
+        }
+        .overlay(alignment: .trailing) {
+            if canCopy, let copyValue, let onCopy {
+                // Always laid out, shown on hover: the row never shifts.
+                RuneIconButton("Copy \(title.lowercased())", systemImage: "doc.on.doc") {
+                    onCopy(copyValue)
+                }
+                .opacity(isHovered ? 1 : 0)
+                .allowsHitTesting(isHovered)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            if canCopy, let copyValue, let onCopy {
+                Button("Copy \(title)") { onCopy(copyValue) }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var canCopy: Bool {
+        copyValue != nil && onCopy != nil
+    }
+
+    private var valueColumn: some View {
+        value
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var label: some View {
-        HStack(spacing: RuneSpacing.tight) {
-            Image(systemName: systemImage)
-                .foregroundStyle(.runeSecondary)
-                .frame(width: 14, alignment: .center)
+        Text(title)
+            .runeText(.caption)
+            .foregroundStyle(.runeSecondary)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// The quiet label above an inspector section. Sections are separated by
+/// space and this header, never by a card around them.
+struct RuneSectionLabel<Accessory: View>: View {
+    let title: String
+    @ViewBuilder var accessory: Accessory
+
+    init(_ title: String, @ViewBuilder accessory: () -> Accessory) {
+        self.title = title
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.xs) {
             Text(title)
-                .runeText(.micro)
+                .runeText(.microEmphasis)
                 .foregroundStyle(.runeSecondary)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 0)
+            accessory
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+extension RuneSectionLabel where Accessory == EmptyView {
+    init(_ title: String) {
+        self.init(title) { EmptyView() }
+    }
+}
+
+/// A hairline between rows of one section.
+struct RuneHairline: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(height: 1)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Key/value facts as one aligned grid: an optional section header, then
+/// rows with a hairline between each. No card; the header, the shared label
+/// column and the hairlines are the grouping.
+struct RuneFactGrid<Rows: View>: View {
+    let title: String?
+    @ViewBuilder var rows: Rows
+
+    init(_ title: String? = nil, @ViewBuilder rows: () -> Rows) {
+        self.title = title
+        self.rows = rows()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
+            if let title {
+                RuneSectionLabel(title)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                rows
+            }
+            // Each row draws the hairline above it; masking the first one
+            // leaves hairlines only between rows.
+            .mask {
+                Rectangle().padding(.top, 1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// A fact value that opens what it names, styled as a link so it reads as a
+/// value first. Replaces a separate "Go to" button next to the facts.
+struct RuneFactLink: View {
+    let title: String
+    let help: String
+    let action: () -> Void
+
+    init(_ title: String, help: String, action: @escaping () -> Void) {
+        self.title = title
+        self.help = help
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.xxs) {
+                Text(title)
+                    .runeText(.body)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "arrow.right.circle")
+                    .runeText(.micro)
+            }
+        }
+        .buttonStyle(.link)
+        .help(help)
+    }
+}
+
+/// The status of the inspected object, shown as a pill beside the subtitle.
+struct RuneInspectorStatus: Equatable, Sendable {
+    let text: String
+    let tone: RuneBadgeTone
+
+    init(_ text: String, tone: RuneBadgeTone) {
+        self.text = text
+        self.tone = tone
+    }
+
+    /// Maps common Kubernetes and Helm status words to a tone.
+    init(_ text: String) {
+        self.init(text, tone: Self.tone(for: text))
+    }
+
+    static func tone(for status: String) -> RuneBadgeTone {
+        let value = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let success = ["running", "deployed", "ready", "active", "bound", "available", "succeeded", "completed", "complete", "normal", "healthy", "true"]
+        let warning = ["pending", "warning", "progressing", "pending-install", "pending-upgrade", "pending-rollback", "uninstalling", "terminating", "containercreating", "unknown", "superseded"]
+        let danger = ["failed", "error", "crashloopbackoff", "backoff", "imagepullbackoff", "errimagepull", "evicted", "oomkilled", "lost", "false"]
+        if success.contains(value) { return .success }
+        if warning.contains(value) { return .warning }
+        if danger.contains(value) { return .danger }
+        return .neutral
     }
 }
 
@@ -709,20 +878,20 @@ struct RuneInspectorActionRow<Content: View>: View {
         self.content = content()
     }
 
-    /// The inspector's actions sit on one quiet control card. The row scrolls
-    /// sideways when the pane is narrow instead of wrapping, so resizing the
-    /// pane never makes the inspector jump vertically.
+    /// The inspector's actions sit in a plain row under the tabs, with no
+    /// card around them: a box around one or two buttons adds a level without
+    /// adding meaning. The row scrolls sideways when the pane is narrow
+    /// instead of wrapping, so resizing the pane never makes the inspector
+    /// jump vertically.
     var body: some View {
-        RuneControlCard {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
-                    content
-                }
-                .fixedSize(horizontal: true, vertical: false)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
+                content
             }
-            .controlSize(.regular)
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .controlSize(.regular)
+        .frame(maxWidth: .infinity, minHeight: RuneControlHeight.toolbar, alignment: .leading)
     }
 }
 

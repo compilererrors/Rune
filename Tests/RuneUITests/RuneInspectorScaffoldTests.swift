@@ -344,18 +344,23 @@ final class RuneInspectorScaffoldTests: XCTestCase {
             source: source
         )
 
+        // One rule for facts: identity in the header block (subtitle and
+        // status pill), every release fact in one grid on the Overview tab.
         let identityIndex = try XCTUnwrap(helm.range(of: "title: release.name")).lowerBound
-        let coreInfoIndex = try XCTUnwrap(helm.range(of: "helmReleaseCoreInfo(release)")).lowerBound
         let tabsIndex = try XCTUnwrap(helm.range(of: "RuneTabBar(")).lowerBound
-
-        XCTAssertLessThan(identityIndex, coreInfoIndex)
-        XCTAssertLessThan(coreInfoIndex, tabsIndex)
+        let overviewIndex = try XCTUnwrap(helm.range(of: "case .overview:\n                            helmReleaseCoreInfo(release)")).lowerBound
+        XCTAssertLessThan(identityIndex, tabsIndex)
+        XCTAssertLessThan(tabsIndex, overviewIndex)
+        XCTAssertTrue(helm.contains("subtitle: inspectorSubtitle(\"Helm release\", namespace: release.namespace)"))
+        XCTAssertTrue(helm.contains("status: RuneInspectorStatus(release.status.capitalized"))
 
         let coreInfo = try sourceBlock(from: "func helmReleaseCoreInfo", to: "var helmInspectorActions", source: source)
-        let statusIndex = try XCTUnwrap(coreInfo.range(of: "inspectorInfoRow(\"Status\"")).lowerBound
+        XCTAssertTrue(coreInfo.contains("RuneFactGrid(\"Release\")"))
+        XCTAssertFalse(coreInfo.contains("inspectorInfoRow(\"Status\""), "status is the header pill")
+        XCTAssertFalse(coreInfo.contains("inspectorInfoRow(\"Namespace\""), "namespace is in the subtitle")
         let chartIndex = try XCTUnwrap(coreInfo.range(of: "inspectorInfoRow(\"Chart\"")).lowerBound
-        XCTAssertLessThan(statusIndex, chartIndex)
-        XCTAssertTrue(helm.contains("inspectorInfoRow(\"Updated\""))
+        let updatedIndex = try XCTUnwrap(coreInfo.range(of: "inspectorInfoRow(\"Updated\"")).lowerBound
+        XCTAssertLessThan(chartIndex, updatedIndex)
         XCTAssertTrue(helm.contains("var helmInspectorActions"))
         XCTAssertTrue(helm.contains("Save Values…"))
         XCTAssertTrue(helm.contains("Save Manifest…"))
@@ -431,7 +436,7 @@ final class RuneInspectorScaffoldTests: XCTestCase {
             onRefresh: {},
             onLayoutSnapshotChange: onLayoutSnapshotChange,
             info: {
-                RuneInspectorInfoRow("Status", systemImage: "checkmark.circle") {
+                RuneInspectorInfoRow("Status") {
                     Text("Ready")
                 }
             },

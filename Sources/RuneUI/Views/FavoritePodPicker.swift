@@ -79,14 +79,22 @@ struct FavoritePodPicker: View {
     let isFavoritePod: (PodSummary) -> Bool
     let onToggleFavoritePod: (PodSummary) -> Void
     @Binding var selection: String
+    /// Fills the width it is offered (down to `width` as a minimum is not
+    /// required) instead of a fixed width, for pickers that share a bar.
+    var fillsWidth = false
+    /// Off where pinning lives only in the picker's list (the log header).
+    var showsFavoriteButton = true
     @State private var isPopoverPresented = false
 
     var body: some View {
         HStack(spacing: 0) {
-            selectedFavoriteButton
+            if showsFavoriteButton {
+                selectedFavoriteButton
+            }
             selectedPodButton
         }
-        .frame(width: width, alignment: .leading)
+        .frame(width: fillsWidth ? nil : width, alignment: .leading)
+        .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
         .frame(minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
         .background(RuneSurfaceBackground(kind: .listRow(isSelected: false)))
         .overlay {
@@ -139,9 +147,10 @@ struct FavoritePodPicker: View {
         .padding(.leading, RuneSpacing.xs)
         .padding(.trailing, RuneSpacing.tight)
         .frame(
-            width: max(width - RuneUILayoutMetrics.iconButtonSize, 140),
+            width: fillsWidth ? nil : max(width - RuneUILayoutMetrics.iconButtonSize, 140),
             alignment: .leading
         )
+        .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
         .frame(minHeight: RuneUILayoutMetrics.iconButtonSize, alignment: .leading)
         .contentShape(Rectangle())
     }

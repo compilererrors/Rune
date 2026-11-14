@@ -48,6 +48,9 @@ final class RuneDesignSystemGuardTests: XCTestCase {
         Rule(id: "color-literal",
              pattern: #"Color\.(red|green|blue|orange|yellow|purple|pink|teal|mint|cyan|indigo|brown|gray)\b"#,
              fix: "use RuneSemanticColorRole, the theme palette or RuneCategoryColor"),
+        Rule(id: "radius-literal",
+             pattern: #"(cornerRadius:\s*[0-9]|xRadius:\s*[0-9]|cornerRadius\s*=\s*[0-9])"#,
+             fix: "use a RuneRadius token or RuneRadius.concentric(inner:inset:)"),
         Rule(id: "implicit-color-literal",
              pattern: #"(color|tint|fill):\s*\.(red|green|blue|orange|yellow|purple|gray)\b"#,
              fix: "use RuneSemanticColorRole or the theme palette")

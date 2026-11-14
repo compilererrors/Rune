@@ -37,9 +37,8 @@ struct AddClusterNativeContextSection: View {
                 }
                 .runeText(.micro)
                 .foregroundStyle(.runeSecondary)
+                // Plain text inside the section's own box: no box in a box.
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(RuneSpacing.xs)
-                .background(RuneSurfaceBackground(kind: .inset))
             } else {
                 Picker("Native authentication context", selection: $selectedBindingID) {
                     if selectedBindingID == nil {

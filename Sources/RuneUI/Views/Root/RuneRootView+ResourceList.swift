@@ -195,16 +195,15 @@ extension RuneRootView {
         }
     }
 
-    var currentResourceListScopeSystemImage: String {
+    /// "Cluster scope" for lists the toolbar's namespace menu does not
+    /// filter; nil when the namespace menu (or Helm's scope menu) already
+    /// shows the scope.
+    var currentResourceListScopeNote: String? {
         switch viewModel.state.selectedSection {
-        case .events:
-            return "square.stack.3d.up"
-        case .helm:
-            return viewModel.state.isHelmAllNamespaces ? "globe" : "square.stack.3d.up"
-        case .overview, .terminal:
-            return "globe"
+        case .events, .helm, .overview, .terminal:
+            return nil
         default:
-            return viewModel.state.selectedWorkloadKind.isNamespaced ? "square.stack.3d.up" : "globe"
+            return viewModel.state.selectedWorkloadKind.isNamespaced ? nil : "Cluster scope"
         }
     }
 

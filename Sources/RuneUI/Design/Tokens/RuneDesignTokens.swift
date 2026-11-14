@@ -18,19 +18,35 @@ enum RuneSpacing {
     static let scale: [CGFloat] = [hairline, xxs, tight, xs, inset, sm, md, lg, xl, xxl]
 }
 
-/// Continuous corner radii, from window-level panels down to inline chips.
+/// Continuous corner radii. Nested shapes are concentric (Apple HIG,
+/// macOS 26 design: nested shapes share a centre, so an outer radius equals
+/// the inner radius plus the padding between them). See Design/README.md.
 enum RuneRadius {
-    static let panel: CGFloat = 14
-    /// Control cards and status strips: concentric with the 8 pt controls
-    /// they hold (8 pt radius + 4 pt of the 8 pt inset reads as one curve).
-    static let group: CGFloat = 12
+    /// Pane shells, popovers and the command palette. They hold cards at
+    /// loose padding (12–16 pt), where Rune caps the concentric step.
+    static let panel: CGFloat = 20
+    /// Cards that group controls: a 28 pt control (8 pt radius) sits 8 pt
+    /// from the card edge, so 8 + 8 = 16.
+    static let group: CGFloat = 16
+    /// Documents, terminals and status strips: surfaces without nested
+    /// controls at their corners.
     static let card: CGFloat = 10
+    /// Controls, wells, rows and selection highlights.
     static let control: CGFloat = 8
+    /// Terminal session tabs.
     static let tab: CGFloat = 7
+    /// Shapes inside a control (2 pt inset: 8 − 2) and compact accessories.
     static let chip: CGFloat = 6
+    /// Text highlights inside documents.
+    static let inline: CGFloat = 4
     static let indicator: CGFloat = 2
 
-    static let scale: [CGFloat] = [indicator, chip, tab, control, card, group, panel]
+    static let scale: [CGFloat] = [indicator, inline, chip, tab, control, card, group, panel]
+
+    /// The outer radius that is concentric with `inner` at `inset`.
+    static func concentric(inner: CGFloat, inset: CGFloat) -> CGFloat {
+        inner + inset
+    }
 }
 
 /// Control sizes follow the AppKit scale as rendered on current macOS

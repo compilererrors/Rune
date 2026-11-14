@@ -78,8 +78,10 @@ final class RuneUILayoutMetricsTests: XCTestCase {
     }
 
     func testCornerRadiusFamilyKeepsIntentionalHierarchy() {
-        XCTAssertEqual(RuneUILayoutMetrics.paneShellCornerRadius, 14)
-        XCTAssertEqual(RuneUILayoutMetrics.groupedContentCornerRadius, 10)
+        // Concentric scale: pane shells hold 16 pt cards; cards hold 8 pt
+        // controls 8 pt from their edge.
+        XCTAssertEqual(RuneUILayoutMetrics.paneShellCornerRadius, 20)
+        XCTAssertEqual(RuneUILayoutMetrics.groupedContentCornerRadius, 16)
         XCTAssertEqual(RuneUILayoutMetrics.interactiveRowCornerRadius, 8)
         XCTAssertEqual(RuneUILayoutMetrics.tabCornerRadius, 7)
         XCTAssertEqual(RuneUILayoutMetrics.compactGlyphCornerRadius, 6)

@@ -17,7 +17,9 @@ final class TerminalSessionTabPresentationTests: XCTestCase {
             number: 2
         )
 
-        XCTAssertEqual(presentation.primaryTitle, "2 api-0")
+        // Native tabs name the pod; the index stays in the VoiceOver label.
+        XCTAssertEqual(presentation.primaryTitle, "api-0")
+        XCTAssertTrue(presentation.accessibilityLabel.hasPrefix("2 api-0"))
         XCTAssertEqual(presentation.secondaryTitle, "sidecar")
         XCTAssertTrue(presentation.accessibilityLabel.contains("container sidecar"))
         XCTAssertTrue(presentation.helpText.contains("Container: sidecar"))
@@ -36,8 +38,9 @@ final class TerminalSessionTabPresentationTests: XCTestCase {
             number: 1
         )
 
-        XCTAssertEqual(presentation.primaryTitle, "1 api-0")
-        XCTAssertNil(presentation.secondaryTitle)
+        XCTAssertEqual(presentation.primaryTitle, "api-0")
+        // Without a container the namespace is the secondary text.
+        XCTAssertEqual(presentation.secondaryTitle, "default")
         XCTAssertFalse(presentation.accessibilityLabel.contains("container"))
         XCTAssertFalse(presentation.helpText.contains("Container:"))
     }

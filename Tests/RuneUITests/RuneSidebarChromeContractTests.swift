@@ -206,8 +206,11 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertEqual(rootSource.components(separatedBy: "terminal-logs-use-pod-in-shell").count - 1, 1)
         XCTAssertTrue(shellSource.contains("private var header: some View"))
         XCTAssertTrue(shellSource.contains("openSelectedPodLogs()"))
-        XCTAssertTrue(shellSource.contains("RuneBorderedIconButton(\n                        \"Show \\(selectedPod.name) in Logs\""))
-        XCTAssertTrue(rootSource.contains("RuneBorderedIconButton(\n                        \"Use \\(pod.name) in Pod Shell\""))
+        // The logs hand-off is the first item of the shell's one overflow menu.
+        XCTAssertTrue(shellSource.contains("Button(\"Show \\(selectedPod.name) in Logs\")"))
+        // The hand-off is an item in the log viewer's More menu.
+        XCTAssertTrue(rootSource.contains("title: \"Use in Pod Shell\""))
+        XCTAssertTrue(rootSource.contains(".environment(\\.runeLogExtraActions, ["))
         XCTAssertTrue(workspaceSource.contains("onOpenSelectedPodLogs: onOpenSelectedPodLogs"))
         XCTAssertTrue(rootSource.contains("onOpenSelectedPodLogs: openTerminalLogs"))
         XCTAssertTrue(rootSource.contains("terminalLogTabState.activateOrRetarget(for: pod)"))
@@ -611,12 +614,14 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             XCTAssertFalse(source.contains("private func tabBackground"))
             XCTAssertFalse(source.contains("private func tabBorder"))
         }
-        XCTAssertTrue(sharedSource.contains("RuneSurfaceBackground(kind: .inset)"))
-        XCTAssertTrue(sharedSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
-        XCTAssertTrue(sharedSource.contains("RoundedRectangle(cornerRadius: RuneUILayoutMetrics.tabCornerRadius, style: .continuous)"))
-        XCTAssertTrue(sharedSource.contains("Capsule()"))
-        XCTAssertTrue(sharedSource.contains(".frame(width: 3, height: 16)"))
-        XCTAssertTrue(sharedSource.contains(".frame(height: 38)"))
+        // Both strips share the document-tab chrome: the selected tab merges
+        // into its surface; close and favourite show on hover.
+        // Native tabs: square, borderless, the selected one in the surface fill.
+        XCTAssertFalse(sharedSource.contains("RuneOpenBottomTabOutline("))
+        XCTAssertTrue(sharedSource.contains("struct TerminalTabDivider: View"))
+        XCTAssertTrue(sharedSource.contains("struct TerminalTabHoverReveal: ViewModifier"))
+        XCTAssertTrue(shellTabSource.contains(".terminalTabRevealOnHover()"))
+        XCTAssertTrue(logTabSource.contains(".terminalTabRevealOnHover()"))
     }
 
     func testTerminalTranscriptShowsPersistentTrimmedScrollbackIndicator() throws {
@@ -758,12 +763,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
     func testTerminalTabsUseFullTabHitAreaForSelection() throws {
         let tabBarSource = try String(contentsOfFile: terminalSessionTabBarPath, encoding: .utf8)
 
-        XCTAssertTrue(tabBarSource.contains(".frame(width: 216, height: 28"))
-        XCTAssertTrue(tabBarSource.contains(".contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.tabCornerRadius"))
-        XCTAssertTrue(tabBarSource.contains("Button {\n                activateSession(session)"))
+        // The whole tab is the hit area: the title view fills the tab
+        // (full width, full height, rectangular content shape).
+        let stripSource = try String(contentsOfFile: terminalTabStripPath, encoding: .utf8)
+        let title = try XCTUnwrap(stripSource.components(separatedBy: "struct TerminalTabTitle: View").last)
+        XCTAssertTrue(title.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)"))
+        XCTAssertTrue(title.contains(".contentShape(Rectangle())"))
+        XCTAssertTrue(tabBarSource.contains("return Button {\n            activateSession(session)"))
         XCTAssertTrue(tabBarSource.contains("onSelectSession(session.id)"))
         XCTAssertFalse(tabBarSource.contains(".onTapGesture"))
-        XCTAssertTrue(tabBarSource.contains("RuneIconButton(\"Close terminal tab\""))
+        XCTAssertTrue(tabBarSource.contains("TerminalTabAccessoryButton(accessibilityLabel: \"Close terminal tab\""))
     }
 
     func testStartupUsesStableLaunchExperienceOverHydratingRootView() throws {
@@ -852,24 +861,30 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(shellSource.contains("handleShellPodSelectionChange"))
         XCTAssertTrue(shellSource.contains("TerminalSessionControlRow("))
         XCTAssertFalse(shellSource.contains("private var actions: some View"))
-        XCTAssertFalse(shellSource.contains("actionTitle:"))
+        // The connect action is on the terminal (the prompt), not a bar button.
+        XCTAssertTrue(shellSource.contains("actionTitle: connectPromptActionTitle"))
+        XCTAssertTrue(shellSource.contains("showsPrimaryAction: false"))
         XCTAssertTrue(shellSource.contains("if let matchingSession = sessions.first"))
 
         XCTAssertTrue(tabBarSource.contains("draftTab(number: sessions.count + 1)"))
-        XCTAssertTrue(tabBarSource.contains("primaryTitle: \"\\(number) New Shell\""))
+        XCTAssertTrue(tabBarSource.contains("primaryTitle: \"New Shell\""))
         XCTAssertTrue(tabStripSource.contains("Text(primaryTitle)"))
         XCTAssertTrue(tabBarSource.contains("addAccessibilityLabel: \"New Shell\""))
         XCTAssertTrue(tabBarSource.contains(".terminalTabChrome(isActive: true, emphasis: .draft)"))
-        XCTAssertTrue(tabStripSource.contains(".frame(width: 38, height: 28)"))
-        XCTAssertTrue(tabStripSource.contains(".contentShape(Rectangle())"))
-        XCTAssertTrue(tabStripSource.contains(".frame(height: 38)"))
-        XCTAssertTrue(tabStripSource.contains("RuneSurfaceBackground(kind: .listRow(isSelected: isActive))"))
+        // Native tab bar on the transcript's top edge: one 28 pt row, tabs
+        // sharing the width, "+" in its own trailing slot.
+        XCTAssertTrue(tabStripSource.contains(".frame(width: TerminalTabLayoutMetrics.addSlotWidth, height: TerminalTabLayoutMetrics.tabHeight)"))
+        XCTAssertTrue(tabStripSource.contains(".frame(height: TerminalTabLayoutMetrics.tabHeight)"))
+        XCTAssertTrue(tabStripSource.contains("surfaceRole.fill(palette: runeThemePalette, colorScheme: colorScheme)"))
 
         XCTAssertTrue(sessionControlSource.contains("static let buttonWidth: CGFloat = 112"))
         XCTAssertTrue(sessionControlSource.contains("static let spacing: CGFloat = RuneUILayoutMetrics.inspectorToolbarControlSpacing"))
         XCTAssertTrue(sessionControlSource.contains("HStack(spacing: TerminalActionLayoutMetrics.spacing)"))
         XCTAssertTrue(sessionControlSource.contains("TerminalActionButtonLabel(\n                    primaryActionTitle"))
         XCTAssertTrue(sessionControlSource.contains("TerminalActionButtonLabel(\n                    \"Clear\",\n                    systemImage: \"xmark.circle\""))
+        // Pod Shell hides the inline Clear; it is in the overflow menu with ⌘K.
+        XCTAssertTrue(shellSource.contains("showsClear: false"))
+        XCTAssertTrue(shellSource.contains("Button(\"Clear Output\")"))
         XCTAssertEqual(sessionControlSource.components(separatedBy: ".terminalActionControl(.compact)").count - 1, 2)
         XCTAssertFalse(sessionControlSource.contains(".frame(width: 72)"))
         XCTAssertTrue(sessionControlSource.contains("TerminalPodControlLayout("))
@@ -879,7 +894,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(sessionControlSource.contains("ScrollView(.horizontal, showsIndicators: false)"))
         XCTAssertTrue(shellSource.contains("onSaveActiveTranscript"))
         XCTAssertTrue(shellSource.contains("onSaveAllTranscripts"))
-        XCTAssertTrue(shellSource.contains("Label(\"Export\", systemImage: \"square.and.arrow.down\")"))
+        XCTAssertTrue(shellSource.contains("Label(\"More\", systemImage: \"ellipsis.circle\")"))
         XCTAssertTrue(shellSource.contains("Button(\"Save Active Transcript\""))
         XCTAssertTrue(shellSource.contains("Button(\"Save Active to Export Folder\""))
         XCTAssertTrue(shellSource.contains("Button(\"Save Active and Open\""))
@@ -929,14 +944,16 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(portForwardSource.contains("compactStatusHeight"))
         XCTAssertTrue(portForwardSource.contains("activeSessionListHeight"))
-        XCTAssertTrue(portForwardSource.contains(".frame(minHeight: compactStatusHeight)"))
+        XCTAssertTrue(portForwardSource.contains(".frame(minHeight: compactStatusHeight, alignment: .topLeading)"))
         XCTAssertTrue(portForwardSource.contains(".frame(height: activeSessionListHeight)"))
         XCTAssertTrue(portForwardSource.contains("PortForwardEndpointFields("))
         XCTAssertTrue(portForwardSource.contains("PortForwardPrimaryActionButton("))
         XCTAssertTrue(portForwardSource.contains("usesUniformWidth: true"))
         XCTAssertTrue(portForwardSource.contains("HStack(spacing: TerminalActionLayoutMetrics.spacing)"))
         XCTAssertTrue(portForwardSource.contains("VStack(alignment: .leading, spacing: TerminalActionLayoutMetrics.spacing)"))
-        XCTAssertEqual(portForwardSource.components(separatedBy: ".terminalActionControl(.regular)").count - 1, 2)
+        // Copy kubectl and Expand are icon buttons with tooltips; Start keeps its label.
+        XCTAssertEqual(portForwardSource.components(separatedBy: ".terminalActionControl(.regular)").count - 1, 0)
+        XCTAssertTrue(portForwardSource.contains("RuneIconButton(\n            \"Copy kubectl port-forward command\""))
         XCTAssertFalse(portForwardSource.contains("stopButton(session)"))
         XCTAssertTrue(portForwardSource.contains("isFavoritePod: isFavoritePod"))
         XCTAssertTrue(portForwardSource.contains("onToggleFavoritePod: onToggleFavoritePod"))
@@ -1044,8 +1061,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(yamlSource.contains("RuneDialogButtonLabel(\"Close\")"))
         XCTAssertTrue(yamlSource.contains(".controlSize(.regular)"))
-        XCTAssertTrue(yamlSource.contains("width: RuneUILayoutMetrics.wideDialogWidth"))
-        XCTAssertTrue(yamlSource.contains("height: RuneUILayoutMetrics.wideDialogHeight"))
+        // The expanded YAML editor starts at the dialog size and resizes freely.
+        XCTAssertTrue(yamlSource.contains("minWidth: RuneUILayoutMetrics.wideDialogWidth"))
+        XCTAssertTrue(yamlSource.contains("minHeight: RuneUILayoutMetrics.wideDialogHeight"))
+        XCTAssertTrue(yamlSource.contains("idealWidth: RuneUILayoutMetrics.yamlEditorIdealWidth"))
     }
 
     func testBulkSelectionBarsUseStableRegularAndCompactControlGroups() throws {
@@ -1180,7 +1199,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(deploymentOverview.contains("viewModel.openDeploymentRelatedPod(pod)"))
         XCTAssertTrue(deploymentOverview.contains("RelatedEventsRelationshipSection(events: relatedEvents"))
         XCTAssertTrue(genericResourceDetails.contains("RelatedEventsRelationshipSection(events: relatedEvents"))
-        XCTAssertTrue(podOverview.contains("ResourceRelationshipSection(title: \"Scheduled Node\")"))
+        // The scheduled node is the Node fact itself, as a link, not a second section.
+        XCTAssertTrue(podOverview.contains("RuneFactLink(node.name"))
         XCTAssertTrue(podOverview.contains("viewModel.openPodRelatedNode(node)"))
         XCTAssertTrue(podOverview.contains("RelatedEventsRelationshipSection(events: relatedEvents"))
         XCTAssertTrue(serviceOverview.contains("RelatedPodsRelationshipSection(pods: relatedPods"))
@@ -2172,7 +2192,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(describeSource.contains("if !simpleMode"))
         XCTAssertTrue(yamlSource.contains("@AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false"))
         XCTAssertTrue(yamlSource.contains("let effectiveHidesManagedFields = simpleMode || hidesManagedFields"))
-        XCTAssertTrue(yamlSource.contains("if !simpleMode, filteredYAML.removedBlockCount > 0"))
+        XCTAssertTrue(yamlSource.contains("!simpleMode && filteredYAML.removedBlockCount > 0"))
         XCTAssertTrue(rootViewSource.contains("@AppStorage(RuneSettingsKeys.simpleMode) var simpleMode = false"))
         XCTAssertTrue(compactRootSource.contains("if!simpleMode{OverviewClusterSignalsPanelView("))
         XCTAssertTrue(compactRootSource.contains("if!simpleMode{OverviewRecentEventsPanelView("))
@@ -2375,7 +2395,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "var workloadDetails",
             in: source
         )
-        XCTAssertTrue(overviewDetails.contains("inspectorInfoRow(\"Context\""))
+        // The context is the title and the mode is the pill, so no fact row repeats them.
+        XCTAssertFalse(overviewDetails.contains("inspectorInfoRow(\"Context\""))
+        XCTAssertTrue(overviewDetails.contains("RuneBadge("))
         XCTAssertTrue(overviewDetails.contains("inspectorActionButtonRow"))
 
         let podOverview = try functionBlock(
@@ -2388,8 +2410,12 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "func podOverviewRow",
             in: source
         )
-        XCTAssertTrue(podCoreInfo.contains("inspectorInfoRow(\"Namespace\""))
-        XCTAssertTrue(podCoreInfo.contains("inspectorInfoRow(\"Status\""))
+        // Facts are one grid on Overview; status is the header pill and the
+        // namespace is in the subtitle, so neither repeats as a row.
+        XCTAssertTrue(podCoreInfo.contains("RuneFactGrid(\"Status\")"))
+        XCTAssertFalse(podCoreInfo.contains("inspectorInfoRow(\"Namespace\""))
+        XCTAssertFalse(podCoreInfo.contains("inspectorInfoRow(\"Status\""))
+        XCTAssertTrue(podOverview.contains("podInspectorCoreInfo(pod)"))
         XCTAssertTrue(podOverview.contains("RuneInspectorInfoRow(\"Containers\""))
         XCTAssertFalse(podOverview.contains("inspectorInsetCard"))
         XCTAssertFalse(podOverview.contains(".runeInsetCard()"))
@@ -2399,8 +2425,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "func inspectorEmptyState",
             in: source
         )
-        let deploymentCoreInfo = try functionBlock(
-            named: "func deploymentInspectorCoreInfo",
+        let deploymentStatus = try functionBlock(
+            named: "func deploymentInspectorStatus",
             endingBefore: "var deploymentInspectorActions",
             in: source
         )
@@ -2409,8 +2435,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "func isHistoricalDeploymentReplicaSet",
             in: source
         )
-        XCTAssertTrue(deploymentCoreInfo.contains("inspectorInfoRow(\"Namespace\""))
-        XCTAssertTrue(deploymentCoreInfo.contains("RuneInspectorInfoRow(\"Status\""))
+        // The replica state is the header pill.
+        XCTAssertTrue(deploymentStatus.contains("RuneInspectorStatus(deploymentReplicaStatusText(deployment), tone: tone)"))
         XCTAssertTrue(deploymentActions.contains("Button(\"Export Pod Logs ZIP\")"))
         XCTAssertTrue(deploymentActions.contains("viewModel.saveDeploymentPodLogsZip()"))
         XCTAssertFalse(deploymentOverview.contains("inspectorInsetCard"))
@@ -2432,7 +2458,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             endingBefore: "var serviceInspectorActions",
             in: source
         )
-        XCTAssertTrue(serviceCoreInfo.contains("inspectorInfoRow(\"Namespace\""))
+        XCTAssertTrue(serviceCoreInfo.contains("RuneFactGrid(\"Details\")"))
+        XCTAssertFalse(serviceCoreInfo.contains("inspectorInfoRow(\"Namespace\""))
         XCTAssertTrue(serviceCoreInfo.contains("inspectorInfoRow(\"Type\""))
         XCTAssertTrue(serviceCoreInfo.contains("inspectorInfoRow(\"Cluster IP\""))
         XCTAssertTrue(serviceDetails.contains("serviceInspectorActions"))

@@ -29,9 +29,11 @@ struct TerminalSessionTabPresentation: Hashable, Sendable {
             statusTitle
         ].compactMap { $0 }.joined(separator: ", ")
 
+        // Titles name the pod, as native tabs name the document; the number
+        // stays in the accessibility label for VoiceOver.
         return TerminalSessionTabPresentation(
-            primaryTitle: "\(number) \(session.podName)",
-            secondaryTitle: containerTitle,
+            primaryTitle: session.podName,
+            secondaryTitle: containerTitle ?? session.namespace,
             accessibilityLabel: accessibility,
             helpText: helpParts.joined(separator: " - ")
         )
@@ -47,13 +49,15 @@ struct TerminalSessionTabBar: View {
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
     let onComposeNewSession: () -> Void
+    var onDisconnectSession: ((String) -> Void)? = nil
     @Environment(\.runeThemePalette) private var runeThemePalette
 
     var body: some View {
         TerminalTabStrip(
             canAddTab: canApplyMutations && !isComposingNewSession,
-            addHelp: "Prepare a new shell tab. Pick a pod, then connect.",
+            addHelp: "Prepare a new shell tab. Pick a pod, then connect. (⌘T)",
             addAccessibilityLabel: "New Shell",
+            addShortcut: KeyboardShortcut("t", modifiers: [.command]),
             onAddTab: onComposeNewSession
         ) {
             ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
@@ -64,12 +68,32 @@ struct TerminalSessionTabBar: View {
                 draftTab(number: sessions.count + 1)
             }
         }
+        .background {
+            // Previous and next shell tab, as in Terminal and iTerm2.
+            HStack(spacing: 0) {
+                Button("Previous Shell Tab") { selectAdjacentSession(offset: -1) }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                Button("Next Shell Tab") { selectAdjacentSession(offset: 1) }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+            .disabled(sessions.count < 2)
+        }
+    }
+
+    func selectAdjacentSession(offset: Int) {
+        guard !sessions.isEmpty else { return }
+        let currentIndex = sessions.firstIndex { $0.id == activeSessionID } ?? 0
+        let nextIndex = (currentIndex + offset + sessions.count) % sessions.count
+        onSelectSession(sessions[nextIndex].id)
     }
 
     private func draftTab(number: Int) -> some View {
         Button(action: onComposeNewSession) {
             TerminalPlaceholderTabLabel(
-                primaryTitle: "\(number) New Shell",
+                primaryTitle: "New Shell",
                 secondaryTitle: selectedPod?.name ?? "Ready"
             )
         }
@@ -77,57 +101,40 @@ struct TerminalSessionTabBar: View {
         .disabled(!canApplyMutations)
         .terminalTabChrome(isActive: true, emphasis: .draft)
         .help(selectedPod.map { "New shell tab for \($0.namespace)/\($0.name)" } ?? "Select a pod to connect this new shell tab")
+        .accessibilityLabel("\(number) New Shell")
     }
 
     private func tab(_ session: PodTerminalSession, number: Int) -> some View {
         let presentation = TerminalSessionTabPresentation.make(session: session, number: number)
-        return ZStack {
-            Button {
-                activateSession(session)
-            } label: {
-                HStack(spacing: RuneSpacing.tight) {
-                    TerminalStatusDot(
-                        color: TerminalStatusStyling.color(session.status, palette: runeThemePalette)
-                    )
-                    Text(presentation.primaryTitle)
-                        .runeText(.microEmphasis)
-                        .lineLimit(1)
-                    if let secondaryTitle = presentation.secondaryTitle {
-                        Text(secondaryTitle)
-                            .runeText(.microEmphasis)
-                            .foregroundStyle(runeThemePalette?.secondaryText ?? Color.secondary)
-                            .lineLimit(1)
-                    }
-                    if session.status != .connected {
-                        Text(TerminalStatusStyling.title(session.status))
-                            .runeText(.microEmphasis)
-                            .foregroundStyle(
-                                TerminalStatusStyling.color(session.status, palette: runeThemePalette)
-                            )
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, RuneSpacing.xs)
-                .padding(.trailing, RuneSpacing.xl)
-                .frame(width: 216, height: 28, alignment: .leading)
-                .contentShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.tabCornerRadius, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help(presentation.helpText)
-            .accessibilityLabel(presentation.accessibilityLabel)
-            .accessibilityAddTraits(session.id == activeSessionID ? [.isSelected, .isButton] : .isButton)
-
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                RuneIconButton("Close terminal tab", systemImage: "xmark") {
-                    onCloseSession(session.id)
-                }
-            }
-            .frame(width: 216, height: 28, alignment: .trailing)
+        return Button {
+            activateSession(session)
+        } label: {
+            TerminalTabTitle(
+                primaryTitle: presentation.primaryTitle,
+                secondaryTitle: presentation.secondaryTitle,
+                statusDotColor: TerminalStatusStyling.color(session.status, palette: runeThemePalette),
+                trailingNote: session.status == .connected ? nil : TerminalStatusStyling.title(session.status),
+                trailingNoteColor: TerminalStatusStyling.color(session.status, palette: runeThemePalette)
+            )
         }
-        .frame(width: 216, height: 28, alignment: .leading)
+        .buttonStyle(.plain)
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityAddTraits(session.id == activeSessionID ? [.isSelected, .isButton] : .isButton)
+        .overlay(alignment: .leading) {
+            // Close sits at the leading edge on hover, as in macOS tabs.
+            TerminalTabAccessoryButton(accessibilityLabel: "Close terminal tab", systemImage: "xmark") {
+                onCloseSession(session.id)
+            }
+            .terminalTabRevealOnHover()
+            .padding(.leading, RuneSpacing.hairline)
+        }
         .terminalTabChrome(isActive: session.id == activeSessionID)
+        .contextMenu {
+            if let onDisconnectSession, session.status == .connected || session.status == .connecting {
+                Button("Disconnect") { onDisconnectSession(session.id) }
+            }
+            Button("Close Tab") { onCloseSession(session.id) }
+        }
         .help(presentation.helpText)
         .accessibilityElement(children: .contain)
     }

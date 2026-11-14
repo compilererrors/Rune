@@ -72,7 +72,9 @@ extension RuneRootView {
     @ViewBuilder
     func paneFocusOutline(isFocused: Bool) -> some View {
         if isFocused {
-            RoundedRectangle(cornerRadius: RuneRadius.card, style: .continuous)
+            // 4 pt inside the pane; rows sit 8 pt inside the outline, so the
+            // outline is concentric with their 8 pt corners.
+            RoundedRectangle(cornerRadius: RuneRadius.concentric(inner: RuneRadius.control, inset: RuneSpacing.xs), style: .continuous)
                 .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1.5)
                 .padding(RuneSpacing.xxs)
                 .allowsHitTesting(false)

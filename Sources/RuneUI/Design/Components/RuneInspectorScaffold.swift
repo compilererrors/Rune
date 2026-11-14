@@ -28,10 +28,14 @@ struct RuneInspectorScaffoldLayoutSnapshot: Equatable, Sendable {
     }
 }
 
-/// Stable inspector hierarchy: identity and primary utilities, compact core info,
-/// tabs, optional actions, then either a vertically scrolling or self-managed body.
+/// Stable inspector hierarchy: one header block (title with its utilities on
+/// the title baseline, then a "Kind · namespace" subtitle with the status as a
+/// pill), optional core info, tabs, optional actions, then either a vertically
+/// scrolling or self-managed body.
 struct RuneInspectorScaffold<Info: View, Tabs: View, Actions: View, Body: View>: View {
     let title: String
+    let subtitle: String?
+    let status: RuneInspectorStatus?
     let copyAccessibilityLabel: String
     let bodyScrollBehavior: RuneInspectorBodyScrollBehavior
     let showsTabs: Bool
@@ -46,6 +50,8 @@ struct RuneInspectorScaffold<Info: View, Tabs: View, Actions: View, Body: View>:
 
     init(
         title: String,
+        subtitle: String? = nil,
+        status: RuneInspectorStatus? = nil,
         copyAccessibilityLabel: String,
         bodyScrollBehavior: RuneInspectorBodyScrollBehavior,
         showsTabs: Bool = true,
@@ -59,6 +65,8 @@ struct RuneInspectorScaffold<Info: View, Tabs: View, Actions: View, Body: View>:
         @ViewBuilder content: () -> Body
     ) {
         self.title = title
+        self.subtitle = subtitle
+        self.status = status
         self.copyAccessibilityLabel = copyAccessibilityLabel
         self.bodyScrollBehavior = bodyScrollBehavior
         self.showsTabs = showsTabs
@@ -78,10 +86,12 @@ struct RuneInspectorScaffold<Info: View, Tabs: View, Actions: View, Body: View>:
                 .accessibilityIdentifier("rune.inspector.identity")
                 .runeInspectorScaffoldLayoutProbe(.identity, enabled: onLayoutSnapshotChange != nil)
 
-            info
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityIdentifier("rune.inspector.info")
-                .runeInspectorScaffoldLayoutProbe(.info, enabled: onLayoutSnapshotChange != nil)
+            if Info.self != EmptyView.self {
+                info
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("rune.inspector.info")
+                    .runeInspectorScaffoldLayoutProbe(.info, enabled: onLayoutSnapshotChange != nil)
+            }
 
             if showsTabs {
                 tabs
@@ -113,26 +123,50 @@ struct RuneInspectorScaffold<Info: View, Tabs: View, Actions: View, Body: View>:
     }
 
     private var identityHeader: some View {
-        HStack(alignment: .center, spacing: RuneSpacing.tight) {
-            Text(title)
-                .runeText(.title, weight: .bold)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .help(title)
+        VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
+            // Utilities sit on the title's line, centred on it.
+            HStack(alignment: .center, spacing: RuneSpacing.tight) {
+                Text(title)
+                    .runeText(.title, weight: .bold)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(title)
 
-            Spacer(minLength: 4)
+                Spacer(minLength: RuneSpacing.xxs)
 
-            RuneIconButton(
-                copyAccessibilityLabel,
-                systemImage: "doc.on.doc",
-                action: onCopy
-            )
-            RuneIconButton(
-                "Refresh inspector",
-                systemImage: "arrow.clockwise",
-                action: onRefresh
-            )
+                HStack(spacing: RuneSpacing.hairline) {
+                    RuneIconButton(
+                        copyAccessibilityLabel,
+                        systemImage: "doc.on.doc",
+                        action: onCopy
+                    )
+                    RuneIconButton(
+                        "Refresh inspector",
+                        systemImage: "arrow.clockwise",
+                        action: onRefresh
+                    )
+                }
+            }
+
+            if subtitle != nil || status != nil {
+                HStack(alignment: .center, spacing: RuneSpacing.xs) {
+                    if let subtitle {
+                        Text(subtitle)
+                            .runeText(.caption)
+                            .foregroundStyle(.runeSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("rune.inspector.subtitle")
+                    }
+                    if let status {
+                        RuneBadge(status.text, tone: status.tone)
+                            .accessibilityLabel("Status: \(status.text)")
+                            .accessibilityIdentifier("rune.inspector.status")
+                    }
+                }
+            }
         }
         .contextMenu {
             Button(copyAccessibilityLabel, action: onCopy)

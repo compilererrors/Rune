@@ -210,6 +210,7 @@ struct TerminalPodControlLayout<Actions: View>: View {
     let selector: (CGFloat) -> TerminalPodSelectorControl
     @ViewBuilder let actions: Actions
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.runeDocumentFrameEmbedded) private var isEmbedded
 
     init(
         accessibilityLabel: String,
@@ -242,14 +243,31 @@ struct TerminalPodControlLayout<Actions: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.horizontal, RuneSpacing.inset)
-        .padding(.vertical, RuneSpacing.xs)
-        .background(RuneSurfaceBackground(kind: .editor))
+        // In the terminal's header bar the bar is the container.
+        .padding(.horizontal, isEmbedded ? 0 : RuneSpacing.inset)
+        .padding(.vertical, isEmbedded ? 0 : RuneSpacing.xs)
+        .background(RuneSurfaceBackground(kind: .editor).opacity(isEmbedded ? 0 : 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
     }
 
+    @ViewBuilder
     private var selectorGroup: some View {
+        if isEmbedded {
+            // In a document bar the picker's value names it; the label stays
+            // as help and accessibility name instead of a row of its own.
+            ViewThatFits(in: .horizontal) {
+                selector(TerminalPodControlLayoutMetrics.widePickerWidth)
+                selector(TerminalPodControlLayoutMetrics.compactPickerWidth)
+            }
+            .help(title)
+            .accessibilityLabel(title)
+        } else {
+            labelledSelectorGroup
+        }
+    }
+
+    private var labelledSelectorGroup: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: TerminalPodControlLayoutMetrics.controlSpacing) {
                 selectorLabel

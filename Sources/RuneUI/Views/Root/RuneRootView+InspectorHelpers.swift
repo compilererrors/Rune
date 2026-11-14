@@ -67,18 +67,6 @@ extension RuneRootView {
         }
     }
 
-    @ViewBuilder
-    func copyButton(value: String, label: String) -> some View {
-        if normalizedCopyValue(value) != nil {
-            RuneIconButton(
-                "Copy \(label)",
-                systemImage: "doc.on.doc"
-            ) {
-                copyToClipboard(value)
-            }
-        }
-    }
-
     var detailRefreshButton: some View {
         RuneIconButton(
             "Refresh inspector",
@@ -112,13 +100,6 @@ extension RuneRootView {
         }
     }
 
-    func deploymentReplicaStatusColor(_ deployment: DeploymentSummary) -> Color {
-        if deployment.desiredReplicas == 0 { return .secondary }
-        if deployment.readyReplicas >= deployment.desiredReplicas { return RuneSemanticColorRole.success.color(in: activeAppearanceTheme.palette) }
-        if deployment.readyReplicas > 0 { return RuneSemanticColorRole.warning.color(in: activeAppearanceTheme.palette) }
-        return RuneSemanticColorRole.danger.color(in: activeAppearanceTheme.palette)
-    }
-
     func deploymentReplicaStatusText(_ deployment: DeploymentSummary) -> String {
         if deployment.desiredReplicas == 0 {
             return "Scaled to zero"
@@ -130,79 +111,76 @@ extension RuneRootView {
         viewModel.scaleReplicaInput != deployment.desiredReplicas
     }
 
+    /// Facts first as aligned grids, then the relationships; no cards.
     func podOverviewSection(pod: PodSummary) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.inset) {
-            podOverviewRow(title: "Ready", value: pod.containersReady ?? "—", symbol: "checkmark.circle")
-            podOverviewRow(title: "Restarts", value: "\(pod.totalRestarts)", symbol: "arrow.clockwise")
-            podOverviewRow(title: "Age", value: pod.ageDescription, symbol: "clock")
-            podOverviewRow(title: "CPU", value: pod.cpuDisplay, symbol: "cpu")
-            podOverviewRow(title: "Memory", value: pod.memoryDisplay, symbol: "memorychip")
-            Divider()
-                .opacity(0.45)
-            podOverviewRow(title: "Node", value: pod.nodeName ?? "—", symbol: "server.rack")
-            if let node = viewModel.selectedPodRelatedNode {
-                ResourceRelationshipSection(title: "Scheduled Node") {
-                    ResourceRelationshipLinkButton(
-                        title: node.name,
-                        subtitle: "\(node.primaryText) · \(node.secondaryText)",
-                        symbol: "server.rack"
-                    ) {
-                        viewModel.openPodRelatedNode(node)
+        VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorGroupSpacing) {
+            podInspectorCoreInfo(pod)
+
+            RuneFactGrid("Placement") {
+                if let node = viewModel.selectedPodRelatedNode {
+                    RuneInspectorInfoRow("Node", copyValue: node.name, onCopy: copyToClipboard) {
+                        RuneFactLink(node.name, help: "Show this node in Nodes.") {
+                            viewModel.openPodRelatedNode(node)
+                        }
+                    }
+                } else {
+                    podOverviewRow(title: "Node", value: pod.nodeName ?? "—")
+                }
+                podOverviewRow(title: "Pod IP", value: pod.podIP ?? "—")
+                podOverviewRow(title: "Host IP", value: pod.hostIP ?? "—")
+                podOverviewRow(title: "QoS class", value: pod.qosClass ?? "—")
+                if let containers = pod.containerNamesLine, !containers.isEmpty {
+                    RuneInspectorInfoRow("Containers", copyValue: containers, onCopy: copyToClipboard) {
+                        Text(containers)
+                            .runeText(.code)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
+
             let relatedEvents = viewModel.selectedPodRelatedEvents
             if !relatedEvents.isEmpty {
                 RelatedEventsRelationshipSection(events: relatedEvents, open: viewModel.openRelatedEvent)
             }
-            podOverviewRow(title: "Pod IP", value: pod.podIP ?? "—", symbol: "network")
-            podOverviewRow(title: "Host IP", value: pod.hostIP ?? "—", symbol: "cable.connector")
-            podOverviewRow(title: "QoS class", value: pod.qosClass ?? "—", symbol: "slider.horizontal.3")
-            if let containers = pod.containerNamesLine, !containers.isEmpty {
-                RuneInspectorInfoRow("Containers", systemImage: "square.stack.3d.forward.dottedline") {
-                    Text(containers)
-                        .runeText(.code)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-
         }
     }
 
+    /// The pod's state as one fact grid. Status itself is the header pill.
     func podInspectorCoreInfo(_ pod: PodSummary) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
-            if shouldShowResourceNamespaceLabel(pod.namespace) {
-                inspectorInfoRow("Namespace", value: pod.namespace, symbol: "square.stack.3d.up")
-            }
-            inspectorInfoRow("Status", value: pod.displayStatus, symbol: "waveform.path.ecg")
+        RuneFactGrid("Status") {
             if pod.statusReason != nil {
-                inspectorInfoRow("Phase", value: pod.status, symbol: "circle.dashed")
+                inspectorInfoRow("Phase", value: pod.status)
             }
+            podOverviewRow(title: "Ready", value: pod.containersReady ?? "—")
+            podOverviewRow(title: "Restarts", value: "\(pod.totalRestarts)")
+            podOverviewRow(title: "Age", value: pod.ageDescription)
+            podOverviewRow(title: "CPU", value: pod.cpuDisplay)
+            podOverviewRow(title: "Memory", value: pod.memoryDisplay)
         }
     }
 
-    func podOverviewRow(title: String, value: String, symbol: String) -> some View {
-        inspectorInfoRow(title, value: value, symbol: symbol)
+    func podOverviewRow(title: String, value: String) -> some View {
+        inspectorInfoRow(title, value: value)
     }
 
-    func copyableOverviewValue(_ value: String, label: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: RuneSpacing.tight) {
+    /// "Kind · namespace", or the kind alone for cluster-scoped objects.
+    func inspectorSubtitle(_ kind: String, namespace: String?) -> String {
+        let namespace = namespace?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return namespace.isEmpty ? kind : "\(kind) · \(namespace)"
+    }
+
+    /// One fact: the value in body text, copy on hover or from the context menu.
+    func inspectorInfoRow(_ title: String, value: String) -> some View {
+        RuneInspectorInfoRow(
+            title,
+            copyValue: normalizedCopyValue(value) == nil ? nil : value,
+            onCopy: copyToClipboard
+        ) {
             Text(value)
-                .runeText(.bodyEmphasis)
+                .runeText(.body)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-            copyButton(value: value, label: label.lowercased())
-        }
-        .contextMenu {
-            copyMenuItem(value: value, label: label.lowercased())
-        }
-    }
-
-    func inspectorInfoRow(_ title: String, value: String, symbol: String) -> some View {
-        RuneInspectorInfoRow(title, systemImage: symbol) {
-            copyableOverviewValue(value, label: title)
         }
     }
 
@@ -315,19 +293,19 @@ extension RuneRootView {
         }
     }
 
-    func deploymentInspectorCoreInfo(_ deployment: DeploymentSummary) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.tight) {
-            if shouldShowResourceNamespaceLabel(deployment.namespace) {
-                inspectorInfoRow("Namespace", value: deployment.namespace, symbol: "square.stack.3d.up")
-            }
-            RuneInspectorInfoRow("Status", systemImage: "shippingbox") {
-                HStack(spacing: RuneSpacing.xs) {
-                    RuneStatusDot(deploymentReplicaStatusColor(deployment))
-                    Text(deploymentReplicaStatusText(deployment))
-                        .runeText(.body, weight: .semibold)
-                }
-            }
+    /// The replica state is the header pill; the overview starts with the scaler.
+    func deploymentInspectorStatus(_ deployment: DeploymentSummary) -> RuneInspectorStatus {
+        let tone: RuneBadgeTone
+        if deployment.desiredReplicas == 0 {
+            tone = .neutral
+        } else if deployment.readyReplicas >= deployment.desiredReplicas {
+            tone = .success
+        } else if deployment.readyReplicas > 0 {
+            tone = .warning
+        } else {
+            tone = .danger
         }
+        return RuneInspectorStatus(deploymentReplicaStatusText(deployment), tone: tone)
     }
 
     @ViewBuilder

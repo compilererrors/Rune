@@ -97,6 +97,8 @@ struct ResourceTerminalWorkspaceView: View {
     let isFavoritePod: (PodSummary) -> Bool
     let onToggleFavoritePod: (PodSummary) -> Void
     var onOpenSelectedPodLogs: ((PodSummary) -> Void)? = nil
+    /// Whether choosing a pod starts its shell at once (see TerminalShellConnectPolicy).
+    var autoConnectsShell = false
     @State private var isPortForwardExpanded = false
     @State private var isComposingNewShellTab = false
 
@@ -198,7 +200,8 @@ struct ResourceTerminalWorkspaceView: View {
                         onSaveAllTranscriptsAndOpen: onSaveAllTerminalTranscriptsAndOpen,
                         isFavoritePod: isFavoritePod,
                         onToggleFavoritePod: onToggleFavoritePod,
-                        onOpenSelectedPodLogs: onOpenSelectedPodLogs
+                        onOpenSelectedPodLogs: onOpenSelectedPodLogs,
+                        autoConnects: autoConnectsShell
                     )
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)

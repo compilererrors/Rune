@@ -85,7 +85,10 @@ extension RuneRootView {
             }
 
             if hasAvailableKubernetesContexts, showsResourceFilterControls {
-                resourceFamilyControlRow
+                // Events has one kind, so it has no kind picker and no label in its place.
+                if viewModel.state.selectedSection != .events {
+                    resourceFamilyControlRow
+                }
                 resourceListToolbar
             } else {
                 sectionSpecificControls
@@ -130,11 +133,12 @@ extension RuneRootView {
                         systemImage: "list.bullet",
                         accessibilityLabel: "Resource count: \(counts.visible) visible of \(counts.total) total"
                     )
-                    RuneHeaderCapsule(
-                        currentResourceListScopeLabel,
-                        role: .value,
-                        systemImage: currentResourceListScopeSystemImage
-                    )
+                    // Scope shows in one place: the toolbar's namespace menu (or
+                    // Helm's scope menu). The strip only notes lists that the
+                    // namespace menu does not apply to.
+                    if let note = currentResourceListScopeNote {
+                        RuneHeaderCapsule(note, role: .value, systemImage: "globe")
+                    }
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
@@ -211,16 +215,7 @@ extension RuneRootView {
     }
 
     var resourceFamilyControlRow: some View {
-        Group {
-            if viewModel.state.selectedSection == .events {
-                Label("Event stream", systemImage: "bolt.horizontal.circle")
-                    .runeText(.microEmphasis)
-                    .foregroundStyle(.runeSecondary)
-                    .accessibilityLabel("Resource type: Events")
-            } else {
-                sectionSpecificControls
-            }
-        }
+        sectionSpecificControls
         .frame(
             maxWidth: .infinity,
             minHeight: resourceListControlRowMinimumHeight,

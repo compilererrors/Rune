@@ -102,8 +102,9 @@ struct ManifestActionToolbar<PrimaryActions: View, SecondaryActions: View>: View
         self.secondaryActions = secondaryActions()
     }
 
+    /// Edit actions on the left, document and source actions on the right.
     var body: some View {
-        ManifestToolbarScrollRow {
+        RuneToolbarOverflowRow(spacing: RuneUILayoutMetrics.inspectorToolbarGroupSpacing, justifiesLastItem: true) {
             ManifestToolbarGroup(role: .action) {
                 Button(applyTitle, action: onApply)
                     .buttonStyle(RuneToolbarButtonStyle(isProminent: true))
@@ -190,6 +191,59 @@ struct ManifestYAMLActionMenus: View {
     }
 }
 
+/// The YAML inspector's rare actions in one overflow menu: the draft, the
+/// file and the managed-fields view option, so the bar shows only the edit
+/// actions inline (progressive disclosure, Design/README.md "Declutter").
+struct ManifestYAMLMoreMenu: View {
+    let draftTitle: String
+    let fileTitle: String
+    let hideManagedTitle: String
+    let yamlTextIsEmpty: Bool
+    let hasUnsavedEdits: Bool
+    let canReapplySnapshot: Bool
+    let hidesManagedFields: Binding<Bool>?
+    let managedFieldsDisabled: Bool
+    let onReapplySnapshot: () -> Void
+    let onRevert: () -> Void
+    let onImport: () -> Void
+    let onExport: () -> Void
+    let onExportToExportFolder: () -> Void
+    let onExportAndOpen: () -> Void
+
+    var body: some View {
+        RuneToolbarMenu {
+            Section(draftTitle) {
+                Button("Apply Last Fetched YAML", action: onReapplySnapshot)
+                    .disabled(!canReapplySnapshot)
+                Button("Revert Draft", action: onRevert)
+                    .disabled(!hasUnsavedEdits)
+            }
+
+            Section(fileTitle) {
+                Button("Import YAML…", action: onImport)
+                Button("Export YAML…", action: onExport)
+                    .disabled(yamlTextIsEmpty)
+                Button("Save YAML to Export Folder", action: onExportToExportFolder)
+                    .disabled(yamlTextIsEmpty)
+                Button("Save YAML and Open", action: onExportAndOpen)
+                    .disabled(yamlTextIsEmpty)
+            }
+
+            if let hidesManagedFields {
+                Divider()
+                Toggle(hideManagedTitle, isOn: hidesManagedFields)
+                    .disabled(managedFieldsDisabled)
+            }
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
+        }
+        .help("Draft, file and view options")
+        .accessibilityLabel("More YAML actions")
+        .accessibilityIdentifier("manifest-yaml-more-menu")
+    }
+}
+
 /// Action groups for the manifest inspectors. Groups stay together; labels
 /// fall back to icons and then wrap to a second row instead of clipping.
 struct ManifestToolbarScrollRow<Content: View>: View {
@@ -230,14 +284,23 @@ enum ManifestToolbarGroupRole {
 struct ManifestToolbarGroup<Content: View>: View {
     var role: ManifestToolbarGroupRole = .action
     @ViewBuilder let content: Content
+    @Environment(\.runeDocumentFrameEmbedded) private var isEmbedded
 
     var body: some View {
-        RuneControlCard(minHeight: role.height, verticalPadding: role.verticalPadding) {
+        // In a document's header bar the bar is the container: no card.
+        if isEmbedded {
             HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
                 content
             }
+            .fixedSize(horizontal: true, vertical: false)
+        } else {
+            RuneControlCard(minHeight: role.height, verticalPadding: role.verticalPadding) {
+                HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
+                    content
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -259,5 +322,23 @@ struct ManifestStatusChip: View {
             .help(text)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(text)
+    }
+}
+
+/// "Last updated" as quiet text for a document's status line: status, not
+/// an action, so it lives with the other status instead of in the bar.
+struct ManifestUpdatedNote: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: "clock")
+            .labelStyle(.titleAndIcon)
+            .runeText(.micro)
+            .monospacedDigit()
+            .foregroundStyle(.runeSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .help(text)
+            .accessibilityIdentifier("manifest-updated-note")
     }
 }

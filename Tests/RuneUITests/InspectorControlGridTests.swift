@@ -94,10 +94,13 @@ final class InspectorControlGridTests: XCTestCase {
         XCTAssertFalse(inspectorSearch.contains(".padding(.horizontal"))
         XCTAssertFalse(terminalSearch.contains(".padding(.horizontal"))
 
+        // The manifest inspectors are one document frame: toolbar attached on
+        // top, status attached at the bottom, header and footer outside it.
         XCTAssertTrue(manifest.contains("RuneUILayoutMetrics.inspectorSectionSpacing"))
+        XCTAssertTrue(manifest.contains("RuneDocumentFrame(showsStatus: showsStatus)"))
         XCTAssertEqual(
             manifest.occurrences(of: ".frame(maxWidth: .infinity, alignment: .leading)"),
-            5
+            3
         )
         XCTAssertFalse(manifest.contains("spacing: 10"))
         XCTAssertFalse(manifest.contains(".padding(.horizontal, 10)"))
