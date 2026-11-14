@@ -1496,7 +1496,7 @@ private struct ManifestPalette: Equatable {
             return native
         }
         return themed(
-            background: theme.palette.map { NSColor($0.editor) } ?? .textBackgroundColor,
+            background: theme.palette.map { NSColor($0.documentSurface) } ?? .textBackgroundColor,
             foreground: appKit.foreground,
             accent: appKit.accent,
             key: syntax.key,

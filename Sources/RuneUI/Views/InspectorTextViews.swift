@@ -4,11 +4,18 @@ import struct RuneSharedCore.RuneLargeTextIndex
 import struct RuneSharedUI.RuneLargeTextSurface
 import RuneCore
 
+/// The framed surface behind a document (YAML, Describe, Logs) or the
+/// terminal transcript. Its role sets the tone, so code and terminals read
+/// differently from the quiet control cards around them.
 struct InspectorTextSurface<Content: View>: View {
     let minHeight: CGFloat
+    var role: RuneSurfaceRole = .document
     @ViewBuilder var content: () -> Content
+    @Environment(\.runeThemePalette) private var palette
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: RuneRadius.card, style: .continuous)
         GeometryReader { proxy in
             content()
                 .frame(
@@ -16,14 +23,13 @@ struct InspectorTextSurface<Content: View>: View {
                     height: max(1, proxy.size.height),
                     alignment: .topLeading
                 )
-                .background {
-                    RuneSurfaceBackground(kind: .editor)
-                }
+                .background(shape.fill(role.fill(palette: palette, colorScheme: colorScheme)))
                 .overlay {
-                    RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous)
-                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+                    shape
+                        .strokeBorder(role.frame(palette: palette), lineWidth: 1)
+                        .allowsHitTesting(false)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: RuneUILayoutMetrics.interactiveRowCornerRadius, style: .continuous))
+                .clipShape(shape)
         }
         .frame(minHeight: minHeight, maxHeight: .infinity, alignment: .topLeading)
     }

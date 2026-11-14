@@ -402,6 +402,19 @@ struct RuneSettingsIntegerLimitEditor: View {
 
 /// Settings window content.
 public struct RunePreferencesView: View {
+    @ViewBuilder
+    private var selectedSettingsPane: some View {
+        switch selectedPane {
+        case .general: generalSettingsForm
+        case .themes: themesSettingsForm
+        case .keyBindings: keyBindingsSettingsForm
+        case .logs: logsSettingsForm
+        case .safety: safetySettingsForm
+        case .diagnostics: diagnosticsSettingsForm
+        case .performance: performanceSettingsForm
+        }
+    }
+
     private enum PreferencesPane: String, CaseIterable, Identifiable {
         case general
         case themes
@@ -502,55 +515,26 @@ public struct RunePreferencesView: View {
     public init() {}
 
     public var body: some View {
-        TabView(selection: $selectedPane) {
-            generalSettingsForm
-                .tag(PreferencesPane.general)
-                .tabItem {
-                    Label(PreferencesPane.general.title(settingsString), systemImage: PreferencesPane.general.symbol)
-                        .runeInterfaceFont(weight: .medium)
+        // The pane switcher is Rune's native segmented tab bar at the top of
+        // the window. A toolbar TabView needs about 730 pt for these seven
+        // labels and collapses into an empty overflow at the standard width.
+        VStack(spacing: 0) {
+            HStack {
+                Spacer(minLength: 0)
+                RuneTabBar("Settings", selection: $selectedPane, tabs: PreferencesPane.allCases) {
+                    $0.title(settingsString)
                 }
+                .fixedSize()
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, RuneSettingsMetrics.pageHorizontalPadding)
+            .padding(.top, RuneSpacing.sm)
+            .padding(.bottom, RuneSpacing.xs)
 
-            themesSettingsForm
-                .tag(PreferencesPane.themes)
-                .tabItem {
-                    Label(PreferencesPane.themes.title(settingsString), systemImage: PreferencesPane.themes.symbol)
-                        .runeInterfaceFont(weight: .medium)
-                }
+            Divider()
 
-            keyBindingsSettingsForm
-                .tag(PreferencesPane.keyBindings)
-                .tabItem {
-                    Label(PreferencesPane.keyBindings.title(settingsString), systemImage: PreferencesPane.keyBindings.symbol)
-                        .runeInterfaceFont(weight: .medium)
-                }
-
-            logsSettingsForm
-                .tag(PreferencesPane.logs)
-                .tabItem {
-                    Label(PreferencesPane.logs.title(settingsString), systemImage: PreferencesPane.logs.symbol)
-                        .runeInterfaceFont(weight: .medium)
-                }
-
-            safetySettingsForm
-                .tag(PreferencesPane.safety)
-                .tabItem {
-                    Label(PreferencesPane.safety.title(settingsString), systemImage: PreferencesPane.safety.symbol)
-                        .runeInterfaceFont(weight: .medium)
-                }
-
-            diagnosticsSettingsForm
-                .tag(PreferencesPane.diagnostics)
-                .tabItem {
-                    Label(PreferencesPane.diagnostics.title(settingsString), systemImage: PreferencesPane.diagnostics.symbol)
-                        .runeInterfaceFont(weight: .medium)
-                }
-
-            performanceSettingsForm
-                .tag(PreferencesPane.performance)
-                .tabItem {
-                    Label(PreferencesPane.performance.title(settingsString), systemImage: PreferencesPane.performance.symbol)
-                        .runeInterfaceFont(weight: .medium)
-                }
+            selectedSettingsPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .id(interfaceLanguageRaw)
         .frame(minWidth: 740, idealWidth: 820, minHeight: 540)
@@ -1588,11 +1572,13 @@ public struct RunePreferencesView: View {
     ) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: RuneSettingsMetrics.pageSpacing) {
-                VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
+                // Like System Settings: the toolbar names the pane, so the page
+                // header stays small; groups and rows carry the hierarchy.
+                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
                     Text(title)
-                        .runeInterfaceFont(relativeSize: 4, weight: .semibold)
+                        .runeText(.sectionTitle)
                     Text(subtitle)
-                        .runeInterfaceFont(relativeSize: -1)
+                        .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
                 }
 
@@ -1611,8 +1597,9 @@ public struct RunePreferencesView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: RuneSpacing.xs) {
             Text(title)
-                .runeInterfaceFont(weight: .semibold)
+                .runeText(.captionEmphasis)
                 .foregroundStyle(.runeSecondary)
+                .padding(.leading, RuneSpacing.xxs)
 
             VStack(alignment: .leading, spacing: RuneSettingsMetrics.sectionSpacing) {
                 content()
@@ -1629,6 +1616,7 @@ public struct RunePreferencesView: View {
             Toggle(title, isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .controlSize(.small)
         }
     }
 
@@ -1659,11 +1647,12 @@ public struct RunePreferencesView: View {
     private func settingRowLabel(title: String, detail: String?) -> some View {
         VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
             Text(title)
-                .runeInterfaceFont(weight: .semibold)
+                .runeText(.body)
+                .foregroundStyle(.runePrimary)
 
             if let detail {
                 Text(detail)
-                    .runeInterfaceFont(relativeSize: -1)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

@@ -63,7 +63,7 @@ struct TerminalTranscriptSurface: View {
             nil
         }
 
-        InspectorTextSurface(minHeight: height) {
+        InspectorTextSurface(minHeight: height, role: .terminal) {
             Group {
                 if shouldUseLargeTextSurface {
                     if let displayedTextIndex {

@@ -34,6 +34,7 @@ struct TerminalShellPanelView: View {
     var onOpenSelectedPodLogs: ((PodSummary) -> Void)? = nil
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var storedTerminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
     @Environment(\.runeThemePalette) private var runeThemePalette
+    @Environment(\.colorScheme) private var colorScheme
     @State private var isInputFocused = false
     @State private var commandHistory: [String] = []
     @State private var commandHistoryIndex: Int?
@@ -374,13 +375,15 @@ struct TerminalShellPanelView: View {
                 }
             }
             .frame(height: terminalPromptLayout.controlHeight)
+            // The prompt shares the transcript's terminal surface and frame,
+            // so input and output read as one console.
             .background(
-                RoundedRectangle(cornerRadius: RuneRadius.chip, style: .continuous)
-                    .fill(Color(nsColor: canSendInput ? .textBackgroundColor : .controlBackgroundColor).opacity(0.72))
+                RoundedRectangle(cornerRadius: RuneRadius.control, style: .continuous)
+                    .fill(RuneSurfaceRole.terminal.fill(palette: runeThemePalette, colorScheme: colorScheme))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: RuneRadius.chip, style: .continuous)
-                    .stroke(Color.primary.opacity(canSendInput ? 0.16 : 0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: RuneRadius.control, style: .continuous)
+                    .stroke(RuneSurfaceRole.terminal.frame(palette: runeThemePalette).opacity(canSendInput ? 1 : 0.5), lineWidth: 1)
             )
             .opacity(canSendInput ? 1 : 0.62)
 

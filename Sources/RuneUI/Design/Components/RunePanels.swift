@@ -145,7 +145,7 @@ struct RuneCardSurface: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: RuneUILayoutMetrics.controlCardCornerRadius, style: .continuous)
         let edge = palette?.stroke ?? Color(nsColor: .separatorColor)
         content
-            .background(shape.fill(palette?.row.opacity(0.42) ?? Color.primary.opacity(0.04)))
+            .background(shape.fill(palette?.raisedSurface ?? Color.primary.opacity(0.04)))
             .overlay {
                 shape
                     .strokeBorder(

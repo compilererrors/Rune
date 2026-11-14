@@ -1940,7 +1940,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(themeSource.contains("Zed-format JSON"))
         XCTAssertFalse(themeSource.contains("VS Code"))
         XCTAssertTrue(preferencesSource.contains("case themes"))
-        XCTAssertTrue(preferencesSource.contains("Label(PreferencesPane.themes.title(settingsString), systemImage: PreferencesPane.themes.symbol)"))
+        // Settings panes are tabs in Rune's native segmented tab bar.
+        XCTAssertTrue(preferencesSource.contains("RuneTabBar(\"Settings\", selection: $selectedPane, tabs: PreferencesPane.allCases)"))
+        XCTAssertTrue(preferencesSource.contains("case .themes: themesSettingsForm"))
         XCTAssertTrue(preferencesSource.contains("private var themesSettingsForm: some View"))
         XCTAssertTrue(preferencesSource.contains("struct RuneThemeSelectorCard"))
         XCTAssertTrue(preferencesSource.contains("settingsSection(\"Choose theme\")"))

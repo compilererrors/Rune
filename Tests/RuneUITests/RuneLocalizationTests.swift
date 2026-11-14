@@ -155,7 +155,7 @@ final class RuneLocalizationTests: XCTestCase {
         XCTAssertTrue(source.contains("detail: settingsString(.settingsLanguageDetail)"))
         XCTAssertTrue(source.contains("RuneToolbarPicker(title: \"Language\", selection: $interfaceLanguageRaw,"))
         XCTAssertTrue(source.contains(".id(interfaceLanguageRaw)"))
-        XCTAssertTrue(source.contains("PreferencesPane.general.title(settingsString)"))
+        XCTAssertTrue(source.contains("$0.title(settingsString)"), "pane tabs use localized titles")
         XCTAssertTrue(source.contains("title: settingsString(.settingsGeneral)"))
         XCTAssertTrue(source.contains("settingsSection(settingsString(.settingsAppearance))"))
         XCTAssertTrue(source.contains("static let rowControlColumnWidth: CGFloat = 260"))

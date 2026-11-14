@@ -336,7 +336,7 @@ final class CompactInspectorFormLayoutTests: XCTestCase {
         let inspector = try source("Sources/RuneUI/Views/InspectorFind.swift")
         let rollout = try source("Sources/RuneUI/Views/DeploymentRolloutHistoryView.swift")
 
-        XCTAssertTrue(terminal.contains("InspectorTextSurface(minHeight: height)"))
+        XCTAssertTrue(terminal.contains("InspectorTextSurface(minHeight: height, role: .terminal)"))
         XCTAssertTrue(terminal.contains("RuneFindBarChrome(\"Terminal find controls\")"))
         XCTAssertTrue(inspector.contains("RuneFindBarChrome(\"Inspector find controls\")"))
         XCTAssertTrue(logs.contains("struct ResourceLogsExplorePanel"))
