@@ -48,6 +48,7 @@ struct TerminalSessionTabBar: View {
     let canApplyMutations: Bool
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
+    var onMoveSession: ((String, String) -> Void)? = nil
     let onComposeNewSession: () -> Void
     var onDisconnectSession: ((String) -> Void)? = nil
     @Environment(\.runeThemePalette) private var runeThemePalette
@@ -129,6 +130,7 @@ struct TerminalSessionTabBar: View {
             .padding(.leading, RuneSpacing.hairline)
         }
         .terminalTabChrome(isActive: session.id == activeSessionID)
+        .terminalTabReorderable(scope: "shell", id: session.id, onMove: onMoveSession)
         .contextMenu {
             if let onDisconnectSession, session.status == .connected || session.status == .connecting {
                 Button("Disconnect") { onDisconnectSession(session.id) }

@@ -480,6 +480,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.exportArchiveOpenerBundleIdentifier) private var exportArchiveOpenerBundleIdentifier = ""
     @AppStorage(RuneSettingsKeys.exportUsesPrivacySafeFilenames) private var exportUsesPrivacySafeFilenames = false
     @AppStorage(RuneSettingsKeys.terminalFontSize) private var terminalFontSize = RuneSettingsKeys.terminalFontSizeDefault
+    @AppStorage(RuneSettingsKeys.tabPinSymbol) private var tabPinSymbolRaw = RuneTabPinSymbol.pin.rawValue
     @AppStorage(RuneSettingsKeys.hideManagedFieldsByDefault) private var hideManagedFieldsByDefault = true
     @AppStorage(RuneSettingsKeys.simpleMode) private var simpleMode = false
     @AppStorage(RuneSettingsKeys.showHoverTooltips) private var showHoverTooltips = true
@@ -680,6 +681,20 @@ public struct RunePreferencesView: View {
                 ) {
                     RuneToolbarPicker(title: "Language", selection: $interfaceLanguageRaw,
                                       options: RuneLanguage.allCases.map { ($0.rawValue, $0.displayName) })
+                    .frame(
+                        width: RuneSettingsMetrics.compactMenuControlWidth,
+                        alignment: .trailing
+                    )
+                }
+
+                Divider()
+
+                settingsControlRow(
+                    title: "Pinned tab symbol",
+                    detail: "Pinned log tabs stay first in the tab bar. Choose how they are marked."
+                ) {
+                    RuneToolbarPicker(title: "Pinned tab symbol", selection: $tabPinSymbolRaw,
+                                      options: RuneTabPinSymbol.allCases.map { ($0.rawValue, $0.title) })
                     .frame(
                         width: RuneSettingsMetrics.compactMenuControlWidth,
                         alignment: .trailing

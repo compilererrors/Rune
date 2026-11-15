@@ -1372,6 +1372,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var pendingKubeConfigContextRemovalScope: PendingKubeConfigContextRemovalScope?
 
     private let kubeClient: KubernetesClient
+    private let terminalBackend: PodTerminalSessionBackend
     private let bookmarkManager: BookmarkManager
     private let pendingKubeConfigSourceAccess = SecurityScopedAccess()
     private let picker: KubeConfigPicking
@@ -1507,7 +1508,8 @@ public final class RuneAppViewModel: ObservableObject {
     private var liveStatusUpdatesTask: Task<Void, Never>?
     private var liveWatchRefreshInFlight = false
     private var liveWatchRefreshQueued = false
-    private var pendingTerminalOutputBySessionID: [String: String] = [:]
+    /// Sessions with output not yet shown; rendered once per flush.
+    private var pendingTerminalOutputSessionIDs: Set<String> = []
     private var terminalScreenEmulatorBySessionID: [String: TerminalScreenEmulator] = [:]
     private var terminalSessionAttemptByID: [String: UUID] = [:]
     private var activePortForwardStartRequestIDs = Set<UUID>()
@@ -1578,6 +1580,7 @@ public final class RuneAppViewModel: ObservableObject {
     public init(
         state: RuneAppState = RuneAppState(),
         kubeClient: KubernetesClient = KubernetesClient(),
+        terminalBackend: PodTerminalSessionBackend? = nil,
         bookmarkManager: BookmarkManager = BookmarkManager(store: UserDefaultsBookmarkStore()),
         picker: KubeConfigPicking = OpenPanelKubeConfigPicker(),
         gkeCredentialFilePicker: any GKECredentialFilePicking = OpenPanelGKECredentialFilePicker(),
@@ -1618,6 +1621,7 @@ public final class RuneAppViewModel: ObservableObject {
     ) {
         self.state = state
         self.kubeClient = kubeClient
+        self.terminalBackend = terminalBackend ?? kubeClient
         self.bookmarkManager = bookmarkManager
         self.picker = picker
         self.gkeCredentialFilePicker = gkeCredentialFilePicker
@@ -10974,7 +10978,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         Task {
             do {
-                try await kubeClient.startPodTerminalSession(
+                try await terminalBackend.startPodTerminalSession(
                     id: sessionID,
                     from: kubeConfigSources,
                     context: context,
@@ -11014,7 +11018,7 @@ public final class RuneAppViewModel: ObservableObject {
                                   containerName: containerName
                               )
                       }) else {
-                    await kubeClient.stopPodTerminalSession(id: sessionID)
+                    await terminalBackend.stopPodTerminalSession(id: sessionID)
                     return
                 }
                 state.updateTerminalSessionStatus(id: sessionID, status: .connected)
@@ -11065,7 +11069,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         Task {
             do {
-                try await kubeClient.writeToPodTerminalSession(id: session.id, text: command + "\n")
+                try await terminalBackend.writeToPodTerminalSession(id: session.id, text: command + "\n")
             } catch {
                 state.setError(error)
             }
@@ -11079,7 +11083,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         Task {
             do {
-                try await kubeClient.writeToPodTerminalSession(id: session.id, text: text)
+                try await terminalBackend.writeToPodTerminalSession(id: session.id, text: text)
             } catch {
                 state.setError(error)
             }
@@ -11093,43 +11097,55 @@ public final class RuneAppViewModel: ObservableObject {
         if var emulator = terminalScreenEmulatorBySessionID[id] {
             emulator.resize(columns: columns, rows: rows)
             terminalScreenEmulatorBySessionID[id] = emulator
-            pendingTerminalOutputBySessionID[id] = emulator.renderedText
+            pendingTerminalOutputSessionIDs.insert(id)
+            scheduleTerminalOutputFlush()
         }
 
         Task {
             do {
-                try await kubeClient.resizePodTerminalSession(id: id, columns: columns, rows: rows)
+                try await terminalBackend.resizePodTerminalSession(id: id, columns: columns, rows: rows)
             } catch {
                 state.setError(error)
             }
         }
     }
 
-    private func enqueueTerminalSessionOutput(id: String, text: String) {
+    func enqueueTerminalSessionOutput(id: String, text: String) {
         guard !text.isEmpty else { return }
-        let initialText = state.terminalSessions.first(where: { $0.id == id })?.transcript ?? ""
-        var emulator = terminalScreenEmulatorBySessionID[id]
-            ?? TerminalScreenEmulator(
+        if terminalScreenEmulatorBySessionID[id] == nil {
+            let initialText = state.terminalSessions.first(where: { $0.id == id })?.transcript ?? ""
+            terminalScreenEmulatorBySessionID[id] = TerminalScreenEmulator(
                 maxScrollbackLines: UserDefaults.standard.runeTerminalScrollbackLineLimit,
                 initialText: initialText
             )
-        emulator.feed(text)
-        terminalScreenEmulatorBySessionID[id] = emulator
-        pendingTerminalOutputBySessionID[id] = emulator.renderedText
-        terminalOutputFlushTask?.cancel()
+        }
+        // Feed in place: copying the emulator out of the dictionary copied
+        // its whole screen and scrollback on every chunk.
+        terminalScreenEmulatorBySessionID[id]?.feed(text)
+        pendingTerminalOutputSessionIDs.insert(id)
+        scheduleTerminalOutputFlush()
+    }
+
+    /// Shows pending output at most once per frame interval. A throttle, not
+    /// a debounce: steady output still reaches the screen while it streams.
+    private func scheduleTerminalOutputFlush() {
+        guard terminalOutputFlushTask == nil else { return }
         let flushDelay = terminalOutputFlushNanoseconds
         terminalOutputFlushTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: flushDelay)
-            self?.flushTerminalSessionOutput()
+            guard let self else { return }
+            self.terminalOutputFlushTask = nil
+            self.flushTerminalSessionOutput()
         }
     }
 
     private func flushTerminalSessionOutput() {
-        guard !pendingTerminalOutputBySessionID.isEmpty else { return }
-        let pending = pendingTerminalOutputBySessionID
-        pendingTerminalOutputBySessionID.removeAll(keepingCapacity: true)
-        for (id, text) in pending {
-            state.replaceTerminalSessionTranscript(id: id, text: text)
+        guard !pendingTerminalOutputSessionIDs.isEmpty else { return }
+        let pending = pendingTerminalOutputSessionIDs
+        pendingTerminalOutputSessionIDs.removeAll(keepingCapacity: true)
+        for id in pending {
+            guard let rendered = terminalScreenEmulatorBySessionID[id]?.renderedText else { continue }
+            state.replaceTerminalSessionTranscript(id: id, text: rendered)
         }
     }
 
@@ -11147,7 +11163,7 @@ public final class RuneAppViewModel: ObservableObject {
         let sessionID = session.id
         flushTerminalSessionOutput()
         terminalSessionAttemptByID.removeValue(forKey: sessionID)
-        pendingTerminalOutputBySessionID.removeValue(forKey: sessionID)
+        pendingTerminalOutputSessionIDs.remove(sessionID)
         terminalScreenEmulatorBySessionID.removeValue(forKey: sessionID)
         terminalSessionInput = ""
         if resetState {
@@ -11157,7 +11173,7 @@ public final class RuneAppViewModel: ObservableObject {
             state.updateTerminalSessionStatus(id: sessionID, status: .disconnected, exitCode: session.lastExitCode)
         }
         Task {
-            await kubeClient.stopPodTerminalSession(id: sessionID)
+            await terminalBackend.stopPodTerminalSession(id: sessionID)
         }
     }
 
@@ -11168,13 +11184,13 @@ public final class RuneAppViewModel: ObservableObject {
         let sessionIDs = removed.map(\.id)
         for sessionID in sessionIDs {
             terminalSessionAttemptByID.removeValue(forKey: sessionID)
-            pendingTerminalOutputBySessionID.removeValue(forKey: sessionID)
+            pendingTerminalOutputSessionIDs.remove(sessionID)
             terminalScreenEmulatorBySessionID.removeValue(forKey: sessionID)
         }
         terminalSessionInput = ""
         Task {
             for sessionID in sessionIDs {
-                await kubeClient.stopPodTerminalSession(id: sessionID)
+                await terminalBackend.stopPodTerminalSession(id: sessionID)
             }
         }
     }
@@ -11184,18 +11200,22 @@ public final class RuneAppViewModel: ObservableObject {
         terminalSessionInput = ""
     }
 
+    public func moveTerminalSession(id: String, onto targetID: String) {
+        state.moveTerminalSession(id: id, onto: targetID)
+    }
+
     public func closeTerminalSession(id: String) {
         let wasActive = state.activeTerminalSessionID == id
         guard state.removeTerminalSession(id: id) != nil else { return }
 
         terminalSessionAttemptByID.removeValue(forKey: id)
-        pendingTerminalOutputBySessionID.removeValue(forKey: id)
+        pendingTerminalOutputSessionIDs.remove(id)
         terminalScreenEmulatorBySessionID.removeValue(forKey: id)
         if wasActive {
             terminalSessionInput = ""
         }
         Task {
-            await kubeClient.stopPodTerminalSession(id: id)
+            await terminalBackend.stopPodTerminalSession(id: id)
         }
     }
 
@@ -11204,7 +11224,7 @@ public final class RuneAppViewModel: ObservableObject {
             terminalScreenEmulatorBySessionID[id] = TerminalScreenEmulator(
                 maxScrollbackLines: UserDefaults.standard.runeTerminalScrollbackLineLimit
             )
-            pendingTerminalOutputBySessionID.removeValue(forKey: id)
+            pendingTerminalOutputSessionIDs.remove(id)
         }
         state.clearTerminalSessionTranscript()
     }

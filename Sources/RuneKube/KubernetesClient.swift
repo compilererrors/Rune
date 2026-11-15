@@ -4112,3 +4112,24 @@ actor TerminalSessionRegistry {
         scheduleStopIntentCleanup()
     }
 }
+
+/// The interactive shell side of a Kubernetes client, so the app's terminal
+/// can run against a stand-in shell in tests and previews.
+public protocol PodTerminalSessionBackend: AnyObject, Sendable {
+    func startPodTerminalSession(
+        id sessionID: String,
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        container: String?,
+        shellCommand: [String],
+        onOutput: @escaping @Sendable (String) -> Void,
+        onTermination: @escaping @Sendable (Int32) -> Void
+    ) async throws
+    func writeToPodTerminalSession(id: String, text: String) async throws
+    func resizePodTerminalSession(id: String, columns: Int, rows: Int) async throws
+    func stopPodTerminalSession(id: String) async
+}
+
+extension KubernetesClient: PodTerminalSessionBackend {}

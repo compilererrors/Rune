@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum TerminalTabChromeEmphasis {
     case standard
@@ -226,6 +227,138 @@ extension View {
 
     func terminalTabRevealOnHover(alwaysVisible: Bool = false) -> some View {
         modifier(TerminalTabHoverReveal(alwaysVisible: alwaysVisible))
+    }
+
+    /// Drag the tab onto another tab in the same bar to reorder, as in
+    /// Safari and Terminal. `scope` keeps shell and log tabs apart.
+    func terminalTabReorderable(
+        scope: String,
+        id: String,
+        onMove: ((_ draggedID: String, _ targetID: String) -> Void)?
+    ) -> some View {
+        modifier(TerminalTabReorderModifier(scope: scope, id: id, onMove: onMove))
+    }
+}
+
+/// The symbol for a pinned log tab, chosen in Settings.
+enum RuneTabPinSymbol: String, CaseIterable, Identifiable {
+    case pin
+    case star
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pin: return "Pin"
+        case .star: return "Star"
+        }
+    }
+
+    func systemImage(isPinned: Bool) -> String {
+        switch self {
+        case .pin: return isPinned ? "pin.fill" : "pin"
+        case .star: return isPinned ? "star.fill" : "star"
+        }
+    }
+}
+
+extension UTType {
+    /// In-app only: a tab being dragged within its tab bar. A private type,
+    /// so text fields and the terminal never accept the drop as text.
+    static let runeTerminalTab = UTType(exportedAs: "app.rune.terminal-tab")
+}
+
+/// The tab being dragged. Drags stay inside the app, so the drop reads it
+/// here synchronously instead of decoding the item provider.
+@MainActor
+enum TerminalTabDragSession {
+    static var dragged: (scope: String, id: String)?
+}
+
+struct TerminalTabReorderModifier: ViewModifier {
+    let scope: String
+    let id: String
+    let onMove: ((String, String) -> Void)?
+    @State private var isDropTarget = false
+
+    func body(content: Content) -> some View {
+        if let onMove {
+            content
+                .onDrag {
+                    TerminalTabDragSession.dragged = (scope, id)
+                    let provider = NSItemProvider()
+                    let payload = Data(id.utf8)
+                    provider.registerDataRepresentation(
+                        forTypeIdentifier: UTType.runeTerminalTab.identifier,
+                        visibility: .ownProcess
+                    ) { completion in
+                        completion(payload, nil)
+                        return nil
+                    }
+                    return provider
+                }
+                .onDrop(
+                    of: [.runeTerminalTab],
+                    delegate: TerminalTabDropDelegate(
+                        scope: scope,
+                        targetID: id,
+                        isDropTarget: $isDropTarget,
+                        onMove: onMove
+                    )
+                )
+                .overlay(alignment: .leading) {
+                    // An insertion bar, as in Safari's tab bar while dragging.
+                    if isDropTarget {
+                        Rectangle()
+                            .fill(.runeAccent)
+                            .frame(width: 2)
+                            .allowsHitTesting(false)
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private struct TerminalTabDropDelegate: DropDelegate {
+    let scope: String
+    let targetID: String
+    @Binding var isDropTarget: Bool
+    let onMove: (String, String) -> Void
+
+    @MainActor
+    private var draggedID: String? {
+        guard let dragged = TerminalTabDragSession.dragged,
+              dragged.scope == scope,
+              dragged.id != targetID else { return nil }
+        return dragged.id
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        MainActor.assumeIsolated { draggedID != nil }
+    }
+
+    func dropEntered(info: DropInfo) {
+        MainActor.assumeIsolated { isDropTarget = draggedID != nil }
+    }
+
+    func dropExited(info: DropInfo) {
+        isDropTarget = false
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        isDropTarget = false
+        return MainActor.assumeIsolated {
+            guard let draggedID else { return false }
+            TerminalTabDragSession.dragged = nil
+            onMove(draggedID, targetID)
+            return true
+        }
     }
 }
 

@@ -61,8 +61,11 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         scheduleForegroundActivation(reason: "didBecomeActive")
-        if didFinishRestoringWindows, let window = mainWindowToPresent() {
-            presentOnActiveSpace(window)
+        // Activation (Cmd-Tab, Dock click, clicking a window) leaves windows
+        // as they are; only an app with no main window gets one.
+        guard didFinishRestoringWindows else { return }
+        if case .openMainWindow = RuneWindowPresentationPolicy.activate(windows: policyWindows, title: mainWindowTitle) {
+            scheduleMainWindowRecovery(allowsInitialWindowGrace: false)
         }
     }
 
@@ -70,8 +73,12 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        guard !flag else { return true }
-        scheduleMainWindowRecovery(allowsInitialWindowGrace: false)
+        let action = RuneWindowPresentationPolicy.reopen(windows: policyWindows, title: mainWindowTitle)
+        if case .openMainWindow = action {
+            scheduleMainWindowRecovery(allowsInitialWindowGrace: false)
+        } else {
+            perform(action)
+        }
         return false
     }
 
@@ -88,9 +95,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if let window = self.mainWindowToPresent() {
-                self.presentOnActiveSpace(window)
-            }
+            presentMainWindowIfPresent()
 
             RuneLoggers.app.debug(
                 "activated reason=\(reason, privacy: .public) windows=\(NSApp.windows.count, privacy: .public) keyWindow=\(NSApp.keyWindow?.title ?? "nil", privacy: .private)"
@@ -99,10 +104,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleMainWindowRecovery(allowsInitialWindowGrace: Bool) {
-        if let window = mainWindowToPresent() {
-            presentOnActiveSpace(window)
-            return
-        }
+        if presentMainWindowIfPresent() { return }
         if windowRecoveryTask != nil {
             guard !allowsInitialWindowGrace else { return }
             windowRecoveryTask?.cancel()
@@ -128,10 +130,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
             if allowsInitialWindowGrace {
                 for _ in 0..<RuneWindowLifecycle.initialWindowGraceAttempts {
                     guard !Task.isCancelled else { return }
-                    if let window = mainWindowToPresent() {
-                        presentOnActiveSpace(window)
-                        return
-                    }
+                    if presentMainWindowIfPresent() { return }
                     try? await Task.sleep(for: .milliseconds(50))
                 }
             }
@@ -139,10 +138,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
             var didRequestWindow = false
             for _ in 0..<RuneWindowLifecycle.maximumOpenAttempts {
                 guard !Task.isCancelled else { return }
-                if let window = mainWindowToPresent() {
-                    presentOnActiveSpace(window)
-                    return
-                }
+                if presentMainWindowIfPresent() { return }
                 if !didRequestWindow,
                    let item = menuItem(
                        titled: RuneWindowLifecycle.openMainWindowCommandTitle,
@@ -157,21 +153,42 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func mainWindowToPresent() -> NSWindow? {
-        let candidates = NSApp.windows.filter { !($0 is NSPanel) }
-        return candidates.first { $0.title == "Rune" } ?? candidates.first
+    private let mainWindowTitle = "Rune"
+
+    private var policyWindows: [RuneWindowPresentationPolicy.Window] {
+        NSApp.windows.map(RuneWindowPresentationPolicy.Window.init)
     }
 
-    private func presentOnActiveSpace(_ window: NSWindow) {
-        if window.isMiniaturized {
-            window.deminiaturize(nil)
+    /// Presents the main window as on launch; false when there is none yet.
+    @discardableResult
+    private func presentMainWindowIfPresent() -> Bool {
+        let action = RuneWindowPresentationPolicy.launch(windows: policyWindows, title: mainWindowTitle)
+        if case .openMainWindow = action { return false }
+        perform(action)
+        return true
+    }
+
+    private func perform(_ action: RuneWindowPresentationPolicy.Action) {
+        let windows = NSApp.windows
+        switch action {
+        case .none, .openMainWindow:
+            return
+        case .deminiaturize(let index):
+            // Deminiaturizing is the whole restore; ordering the window out
+            // or moving it while it animates back leaves it unreachable.
+            NSApp.activate()
+            windows[index].deminiaturize(nil)
+        case .makeKey(let index):
+            NSApp.activate()
+            windows[index].makeKeyAndOrderFront(nil)
+        case .moveToActiveSpace(let index):
+            let window = windows[index]
+            let behavior = window.collectionBehavior
+            window.collectionBehavior.insert(.moveToActiveSpace)
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+            window.collectionBehavior = behavior
         }
-        if !window.isOnActiveSpace {
-            window.orderOut(nil)
-        }
-        window.collectionBehavior.insert(.moveToActiveSpace)
-        NSApp.activate()
-        window.makeKeyAndOrderFront(nil)
     }
 
     private func menuItem(titled title: String, in menu: NSMenu?) -> NSMenuItem? {
@@ -194,6 +211,7 @@ struct RuneApplication: App {
         RuneLaunchEnvironment.applyProcessOverrides()
         _viewModel = StateObject(
             wrappedValue: RuneAppViewModel(
+                terminalBackend: RuneDebugFakePodShell.fromEnvironment(),
                 contextPreferences: FileBackedContextPreferencesStore.applicationSupportStore(),
                 lastAppStateStore: JSONLastAppStateStore(),
                 terminalWorkspaceStateStore: JSONTerminalWorkspaceStateStore()

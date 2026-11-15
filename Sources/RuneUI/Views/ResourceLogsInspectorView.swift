@@ -19,7 +19,7 @@ struct ResourceLogsLayoutMetrics {
     static let rangePickerWidth: CGFloat = 168
     static let compactRangePickerWidth: CGFloat = 128
     /// Flexible source pickers ask for this much before the row drops its captions.
-    static let sourcePickerIdealWidth: CGFloat = 140
+    static let sourcePickerIdealWidth: CGFloat = 220
     static let searchChromeHeight: CGFloat = RuneUILayoutMetrics.inspectorControlRowHeight
     static let searchChromeMinimumWidth: CGFloat = 220
     static let searchChromeIdealWidth: CGFloat = 420
@@ -193,15 +193,20 @@ struct ResourceLogsToolbar: View {
                 sourceHeaderRow(showsCaptions: true)
                 sourceHeaderRow(showsCaptions: false)
             }
+            // The first form that fits the bar's width, from its ideal size,
+            // with no measured-width state that could feed back into layout.
+            // Buttons keep their own width, so a form fits only when the
+            // search field still has its minimum beside them.
             ViewThatFits(in: .horizontal) {
                 actionHeaderRow(showsLabels: true)
                 actionHeaderRow(showsLabels: false)
-                // Only in a very narrow inspector: search on its own line.
+                // A narrow inspector: the buttons on one line, search below.
                 VStack(alignment: .leading, spacing: RuneUILayoutMetrics.documentFrameBarVerticalInset) {
                     actionButtonsRow
                     searchSlot
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
         .controlSize(toolbarControlSize)
         .accessibilityElement(children: .contain)
@@ -309,6 +314,8 @@ struct ResourceLogsToolbar: View {
             Label(t(.reload), systemImage: "arrow.clockwise")
         }
         .buttonStyle(RuneToolbarButtonStyle())
+        // The search field has layout priority; buttons keep their width.
+        .fixedSize(horizontal: true, vertical: false)
         .help(t(.reloadLogsHelp))
         .accessibilityLabel(t(.reload))
     }
@@ -342,6 +349,7 @@ struct ResourceLogsToolbar: View {
             }
         }
         .buttonStyle(RuneToolbarButtonStyle(isSelected: isTailModeEnabled && !isStreamPaused))
+        .fixedSize(horizontal: true, vertical: false)
         .help("\(statusText). \(tailActionHelp)")
         .accessibilityLabel(tailActionTitle)
         .accessibilityValue(statusText)

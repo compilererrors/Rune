@@ -1702,7 +1702,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(workspaceSource.contains("let onSendControlSequence: (String) -> Void"))
         XCTAssertTrue(rootViewSource.contains("viewModel.sendTerminalControlSequence(text)"))
         XCTAssertTrue(viewModelSource.contains("public func sendTerminalControlSequence(_ text: String)"))
-        XCTAssertTrue(viewModelSource.contains("try await kubeClient.writeToPodTerminalSession(id: session.id, text: text)"))
+        XCTAssertTrue(viewModelSource.contains("try await terminalBackend.writeToPodTerminalSession(id: session.id, text: text)"))
     }
 
     func testTerminalSurfaceReportsStableGridSizeForResizePropagation() throws {
@@ -1823,9 +1823,9 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
         XCTAssertTrue(closeSessionBlock.contains("let wasActive = state.activeTerminalSessionID == id"))
         XCTAssertFalse(closeSessionBlock.contains("state.selectTerminalSession(id: id)"))
-        XCTAssertTrue(closeSessionBlock.contains("await kubeClient.stopPodTerminalSession(id: id)"))
+        XCTAssertTrue(closeSessionBlock.contains("await terminalBackend.stopPodTerminalSession(id: id)"))
         XCTAssertTrue(viewModelSource.contains("public func stopTerminalSession(resetState: Bool = false)"))
-        XCTAssertTrue(viewModelSource.contains("await kubeClient.stopPodTerminalSession(id: sessionID)"))
+        XCTAssertTrue(viewModelSource.contains("await terminalBackend.stopPodTerminalSession(id: sessionID)"))
         XCTAssertTrue(viewModelSource.contains("public func stopPortForward(_ session: PortForwardSession)"))
         XCTAssertTrue(viewModelSource.contains("await kubeClient.stopPortForward(sessionID: session.id)"))
         XCTAssertTrue(viewModelSource.contains("public func clearPortForwardSession(_ session: PortForwardSession)"))
@@ -2357,7 +2357,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         XCTAssertTrue(logsSource.contains("let onToggleFavoriteTab: (String) -> Void"))
         XCTAssertTrue(logsSource.contains("onToggleFavoriteTab(tab.id)"))
-        XCTAssertTrue(logsSource.contains("Favorite Log Target"))
+        XCTAssertTrue(logsSource.contains("tab.isFavorite ? \"Unpin Tab\" : \"Pin Tab\""))
         XCTAssertFalse(logsInspectorSource.contains("struct TerminalLogTabBar: View"))
         XCTAssertTrue(rootViewSource.contains("onToggleFavoriteTab: toggleFavoriteTerminalLogTab"))
         XCTAssertTrue(rootViewSource.contains("func toggleFavoriteTerminalLogTab"))

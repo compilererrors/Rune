@@ -56,6 +56,10 @@ public enum RuneSettingsKeys {
     public static let layoutDetailPaneVisible = "rune.settings.layout.detailPaneVisible"
     /// Persisted pod table name column width in the resource list.
     public static let layoutPodNameColumnWidth = "rune.settings.layout.podNameColumnWidth"
+    /// Height of the Terminal section's shell, set with its resize grip; 0 sizes it automatically.
+    public static let terminalShellHeight = "rune.settings.layout.terminalShellHeight"
+    /// Symbol for pinned log tabs: "pin" (default) or "star".
+    public static let tabPinSymbol = "rune.settings.tabs.pinSymbol"
     /// Base font size used by Rune's interface and monospaced terminal/editor surfaces.
     public static let terminalFontSize = "rune.settings.terminal.fontSize"
     public static let terminalFontSizeDefault = 12.0

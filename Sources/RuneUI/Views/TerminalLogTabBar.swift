@@ -1,4 +1,5 @@
 import SwiftUI
+import RuneCore
 
 struct TerminalLogTabPresentation: Identifiable, Hashable, Sendable {
     let id: String
@@ -18,7 +19,13 @@ struct TerminalLogTabBar: View {
     let onCloseTab: (String) -> Void
     let onToggleFavoriteTab: (String) -> Void
     let onAddTab: () -> Void
+    var onMoveTab: ((String, String) -> Void)? = nil
+    @AppStorage(RuneSettingsKeys.tabPinSymbol) private var pinSymbolRaw = RuneTabPinSymbol.pin.rawValue
     @Environment(\.runeThemePalette) private var runeThemePalette
+
+    private var pinSymbol: RuneTabPinSymbol {
+        RuneTabPinSymbol(rawValue: pinSymbolRaw) ?? .pin
+    }
 
     var body: some View {
         TerminalTabStrip(
@@ -62,17 +69,17 @@ struct TerminalLogTabBar: View {
         .accessibilityAddTraits(tab.id == activeTabID ? [.isSelected, .isButton] : .isButton)
         .overlay {
             HStack(spacing: 0) {
-                // Close at the leading edge, favourite at the trailing edge,
-                // both on hover (a favourite stays visible).
+                // Close at the leading edge, pin at the trailing edge, both
+                // on hover; a pinned tab keeps its mark and sits first.
                 TerminalTabAccessoryButton(accessibilityLabel: "Close log tab for \(tab.title)", systemImage: "xmark") {
                     onCloseTab(tab.id)
                 }
                 .terminalTabRevealOnHover()
                 Spacer(minLength: 0)
                 TerminalTabAccessoryButton(
-                    accessibilityLabel: tab.isFavorite ? "Remove Log Target Favorite" : "Favorite Log Target",
-                    systemImage: tab.isFavorite ? "star.fill" : "star",
-                    tint: tab.isFavorite ? .yellow : nil,
+                    accessibilityLabel: tab.isFavorite ? "Unpin Tab" : "Pin Tab",
+                    systemImage: pinSymbol.systemImage(isPinned: tab.isFavorite),
+                    tint: tab.isFavorite && pinSymbol == .star ? .yellow : nil,
                     isSelected: tab.isFavorite
                 ) {
                     onToggleFavoriteTab(tab.id)
@@ -82,6 +89,11 @@ struct TerminalLogTabBar: View {
             .padding(.horizontal, RuneSpacing.hairline)
         }
         .terminalTabChrome(isActive: tab.id == activeTabID)
+        .terminalTabReorderable(scope: "logs", id: tab.id, onMove: onMoveTab)
+        .contextMenu {
+            Button(tab.isFavorite ? "Unpin Tab" : "Pin Tab") { onToggleFavoriteTab(tab.id) }
+            Button("Close Tab") { onCloseTab(tab.id) }
+        }
         .accessibilityElement(children: .contain)
     }
 }

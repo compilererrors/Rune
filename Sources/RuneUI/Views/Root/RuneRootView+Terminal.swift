@@ -50,6 +50,7 @@ extension RuneRootView {
             onDisconnect: { viewModel.stopTerminalSession() },
             onSelectSession: { id in viewModel.selectTerminalSession(id: id) },
             onCloseSession: { id in viewModel.closeTerminalSession(id: id) },
+            onMoveSession: { id, targetID in viewModel.moveTerminalSession(id: id, onto: targetID) },
             onClearTranscript: { viewModel.clearTerminalSessionTranscript() },
             onSaveActiveTerminalTranscript: { viewModel.saveActiveTerminalTranscript() },
             onSaveAllTerminalTranscripts: { viewModel.saveAllTerminalTranscriptsZip() },
@@ -243,7 +244,8 @@ extension RuneRootView {
                     onSelectTab: selectTerminalLogTab,
                     onCloseTab: closeTerminalLogTab,
                     onToggleFavoriteTab: toggleFavoriteTerminalLogTab,
-                    onAddTab: addTerminalLogTab
+                    onAddTab: addTerminalLogTab,
+                    onMoveTab: moveTerminalLogTab
                 )
                 inspectorEmptyState(
                     .unselected(
@@ -264,7 +266,8 @@ extension RuneRootView {
             onSelectTab: selectTerminalLogTab,
             onCloseTab: closeTerminalLogTab,
             onToggleFavoriteTab: toggleFavoriteTerminalLogTab,
-            onAddTab: addTerminalLogTab
+            onAddTab: addTerminalLogTab,
+            onMoveTab: moveTerminalLogTab
         )
     }
 
@@ -364,6 +367,15 @@ extension RuneRootView {
         } else {
             viewModel.toggleFavoriteResource(kind: .pod, namespace: tab.namespace, name: tab.podName)
         }
+        terminalLogTabState.groupPinnedFirst(isPinned: isPinnedTerminalLogTab)
+    }
+
+    func isPinnedTerminalLogTab(_ tab: TerminalPodLogTab) -> Bool {
+        viewModel.state.pods.first(where: { $0.id == tab.podID }).map(isFavoritePod) ?? false
+    }
+
+    func moveTerminalLogTab(_ id: String, onto targetID: String) {
+        terminalLogTabState.move(id: id, onto: targetID, isPinned: isPinnedTerminalLogTab)
     }
 
     func updateActiveTerminalLogTab(to pod: PodSummary) {

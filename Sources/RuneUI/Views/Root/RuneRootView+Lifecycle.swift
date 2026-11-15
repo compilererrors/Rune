@@ -400,6 +400,10 @@ struct TerminalWorkspacePersistenceLifecycleModifier: ViewModifier {
     let onDisable: @MainActor () -> Void
     let onPersist: @MainActor () -> Void
 
+    static func persistenceKey(for sessions: [PodTerminalSession]) -> [TerminalWorkspaceSessionSnapshot] {
+        sessions.map(TerminalWorkspaceSessionSnapshot.init(session:))
+    }
+
     func body(content: Content) -> some View {
         content
             .onChange(of: terminalInspectorTab) { _, _ in
@@ -414,7 +418,9 @@ struct TerminalWorkspacePersistenceLifecycleModifier: ViewModifier {
             .onChange(of: terminalLogTabState) { _, _ in
                 onPersist()
             }
-            .onChange(of: terminalSessions) { _, _ in
+            // Only what is saved (the tabs), never output or status: those
+            // change many times a second while a shell runs.
+            .onChange(of: Self.persistenceKey(for: terminalSessions)) { _, _ in
                 onPersist()
             }
             .onChange(of: activeTerminalSessionID) { _, _ in

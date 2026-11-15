@@ -632,8 +632,13 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
             terminalTextView.onPasteText = onPasteText
             terminalTextView.onInputSequence = onInputSequence
         }
-        textView.textColor = palette.map { NSColor($0.foreground) } ?? .labelColor
-        updateFontIfNeeded(in: textView, coordinator: context.coordinator)
+        let coordinator = context.coordinator
+        let textColor = palette.map { NSColor($0.foreground) } ?? .labelColor
+        if coordinator.lastTextColor != textColor {
+            coordinator.lastTextColor = textColor
+            textView.textColor = textColor
+        }
+        updateFontIfNeeded(in: textView, coordinator: coordinator)
 
         if let container = textView.textContainer {
             let contentSize = NSSize(
@@ -646,37 +651,38 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         }
 
         let shouldStickToBottom = isNearBottom(scrollView)
-        if textView.string != text {
-            clearSearchHighlights(in: textView, coordinator: context.coordinator)
-            if text.hasPrefix(textView.string),
-               let textStorage = textView.textStorage {
-                let suffix = String(text.dropFirst(textView.string.count))
+        let displayed = coordinator.displayedText ?? textView.string
+        if displayed != text {
+            clearSearchHighlights(in: textView, coordinator: coordinator)
+            if let textStorage = textView.textStorage,
+               !displayed.isEmpty,
+               text.utf16.count > displayed.utf16.count,
+               text.hasPrefix(displayed) {
+                // Output appends: add only the new text, styled like the rest.
+                let suffix = String(text.utf16.dropFirst(displayed.utf16.count)) ?? String(text.dropFirst(displayed.count))
                 textStorage.append(
                     NSAttributedString(
                         string: suffix,
-                            attributes: [
+                        attributes: [
                             .font: textView.font ?? terminalFont,
-                            .foregroundColor: textView.textColor ?? NSColor.labelColor
+                            .foregroundColor: coordinator.lastTextColor ?? NSColor.labelColor
                         ]
                     )
                 )
             } else {
                 textView.string = text
             }
-            textView.layoutManager?.ensureLayout(for: textView.textContainer!)
-            textView.invalidateIntrinsicContentSize()
-            textView.layoutSubtreeIfNeeded()
+            coordinator.displayedText = text
             let hasActiveSearchMatch = applySearchHighlights(
                 in: textView,
-                coordinator: context.coordinator
+                coordinator: coordinator
             )
             if shouldStickToBottom, !hasActiveSearchMatch {
                 let range = NSRange(location: max(0, text.utf16.count - 1), length: 0)
                 textView.scrollRangeToVisible(range)
             }
         } else {
-            textView.layoutManager?.ensureLayout(for: textView.textContainer!)
-            _ = applySearchHighlights(in: textView, coordinator: context.coordinator)
+            _ = applySearchHighlights(in: textView, coordinator: coordinator)
         }
     }
 
@@ -844,6 +850,13 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         var activeSearchHighlightRange: NSRange?
         var lastCenteredNavigationRevision: Int?
         var lastFontSize: CGFloat?
+        /// The colour last applied to the whole transcript. Setting
+        /// `textColor` re-styles every character, so it is set only when the
+        /// theme's colour actually changes, never per update.
+        var lastTextColor: NSColor?
+        /// The text the view shows, so an update compares strings that share
+        /// storage (cheap) instead of bridging the whole NSTextView string.
+        var displayedText: String?
 
         func resetSearchHighlights() {
             appliedSearchResultRevision = nil
@@ -864,7 +877,6 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         if let storage = textView.textStorage {
             storage.addAttribute(.font, value: font, range: NSRange(location: 0, length: storage.length))
         }
-        textView.invalidateIntrinsicContentSize()
         textView.needsLayout = true
     }
 }

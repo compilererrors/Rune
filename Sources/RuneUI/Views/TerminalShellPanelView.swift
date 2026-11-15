@@ -31,6 +31,7 @@ struct TerminalShellPanelView: View {
     let onDisconnect: () -> Void
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
+    var onMoveSession: ((String, String) -> Void)? = nil
     let onComposeNewSession: () -> Void
     let onClearTranscript: () -> Void
     let onSaveActiveTranscript: () -> Void
@@ -183,6 +184,20 @@ struct TerminalShellPanelView: View {
         return selectedPod?.name ?? ""
     }
 
+    private var emptyTabLabel: some View {
+        VStack(spacing: RuneSpacing.xs) {
+            Image(systemName: "terminal")
+                .runeText(.title)
+            Text(connectPromptPodTitle)
+                .runeText(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .foregroundStyle(.runeTertiary)
+        .padding(RuneSpacing.lg)
+        .accessibilityHidden(true)
+    }
+
     private var transcriptPlaceholder: String {
         if selectedPod == nil && session == nil {
             return "Select a pod in this namespace, then connect the new shell tab."
@@ -230,6 +245,7 @@ struct TerminalShellPanelView: View {
                     canApplyMutations: canApplyMutations,
                     onSelectSession: onSelectSession,
                     onCloseSession: onCloseSession,
+                    onMoveSession: onMoveSession,
                     onComposeNewSession: onComposeNewSession,
                     onDisconnectSession: { id in
                         onSelectSession(id)
@@ -246,26 +262,32 @@ struct TerminalShellPanelView: View {
                 onInputSequence: onSendControlSequence,
                 onResizeGrid: reportTerminalResize
             )
-            .overlay(alignment: hasTranscript ? .bottom : .center) {
-                // Connect belongs to this terminal, so it sits on it: centred
-                // on an empty tab, a slim bar over the end of a finished one.
-                if showsConnectPrompt {
-                    TerminalConnectPrompt(
-                        podTitle: connectPromptPodTitle,
-                        state: connectPromptState,
-                        failureReason: session?.lastDiagnostic?.summary,
-                        isCompact: hasTranscript,
-                        isActionDisabled: primaryActionDisabled,
-                        actionTitle: connectPromptActionTitle,
-                        action: performPrimaryAction
-                    )
-                    .padding(RuneSpacing.sm)
+            .overlay {
+                // An empty tab names its pod; the action itself is in the
+                // console's bottom line, so nothing ever covers the text.
+                if showsConnectPrompt && !hasTranscript {
+                    emptyTabLabel
+                        .allowsHitTesting(false)
                 }
             }
             } status: {
                 VStack(alignment: .leading, spacing: RuneSpacing.tight) {
                     multilinePasteConfirmationNote
-                    inputRow
+                    // Not connected: the prompt's line becomes the connect
+                    // bar, in the same place and at the same height.
+                    if showsConnectPrompt {
+                        TerminalConnectPrompt(
+                            podTitle: connectPromptPodTitle,
+                            state: connectPromptState,
+                            failureReason: session?.lastDiagnostic?.summary,
+                            isActionDisabled: primaryActionDisabled,
+                            actionTitle: connectPromptActionTitle,
+                            minHeight: terminalPromptLayout.controlHeight,
+                            action: performPrimaryAction
+                        )
+                    } else {
+                        inputRow
+                    }
                 }
             }
         }
@@ -997,9 +1019,9 @@ private final class TerminalPromptTextView: NSTextView {
     }
 }
 
-/// The connect action on the terminal surface itself: the pod, its state,
-/// why it failed, and one primary button. Centred on an empty tab; a slim
-/// bar at the bottom of a tab that still shows its transcript.
+/// The connect action as the console's bottom line, where the prompt is
+/// once connected: the pod, its state, why it failed, and one primary
+/// button. It never moves and never sits on the transcript.
 struct TerminalConnectPrompt: View {
     enum State: Equatable {
         case notConnected
@@ -1020,66 +1042,72 @@ struct TerminalConnectPrompt: View {
     let podTitle: String
     let state: State
     let failureReason: String?
-    let isCompact: Bool
     let isActionDisabled: Bool
     let actionTitle: String
+    var minHeight: CGFloat = 0
     let action: () -> Void
     @Environment(\.runeThemePalette) private var palette
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Group {
-            if isCompact {
-                HStack(spacing: RuneSpacing.sm) {
-                    statusLine
-                    Spacer(minLength: RuneSpacing.xs)
-                    actionButton
-                }
-                .padding(.horizontal, RuneSpacing.sm)
-                .padding(.vertical, RuneSpacing.xs)
-                .frame(maxWidth: .infinity)
-            } else {
-                VStack(spacing: RuneSpacing.sm) {
-                    Image(systemName: "terminal")
-                        .runeText(.title)
-                        .foregroundStyle(.runeSecondary)
-                    Text(podTitle)
-                        .runeText(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    statusLine
-                    if let failureReason, state == .failed, !failureReason.isEmpty {
-                        Text(failureReason)
-                            .runeText(.caption)
-                            .foregroundStyle(.runeSecondary)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(3)
-                            .frame(maxWidth: 360)
-                    }
-                    actionButton
-                }
-                .padding(RuneSpacing.lg)
-            }
+        HStack(spacing: RuneSpacing.sm) {
+            statusLine
+            Spacer(minLength: RuneSpacing.xs)
+            actionButton
         }
-        .modifier(RuneCardSurface())
+        .padding(.leading, RuneSpacing.xs)
+        .padding(.trailing, RuneSpacing.xxs)
+        .padding(.vertical, RuneSpacing.xxs)
+        .frame(maxWidth: .infinity, minHeight: minHeight)
+        // The transcript takes the space first; the bar keeps its height.
+        .fixedSize(horizontal: false, vertical: true)
+        .background(
+            RoundedRectangle(cornerRadius: RuneRadius.control, style: .continuous)
+                .fill(RuneSurfaceRole.terminal.fill(palette: palette, colorScheme: colorScheme))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: RuneRadius.control, style: .continuous)
+                .stroke(RuneSurfaceRole.terminal.frame(palette: palette), lineWidth: 1)
+        )
+        .controlSize(.small)
+        .animation(.easeOut(duration: 0.15), value: state)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(podTitle), \(state.title)")
         .accessibilityIdentifier("terminal-connect-prompt")
     }
 
+    private var reason: String? {
+        guard state == .failed, let failureReason else { return nil }
+        let trimmed = failureReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private var statusLine: some View {
-        HStack(spacing: RuneSpacing.tight) {
-            if state == .connecting {
-                ProgressView().controlSize(.small)
-            } else {
-                Circle()
-                    .fill(state == .failed ? RuneSemanticColorRole.danger.color(in: palette) : Color.secondary)
-                    .frame(width: 7, height: 7)
+        HStack(spacing: RuneSpacing.xs) {
+            Group {
+                if state == .connecting {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle()
+                        .fill(state == .failed ? RuneSemanticColorRole.danger.color(in: palette) : Color.secondary.opacity(0.6))
+                        .frame(width: 7, height: 7)
+                }
             }
-            Text(isCompact ? "\(podTitle) · \(state.title)" : state.title)
-                .runeText(.caption)
+            .frame(width: 14)
+            // The tab above already names the pod.
+            Text(state.title)
+                .runeText(.caption, weight: .medium)
                 .foregroundStyle(.runeSecondary)
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .layoutPriority(1)
+            if let reason {
+                Text(reason)
+                    .runeText(.caption)
+                    .foregroundStyle(.runeTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(reason)
+            }
         }
     }
 
@@ -1088,7 +1116,7 @@ struct TerminalConnectPrompt: View {
             Label(actionTitle, systemImage: state == .connecting ? "xmark" : "play.fill")
         }
         .buttonStyle(RuneToolbarButtonStyle(isProminent: state != .connecting))
-        .controlSize(.regular)
+        .runePointerCursor()
         .disabled(isActionDisabled)
         .keyboardShortcut(state == .connecting ? nil : .defaultAction)
         .accessibilityIdentifier("terminal-session-primary-action")

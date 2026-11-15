@@ -92,7 +92,7 @@ final class RuneIconButtonTests: XCTestCase {
         XCTAssertTrue(contextRowSource.contains("selectedTint: .yellow"))
         XCTAssertTrue(preferencesSource.contains("RuneIconButton(\n            \"More info\""))
         XCTAssertTrue(logTabSource.contains("isSelected: tab.isFavorite"))
-        XCTAssertTrue(logTabSource.contains("tab.isFavorite ? \"Remove Log Target Favorite\" : \"Favorite Log Target\""))
+        XCTAssertTrue(logTabSource.contains("tab.isFavorite ? \"Unpin Tab\" : \"Pin Tab\""))
         XCTAssertTrue(logTabSource.contains("\"Close log tab for \\(tab.title)\""))
         XCTAssertTrue(logTabSource.contains(".accessibilityElement(children: .contain)"))
         // Tab accessories are the small tab buttons; the whole tab selects.

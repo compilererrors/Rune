@@ -106,12 +106,13 @@ final class TerminalLogTabsWorkflowTests: XCTestCase {
 
         let presentations = state.presentations(pods: pods, isFavorite: { $0.name == "worker-0" })
 
-        XCTAssertEqual(presentations.map(\.title), ["api-0", "worker-0"])
-        XCTAssertEqual(presentations.map(\.podID), ["default/api-0", "default/worker-0"])
+        // The pinned (favourite) tab sits first.
+        XCTAssertEqual(presentations.map(\.title), ["worker-0", "api-0"])
+        XCTAssertEqual(presentations.map(\.podID), ["default/worker-0", "default/api-0"])
         XCTAssertEqual(presentations.map(\.subtitle), ["default", "default"])
-        XCTAssertEqual(presentations.map(\.isFavorite), [false, true])
-        XCTAssertEqual(presentations[1].accessibilityLabel, "worker-0, namespace default")
-        XCTAssertEqual(presentations[1].helpText, "Logs for default/worker-0")
+        XCTAssertEqual(presentations.map(\.isFavorite), [true, false])
+        XCTAssertEqual(presentations[0].accessibilityLabel, "worker-0, namespace default")
+        XCTAssertEqual(presentations[0].helpText, "Logs for default/worker-0")
     }
 
     func testUpdatingActiveTabChangesOnlyThatTabTarget() {

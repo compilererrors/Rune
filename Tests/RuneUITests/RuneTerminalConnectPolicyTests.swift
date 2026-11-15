@@ -29,8 +29,8 @@ final class RuneTerminalConnectPolicyTests: XCTestCase {
     func testConnectLivesOnTheTerminalAndDisconnectInMenus() throws {
         let shell = try source("Sources/RuneUI/Views/TerminalShellPanelView.swift")
         XCTAssertTrue(shell.contains("showsPrimaryAction: false"), "no Connect button detached in the bar")
-        XCTAssertTrue(shell.contains("TerminalConnectPrompt("), "Connect sits on the terminal surface")
-        XCTAssertTrue(shell.contains(".overlay(alignment: hasTranscript ? .bottom : .center)"), "an overlay, so nothing shifts")
+        XCTAssertTrue(shell.contains("TerminalConnectPrompt("), "Connect is part of the terminal")
+        XCTAssertFalse(shell.contains(".overlay(alignment: hasTranscript ? .bottom : .center)"), "never on the transcript, never moving")
         XCTAssertTrue(shell.contains("failureReason: session?.lastDiagnostic?.summary"))
         XCTAssertTrue(shell.contains("Button(\"Disconnect\")"), "Disconnect in the … menu")
         let tabs = try source("Sources/RuneUI/Views/TerminalSessionTabBar.swift")

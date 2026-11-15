@@ -63,7 +63,9 @@ struct TerminalPodLogTabState: Equatable {
         isFavorite: (PodSummary) -> Bool
     ) -> [TerminalLogTabPresentation] {
         let podsByID = Dictionary(uniqueKeysWithValues: pods.map { ($0.id, $0) })
-        return tabs.map { tab in
+        // Pinned tabs sit first, as pinned tabs do in Safari and Xcode.
+        let ordered = Self.pinnedFirst(tabs) { tab in podsByID[tab.podID].map(isFavorite) ?? false }
+        return ordered.map { tab in
             let pod = podsByID[tab.podID]
             let title = pod?.name ?? tab.podName
             let namespace = pod?.namespace ?? tab.namespace
@@ -77,6 +79,28 @@ struct TerminalPodLogTabState: Equatable {
                 helpText: "Logs for \(namespace)/\(title)"
             )
         }
+    }
+
+    static func pinnedFirst(
+        _ tabs: [TerminalPodLogTab],
+        isPinned: (TerminalPodLogTab) -> Bool
+    ) -> [TerminalPodLogTab] {
+        let pinned = tabs.filter(isPinned)
+        guard !pinned.isEmpty, pinned.count < tabs.count else { return tabs }
+        return pinned + tabs.filter { !isPinned($0) }
+    }
+
+    /// Keeps the stored order equal to the shown order (pinned first), so
+    /// closing and reordering act on what the user sees.
+    mutating func groupPinnedFirst(isPinned: (TerminalPodLogTab) -> Bool) {
+        tabs = Self.pinnedFirst(tabs, isPinned: isPinned)
+    }
+
+    /// Drag-and-drop reorder; a pinned tab never drops behind unpinned ones.
+    mutating func move(id: String, onto targetID: String, isPinned: (TerminalPodLogTab) -> Bool) {
+        groupPinnedFirst(isPinned: isPinned)
+        tabs.moveElement(id: id, onto: targetID)
+        groupPinnedFirst(isPinned: isPinned)
     }
 
     mutating func ensureTab(for pod: PodSummary) {

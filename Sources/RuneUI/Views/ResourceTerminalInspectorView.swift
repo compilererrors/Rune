@@ -87,6 +87,7 @@ struct ResourceTerminalWorkspaceView: View {
     let onDisconnect: () -> Void
     let onSelectSession: (String) -> Void
     let onCloseSession: (String) -> Void
+    var onMoveSession: ((String, String) -> Void)? = nil
     let onClearTranscript: () -> Void
     let onSaveActiveTerminalTranscript: () -> Void
     let onSaveAllTerminalTranscripts: () -> Void
@@ -101,6 +102,8 @@ struct ResourceTerminalWorkspaceView: View {
     var autoConnectsShell = false
     @State private var isPortForwardExpanded = false
     @State private var isComposingNewShellTab = false
+    @AppStorage(RuneSettingsKeys.terminalShellHeight) private var storedShellHeight: Double = 0
+    @State private var shellHeightAtDragStart: CGFloat?
 
     private var scopedSessions: [PodTerminalSession] {
         TerminalShellPodSelectionPolicy.sessions(
@@ -176,10 +179,7 @@ struct ResourceTerminalWorkspaceView: View {
                         selectedPod: shellPod,
                         availablePods: availablePods,
                         canApplyMutations: canApplyMutations,
-                        transcriptHeight: terminalHeight(
-                            availableHeight: proxy.size.height,
-                            portForwardExpanded: isPortForwardExpanded
-                        ),
+                        transcriptHeight: shellHeight(availableHeight: proxy.size.height),
                         selectedShellPodID: $selectedShellPodID,
                         terminalInput: $terminalInput,
                         onStartSession: startShellSession,
@@ -190,6 +190,7 @@ struct ResourceTerminalWorkspaceView: View {
                         onDisconnect: onDisconnect,
                         onSelectSession: selectShellSession,
                         onCloseSession: closeShellSession,
+                        onMoveSession: onMoveSession,
                         onComposeNewSession: composeNewShellTab,
                         onClearTranscript: onClearTranscript,
                         onSaveActiveTranscript: onSaveActiveTerminalTranscript,
@@ -203,6 +204,18 @@ struct ResourceTerminalWorkspaceView: View {
                         onOpenSelectedPodLogs: onOpenSelectedPodLogs,
                         autoConnects: autoConnectsShell
                     )
+
+                    RuneResizeGrip(
+                        help: "Drag to resize the terminal. Double-click to reset.",
+                        onDragChanged: { translation in
+                            let start = shellHeightAtDragStart ?? shellHeight(availableHeight: proxy.size.height)
+                            shellHeightAtDragStart = start
+                            storedShellHeight = Double(clampedShellHeight(start + translation, availableHeight: proxy.size.height))
+                        },
+                        onDragEnded: { shellHeightAtDragStart = nil },
+                        onReset: { storedShellHeight = 0 }
+                    )
+                    .padding(.top, -RuneUILayoutMetrics.inspectorSectionSpacing)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
@@ -216,6 +229,20 @@ struct ResourceTerminalWorkspaceView: View {
                 isComposingNewShellTab = false
             }
         }
+    }
+
+    /// The shell's height: the user's own (from the grip) when set, else automatic.
+    private func shellHeight(availableHeight: CGFloat) -> CGFloat {
+        guard storedShellHeight > 0 else {
+            return terminalHeight(availableHeight: availableHeight, portForwardExpanded: isPortForwardExpanded)
+        }
+        return clampedShellHeight(CGFloat(storedShellHeight), availableHeight: availableHeight)
+    }
+
+    private func clampedShellHeight(_ height: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        let reservedForControls: CGFloat = isPortForwardExpanded ? 410 : 236
+        let maximum = max(ResourceTerminalLayoutMetrics.minimumShellHeight, availableHeight - reservedForControls)
+        return min(maximum, max(ResourceTerminalLayoutMetrics.minimumShellHeight, height.rounded()))
     }
 
     private func terminalHeight(availableHeight: CGFloat, portForwardExpanded: Bool) -> CGFloat {
@@ -440,4 +467,8 @@ struct ResourceTerminalDetailsView: View {
             )
         )
     }
+}
+
+enum ResourceTerminalLayoutMetrics {
+    static let minimumShellHeight: CGFloat = 160
 }

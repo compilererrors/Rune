@@ -1344,6 +1344,11 @@ public final class RuneAppState: ObservableObject {
         terminalSession = session
     }
 
+    /// Reorders shell tabs: the dragged session takes the target's slot.
+    public func moveTerminalSession(id: String, onto targetID: String) {
+        terminalSessions.moveElement(id: id, onto: targetID)
+    }
+
     public func selectTerminalSession(id: String) {
         guard let session = terminalSessions.first(where: { $0.id == id }) else { return }
         activeTerminalSessionID = id
