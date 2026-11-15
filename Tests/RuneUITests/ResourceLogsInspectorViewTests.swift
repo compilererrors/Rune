@@ -299,7 +299,8 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
             XCTAssertLessThanOrEqual(searchFrame.maxX, window.frame.maxX + 0.5)
             XCTAssertGreaterThanOrEqual(searchFrame.width, width == 248 ? 100 : 160)
 
-            let compactMenus = findPopUpButtons(in: host.view)
+            // Both forms live in one view; only the one that fits is shown.
+            let compactMenus = findPopUpButtons(in: host.view).filter { !$0.isHiddenOrHasHiddenAncestor }
             if width == 248 {
                 let optionsButton = try XCTUnwrap(compactMenus.only)
                 let optionsFrame = host.view.convert(optionsButton.bounds, from: optionsButton)
@@ -557,7 +558,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         XCTAssertTrue(source.contains("let reusableTextIndex = searchResult.originalText == text ? searchResult.textIndex : nil"))
         XCTAssertTrue(source.contains("struct ResourceLogsExplorePanel"))
         XCTAssertFalse(source.contains("RuneFindBarChrome(\"Log find controls\")"))
-        XCTAssertTrue(searchBarSource.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertFalse(searchBarSource.contains("ViewThatFits(in: .horizontal)"), "one accessories view picks its own form; a ViewThatFits recreated it on resize")
         XCTAssertFalse(searchBarSource.contains("LogSearchPulseOverlay"))
         XCTAssertFalse(searchBarSource.contains("flashSearchPulse"))
         XCTAssertFalse(searchBarSource.contains("Text(searchSummary.badgeText)"))

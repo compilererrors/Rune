@@ -118,9 +118,8 @@ final class RuneGroupingAndFocusTests: XCTestCase {
     func testLogViewerHeaderIsTwoLabelledRowsWithNothingAboveIt() throws {
         let logs = try sourceText("Sources/RuneUI/Views/ResourceLogsInspectorView.swift")
         let header = try XCTUnwrap(logs.slice(from: "private var logViewerHeader: some View {", to: "private var hasSourcePickers: Bool {"))
-        XCTAssertTrue(header.contains("sourceHeaderRow(showsCaptions: true)"))
-        XCTAssertTrue(header.contains("actionHeaderRow(showsLabels: true)"))
-        XCTAssertTrue(header.contains("actionHeaderRow(showsLabels: false)"))
+        XCTAssertTrue(header.contains("LogSourceRowLayout("), "captions come and go; the pickers stay")
+        XCTAssertTrue(header.contains("LogActionRowLayout("), "labels or icons; one search field")
         XCTAssertTrue(header.contains("LogHeaderLabeledField(\"Range\""))
         XCTAssertTrue(header.contains("showsFavoriteButton: false"), "pinning lives in the picker list")
         XCTAssertTrue(logs.contains("RuneStableLabel(followTitle, reserving: [\"Follow\", \"Following\", \"Paused\"])"))

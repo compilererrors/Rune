@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Darwin
 import RuneCore
 import RuneKube
@@ -81,6 +82,156 @@ final class RuneTerminalWorkloadTests: XCTestCase {
             harness.window.orderOut(nil)
         }
         XCTAssertEqual(busyWidths, [], "the log header keeps re-laying out at these inspector widths")
+    }
+
+    // MARK: Cmd-W
+
+    func testCommandWClosesTheActiveShellTabWhereTheShellHasFocus() async throws {
+        let harness = try await makeHarness(sessionCount: 3, transcriptLines: 20)
+        defer { harness.window.orderOut(nil) }
+        let transcript = try XCTUnwrap(shellTranscriptTextView(in: harness.window))
+        harness.window.makeFirstResponder(transcript)
+        harness.viewModel.selectTerminalSession(id: "shell-1")
+        try await settle(seconds: 0.3)
+
+        try pressCommandW(in: harness.window)
+        try await settle(seconds: 0.3)
+        XCTAssertEqual(harness.viewModel.state.terminalSessions.map(\.id), ["shell-0", "shell-2"], "Cmd-W closed the active shell tab")
+        XCTAssertTrue(harness.window.isVisible, "and not the window")
+
+        try pressCommandW(in: harness.window)
+        try await settle(seconds: 0.3)
+        XCTAssertEqual(harness.viewModel.state.terminalSessions.count, 1)
+        try pressCommandW(in: harness.window)
+        try await settle(seconds: 0.3)
+        XCTAssertEqual(harness.viewModel.state.terminalSessions.count, 1, "the last tab stays; Cmd-W is the window's again")
+    }
+
+    func testCommandWInTheLogsLeavesTheShellTabsAlone() async throws {
+        let harness = try await makeHarness(sessionCount: 3, transcriptLines: 20)
+        defer { harness.window.orderOut(nil) }
+        // Focus the shell first, then click into the inspector, as a user would.
+        harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
+        let splitView = try XCTUnwrap(findSplitView(in: harness.window.contentView!))
+        let inspector = splitView.arrangedSubviews[2].convert(splitView.arrangedSubviews[2].bounds, to: nil)
+        try appClick(at: NSPoint(x: inspector.midX, y: inspector.minY + 40), in: harness.window)
+        try await settle(seconds: 0.3)
+
+        try pressCommandW(in: harness.window)
+        try await settle(seconds: 0.3)
+        XCTAssertEqual(harness.viewModel.state.terminalSessions.count, 3, "Cmd-W in the logs is about the log tabs")
+    }
+
+    private func pressCommandW(in window: NSWindow) throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "w", charactersIgnoringModifiers: "w",
+            isARepeat: false, keyCode: 13
+        ))
+        NSApp.sendEvent(event)
+    }
+
+    private func shellTranscriptTextView(in window: NSWindow) -> NSTextView? {
+        scrollViews(in: window.contentView!)
+            .compactMap { $0.documentView as? NSTextView }
+            .first { String(describing: type(of: $0)).contains("TerminalTranscript") }
+    }
+
+    /// A click through the app, so the root view's event monitors see it.
+    private func appClick(at point: NSPoint, in window: NSWindow) throws {
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+            ))
+            NSApp.sendEvent(event)
+        }
+    }
+
+    // MARK: Resizing the inspector
+
+    /// Dragging the inspector's divider must stay smooth with data in it:
+    /// each step only lays the panes out at the new width. Nothing may
+    /// publish app state, re-render the transcript or message the shell
+    /// per step; the terminal learns its new size once the drag settles.
+    func testDraggingTheInspectorDividerOnlyLaysOut() async throws {
+        let harness = try await makeHarness(sessionCount: 2, transcriptLines: 400, windowSize: NSSize(width: 1500, height: 900))
+        defer { harness.window.orderOut(nil) }
+        harness.viewModel.enqueueTerminalSessionOutput(id: "shell-0", text: (0..<200).map { "line \($0)\r\n" }.joined() + "$ ")
+        try await settle(seconds: 0.6)
+
+        for section in [RuneSection.terminal, .workloads] {
+            harness.viewModel.state.selectedSection = section
+            try await settle(seconds: 0.8)
+            try await waitUntilQuiet(harness)
+            let result = try await dragInspectorDivider(in: harness)
+            print("INSPECTOR DRAG \(section): publishes=\(result.publishes) shellResizes=\(result.shellResizes) newControls=\(result.newControls) medianMs=\(result.medianMs) maxMs=\(result.maxMs)")
+            XCTAssertEqual(result.publishes, 0, "\(section): app state published \(result.publishes) times during the drag")
+            XCTAssertEqual(result.shellResizes, 0, "\(section): the shell was resized \(result.shellResizes) times during the drag")
+            XCTAssertEqual(result.newControls, [], "\(section): native controls were recreated during the drag")
+            // Timing varies with machine load; the checks above are the guard.
+            // This only catches a gross regression (two frames at 60 Hz).
+            XCTAssertLessThan(result.medianMs, 33, "\(section): a drag step takes \(result.medianMs) ms")
+        }
+    }
+
+    private func dragInspectorDivider(in harness: Harness) async throws -> (publishes: Int, shellResizes: Int, newControls: [String], medianMs: Double, maxMs: Double) {
+        func controls() -> [ObjectIdentifier: String] {
+            var found: [ObjectIdentifier: String] = [:]
+            func walk(_ view: NSView) {
+                if (view is NSControl && !(view is NSScroller)) || view is NSTextView { found[ObjectIdentifier(view)] = String(describing: type(of: view)) }
+                view.subviews.forEach(walk)
+            }
+            walk(harness.window.contentView!)
+            return found
+        }
+        let controlsBefore = controls()
+        let splitView = try XCTUnwrap(findSplitView(in: harness.window.contentView!), "the three-pane split view")
+        var publishes = 0
+        let stateSink = harness.viewModel.state.objectWillChange.sink { _ in publishes += 1 }
+        let modelSink = harness.viewModel.objectWillChange.sink { _ in publishes += 1 }
+        defer { stateSink.cancel(); modelSink.cancel() }
+        let resizesBefore = harness.backend.resizes
+        let start = splitView.arrangedSubviews[2].frame.minX - splitView.dividerThickness
+        var stepMs: [Double] = []
+        for step in 0..<40 {
+            let offset = CGFloat(step < 20 ? -step : step - 40) * 8
+            let began = ContinuousClock.now
+            splitView.setPosition(start + offset, ofDividerAt: 1)
+            harness.window.contentView?.layoutSubtreeIfNeeded()
+            harness.window.displayIfNeeded()
+            let took = began.duration(to: .now)
+            stepMs.append(Double(took.components.attoseconds) / 1e15 + Double(took.components.seconds) * 1000)
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+        let newControls = controls().filter { controlsBefore[$0.key] == nil }.map(\.value).sorted()
+        let drag = (publishes, harness.backend.resizes - resizesBefore)
+        // Once the drag settles the shell learns its final size, once.
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertLessThanOrEqual(harness.backend.resizes - resizesBefore, 1, "the settled size is reported once")
+        stepMs.sort()
+        return (drag.0, drag.1, newControls, stepMs[stepMs.count / 2], stepMs.last ?? 0)
+    }
+
+    /// Switching section starts loads that can land a burst of updates
+    /// late; the drag starts on a view with no updates for half a second.
+    private func waitUntilQuiet(_ harness: Harness) async throws {
+        var last = ContinuousClock.now
+        let stateSink = harness.viewModel.state.objectWillChange.sink { _ in last = .now }
+        let modelSink = harness.viewModel.objectWillChange.sink { _ in last = .now }
+        defer { stateSink.cancel(); modelSink.cancel() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while last.duration(to: .now) < .milliseconds(500), ContinuousClock.now < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    private func findSplitView(in view: NSView) -> NSSplitView? {
+        if let split = view as? NSSplitView, split.isVertical, split.arrangedSubviews.count == 3 { return split }
+        for subview in view.subviews {
+            if let found = findSplitView(in: subview) { return found }
+        }
+        return nil
     }
 
     /// With a mouse attached, macOS shows scroll bars that take space, so a
@@ -191,6 +342,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     private struct Harness {
         let window: NSWindow
         let viewModel: RuneAppViewModel
+        let backend: FakePodShellBackend
     }
 
     private func makeHarness(
@@ -235,7 +387,8 @@ final class RuneTerminalWorkloadTests: XCTestCase {
             ))
         }
         state.selectTerminalSession(id: "shell-0")
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: FakePodShellBackend(), terminalWorkspaceStateStore: store)
+        let backend = FakePodShellBackend()
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend, terminalWorkspaceStateStore: store)
         viewModel.isSidebarVisible = true
         viewModel.isDetailPaneVisible = true
 
@@ -258,7 +411,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         try await settle(seconds: settleSeconds)
-        return Harness(window: window, viewModel: viewModel)
+        return Harness(window: window, viewModel: viewModel, backend: backend)
     }
 
     private func settle(seconds: Double = 0.8) async throws {
@@ -399,7 +552,12 @@ final class FakePodShellBackend: PodTerminalSessionBackend, @unchecked Sendable 
         }
     }
 
-    func resizePodTerminalSession(id: String, columns: Int, rows: Int) async throws {}
+    private var resizeCount = 0
+    var resizes: Int { lock.withLock { resizeCount } }
+
+    func resizePodTerminalSession(id: String, columns: Int, rows: Int) async throws {
+        lock.withLock { resizeCount += 1 }
+    }
 
     func stopPodTerminalSession(id: String) async {
         _ = lock.withLock { outputs.removeValue(forKey: id) }

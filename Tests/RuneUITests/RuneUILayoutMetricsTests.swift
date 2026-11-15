@@ -351,7 +351,7 @@ final class RuneUILayoutMetricsTests: XCTestCase {
             "The fixed action bar must remain inside the sheet's 16pt vertical insets at minimum height."
         )
         XCTAssertEqual(
-            scrollViews(in: host).count,
+            scrollViews(in: host).filter(\.hasVerticalScroller).count,
             1,
             "The preflight sheet should have one vertical owner: its central review viewport."
         )

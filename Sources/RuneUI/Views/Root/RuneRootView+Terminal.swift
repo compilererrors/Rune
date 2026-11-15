@@ -65,7 +65,8 @@ extension RuneRootView {
                 isReadOnly: viewModel.state.isReadOnlyMode,
                 isProduction: viewModel.isProductionContext,
                 canApplyMutations: viewModel.canApplyClusterMutations
-            )
+            ),
+            composingNewShellTab: $isComposingTerminalShellTab
         )
         .id("terminal")
         .onAppear(perform: reconcileTerminalPodSelections)
@@ -352,6 +353,56 @@ extension RuneRootView {
     func selectTerminalLogTab(_ id: String) {
         guard let pod = terminalLogTabState.select(id: id, availablePods: viewModel.state.pods) else { return }
         viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+    }
+
+    /// Cmd-W in the Terminal section: the tab to close, if any (see
+    /// `TerminalCloseTabPolicy`); nil leaves Cmd-W to close the window.
+    func terminalCloseTabTarget(in window: NSWindow?) -> TerminalCloseTabPolicy.Target? {
+        guard viewModel.state.selectedSection == .terminal else { return nil }
+        let sessions = TerminalShellPodSelectionPolicy.sessions(
+            in: viewModel.state.terminalSessions,
+            contextName: viewModel.state.selectedContext?.name,
+            namespace: viewModel.state.selectedNamespace
+        )
+        let strips = TerminalCloseTabPolicy.Strips(
+            logTabIDs: terminalLogTabState.tabs.map(\.id),
+            activeLogTabID: terminalLogTabState.activeTabID,
+            shellSessionIDs: sessions.map(\.id),
+            activeShellSessionID: viewModel.state.activeTerminalSessionID,
+            isComposingShellDraft: isComposingTerminalShellTab
+        )
+        let logsFocused = TerminalCloseTabPolicy.logsHaveFocus(
+            responderIsInInspector: responderIsInInspector(of: window),
+            paneFocusIsInspector: keyboardPaneFocus == .detail
+        )
+        return TerminalCloseTabPolicy.target(
+            logsFocused: logsFocused,
+            logsVisible: viewModel.isDetailPaneVisible && terminalInspectorTab == .logs,
+            strips: strips
+        )
+    }
+
+    /// Whether the focused view is in the inspector; nil when no view has
+    /// focus or it spans both panes.
+    private func responderIsInInspector(of window: NSWindow?) -> Bool? {
+        guard let window,
+              let responder = window.firstResponder as? NSView,
+              let anchor = RuneInspectorDocumentAnchor.AnchorView.anchor(in: window) else { return nil }
+        let frame = responder.convert(responder.bounds, to: nil)
+        let pane = anchor.paneRectInWindow
+        if frame.contains(NSPoint(x: pane.midX, y: pane.midY)) { return nil }
+        return pane.contains(NSPoint(x: frame.midX, y: frame.midY))
+    }
+
+    func closeTerminalTab(_ target: TerminalCloseTabPolicy.Target) {
+        switch target {
+        case .logTab(let id):
+            closeTerminalLogTab(id)
+        case .shellSession(let id):
+            viewModel.closeTerminalSession(id: id)
+        case .shellDraft:
+            isComposingTerminalShellTab = false
+        }
     }
 
     func closeTerminalLogTab(_ id: String) {

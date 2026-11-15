@@ -104,7 +104,7 @@ final class RuneCursorBehaviorContractTests: XCTestCase {
         let body = try block(
             in: searchBar,
             startingAt: "var body: some View",
-            endingBefore: "private func searchAccessories"
+            endingBefore: "private var searchAccessories"
         )
         let jumpDialog = try block(
             in: searchBar,

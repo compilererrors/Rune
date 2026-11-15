@@ -934,7 +934,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(favoritePodPickerSource.contains("return lhsFavorite && !rhsFavorite"))
         XCTAssertTrue(favoritePodPickerSource.contains("localizedCaseInsensitiveCompare(rhs.name)"))
 
-        XCTAssertTrue(workspaceSource.contains("@State private var isComposingNewShellTab"))
+        XCTAssertTrue(workspaceSource.contains("private var isComposingNewShellTab: Bool"))
+        XCTAssertTrue(workspaceSource.contains("var composingNewShellTab: Binding<Bool>? = nil"), "the root owns the draft so Cmd-W can close it")
         XCTAssertTrue(workspaceSource.contains("private var isShowingNewShellDraft"))
         XCTAssertTrue(workspaceSource.contains("private func composeNewShellTab()"))
 
@@ -1432,7 +1433,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(kindPicker.contains("compactMaximumWidth"))
         XCTAssertTrue(helmPicker.contains("RuneTabBar("))
         XCTAssertFalse(helmPicker.contains("RuneAdaptiveSegmentedPicker"))
-        XCTAssertTrue(tabBarSource.contains("ScrollView(.horizontal, showsIndicators: true)"))
+        XCTAssertTrue(tabBarSource.contains("ScrollView(.horizontal, showsIndicators: false)"))
         XCTAssertFalse(tabBarSource.contains(".pickerStyle(.menu)"))
         XCTAssertFalse(tabBarSource.contains("Menu {"))
         XCTAssertTrue(designSource.contains("struct RuneResourceListToolbar<Primary: View, Actions: View>: View"))

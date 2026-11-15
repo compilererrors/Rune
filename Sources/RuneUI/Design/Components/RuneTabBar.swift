@@ -17,6 +17,8 @@ struct RuneTabBar<Value: Hashable>: View {
     @Binding private var selection: Value
     private let tabs: [Value]
     private let label: (Value) -> String
+    @State private var tabsWidth: CGFloat = 0
+    @State private var overflows = false
 
     init(
         _ title: String,
@@ -30,15 +32,26 @@ struct RuneTabBar<Value: Hashable>: View {
         self.label = label
     }
 
+    /// Always the same scroll view around the same control, so a width
+    /// change (dragging a pane edge) never recreates the native control.
+    /// The edges fade, and the hint is set, only while the tabs overflow.
     var body: some View {
-        ViewThatFits(in: .horizontal) {
+        // No scroller: with always-visible scroll bars one appearing on
+        // overflow changed the bar's height, which could flip the overflow
+        // back. The faded edges show there is more.
+        ScrollView(.horizontal, showsIndicators: false) {
             segments
-            ScrollView(.horizontal, showsIndicators: true) {
-                segments
-            }
-            .mask(edgeFade)
-            .accessibilityHint("Scroll horizontally to reveal additional choices")
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width in
+                    if abs(width - tabsWidth) >= 0.5 { tabsWidth = width }
+                }
         }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .scrollDisabled(!overflows)
+        .onGeometryChange(for: Bool.self, of: { $0.size.width < tabsWidth - 0.5 }) { overflowing in
+            overflows = overflowing
+        }
+        .mask(edgeFade)
+        .accessibilityHint(overflows ? "Scroll horizontally to reveal additional choices" : "")
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("segmented-picker-tabs")
     }
@@ -57,11 +70,12 @@ struct RuneTabBar<Value: Hashable>: View {
     }
 
     private var edgeFade: some View {
-        HStack(spacing: 0) {
-            LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+        let edge: Color = overflows ? .clear : .black
+        return HStack(spacing: 0) {
+            LinearGradient(colors: [edge, .black], startPoint: .leading, endPoint: .trailing)
                 .frame(width: RuneSpacing.sm)
             Rectangle().fill(.black)
-            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(colors: [.black, edge], startPoint: .leading, endPoint: .trailing)
                 .frame(width: RuneSpacing.sm)
         }
     }

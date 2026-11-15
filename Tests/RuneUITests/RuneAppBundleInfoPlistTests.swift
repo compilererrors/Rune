@@ -306,11 +306,14 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("if allowsInitialWindowGrace"))
         XCTAssertTrue(contents.contains("if !didRequestWindow,"))
         XCTAssertTrue(contents.contains("didRequestWindow = true"))
-        XCTAssertTrue(contents.contains("let candidates = NSApp.windows.filter { !("))
-        XCTAssertFalse(contents.contains("window.isVisible\n                && window.isOnActiveSpace"))
-        XCTAssertTrue(contents.contains("if !window.isOnActiveSpace"))
-        XCTAssertTrue(contents.contains("window.orderOut(nil)"))
+        // Which window and what to do with it is RuneWindowPresentationPolicy
+        // (tested on its own); the delegate only carries the action out.
+        XCTAssertTrue(contents.contains("RuneWindowPresentationPolicy.reopen(windows: policyWindows, title: mainWindowTitle)"))
+        XCTAssertTrue(contents.contains("RuneWindowPresentationPolicy.activate(windows: policyWindows, title: mainWindowTitle)"))
+        XCTAssertTrue(contents.contains("windows[index].deminiaturize(nil)"))
+        XCTAssertFalse(contents.contains("orderOut("), "hiding a window while it deminiaturizes left it unreachable")
         XCTAssertTrue(contents.contains("window.collectionBehavior.insert(.moveToActiveSpace)"))
+        XCTAssertTrue(contents.contains("window.collectionBehavior = behavior"), "moving to the active Space is one-off, not a lasting behaviour")
         XCTAssertTrue(contents.contains("window.makeKeyAndOrderFront(nil)"))
     }
 

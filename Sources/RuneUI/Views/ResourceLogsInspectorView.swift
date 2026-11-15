@@ -70,6 +70,80 @@ extension EnvironmentValues {
 }
 
 /// Text labels when the row has room, icons with tooltips when it does not.
+/// The log header's action row: playback buttons, the search field, the file
+/// menus. With labels when everything fits beside the search field's
+/// minimum, else icons, else the buttons on one line and search below. The
+/// button groups are `ViewThatFits` of labels and icons, so proposing a
+/// group its labelled or its icon width picks the form.
+struct LogActionRowLayout: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    private struct Measure {
+        let leading: (labels: CGSize, icons: CGSize)
+        let trailing: (labels: CGSize, icons: CGSize)
+        let searchMinimum: CGSize
+
+        func oneLineWidth(labels: Bool, spacing: CGFloat) -> CGFloat {
+            (labels ? leading.labels.width + trailing.labels.width : leading.icons.width + trailing.icons.width)
+                + searchMinimum.width + spacing * 2
+        }
+    }
+
+    private enum Form { case labels, icons, searchBelow }
+
+    private func measure(_ subviews: Subviews) -> Measure {
+        func forms(_ view: LayoutSubview) -> (CGSize, CGSize) {
+            (view.sizeThatFits(.unspecified), view.sizeThatFits(ProposedViewSize(width: 0, height: nil)))
+        }
+        return Measure(leading: forms(subviews[0]), trailing: forms(subviews[2]),
+                       searchMinimum: subviews[1].sizeThatFits(ProposedViewSize(width: 0, height: nil)))
+    }
+
+    private func form(for width: CGFloat?, _ m: Measure) -> Form {
+        guard let width else { return .labels }
+        if m.oneLineWidth(labels: true, spacing: spacing) <= width { return .labels }
+        if m.oneLineWidth(labels: false, spacing: spacing) <= width { return .icons }
+        return .searchBelow
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard subviews.count == 3 else { return .zero }
+        let m = measure(subviews)
+        let form = form(for: proposal.width, m)
+        let width = proposal.width ?? m.oneLineWidth(labels: true, spacing: spacing)
+        switch form {
+        case .labels:
+            return CGSize(width: width, height: max(m.leading.labels.height, m.trailing.labels.height, m.searchMinimum.height))
+        case .icons:
+            return CGSize(width: width, height: max(m.leading.icons.height, m.trailing.icons.height, m.searchMinimum.height))
+        case .searchBelow:
+            return CGSize(width: width, height: max(m.leading.icons.height, m.trailing.icons.height) + lineSpacing + m.searchMinimum.height)
+        }
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else { return }
+        let m = measure(subviews)
+        let form = form(for: bounds.width, m)
+        let leading = form == .labels ? m.leading.labels : m.leading.icons
+        let trailing = form == .labels ? m.trailing.labels : m.trailing.icons
+        let lineHeight = form == .searchBelow ? max(leading.height, trailing.height) : bounds.height
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: bounds.minY + lineHeight / 2), anchor: .leading,
+                          proposal: ProposedViewSize(leading))
+        subviews[2].place(at: CGPoint(x: bounds.maxX, y: bounds.minY + lineHeight / 2), anchor: .trailing,
+                          proposal: ProposedViewSize(trailing))
+        if form == .searchBelow {
+            subviews[1].place(at: CGPoint(x: bounds.minX, y: bounds.minY + lineHeight + lineSpacing), anchor: .topLeading,
+                              proposal: ProposedViewSize(width: bounds.width, height: m.searchMinimum.height))
+        } else {
+            let searchWidth = max(0, bounds.width - leading.width - trailing.width - spacing * 2)
+            subviews[1].place(at: CGPoint(x: bounds.minX + leading.width + spacing, y: bounds.midY), anchor: .leading,
+                              proposal: ProposedViewSize(width: searchWidth, height: m.searchMinimum.height))
+        }
+    }
+}
+
 private struct LogHeaderLabelVisibility: ViewModifier {
     let showsLabels: Bool
 
@@ -87,25 +161,27 @@ private struct LogHeaderLabelVisibility: ViewModifier {
 struct LogHeaderLabeledField<Content: View>: View {
     let title: String
     var flexible = true
-    var showsCaption = true
     @ViewBuilder let content: Content
 
-    init(_ title: String, flexible: Bool = true, showsCaption: Bool = true, @ViewBuilder content: () -> Content) {
+    init(_ title: String, flexible: Bool = true, @ViewBuilder content: () -> Content) {
         self.title = title
         self.flexible = flexible
-        self.showsCaption = showsCaption
         self.content = content()
     }
 
+    /// Two parts for `LogSourceRowLayout`: the caption, then the control.
     var body: some View {
-        HStack(alignment: .center, spacing: RuneSpacing.tight) {
-            if showsCaption {
-                Text(title)
-                    .runeText(.caption)
-                    .foregroundStyle(.runeSecondary)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
+        ViewThatFits(in: .horizontal) {
+            Text(title)
+                .runeText(.caption)
+                .foregroundStyle(.runeSecondary)
+                .lineLimit(1)
+                .fixedSize()
+            Color.clear.frame(width: 0, height: 0)
+        }
+        .accessibilityHidden(true)
+        .layoutValue(key: LogSourceRowRole.self, value: .caption)
+        Group {
             if flexible {
                 content
                     .frame(
@@ -118,10 +194,89 @@ struct LogHeaderLabeledField<Content: View>: View {
                 content
             }
         }
-        .frame(maxWidth: flexible ? .infinity : nil, alignment: .leading)
-        .help(showsCaption ? "" : title)
-        .accessibilityElement(children: .contain)
+        .help(title)
         .accessibilityLabel(title)
+        .layoutValue(key: LogSourceRowRole.self, value: flexible ? .flexible : .fixed)
+    }
+}
+
+/// What a part of the log header's source row is to `LogSourceRowLayout`.
+enum LogSourceRowRole: LayoutValueKey {
+    case caption, flexible, fixed
+    static let defaultValue = LogSourceRowRole.flexible
+}
+
+/// The source row: captions and their controls. Captions show when the row
+/// fits at its ideal width with them, else none do. Fixed controls (Range)
+/// grow from their minimum to their ideal first, then flexible ones share
+/// what is left. Decided from the proposal alone, so controls keep their
+/// identity at every width.
+struct LogSourceRowLayout: Layout {
+    var spacing: CGFloat
+    var captionSpacing: CGFloat
+
+    private struct Part {
+        let role: LogSourceRowRole
+        let minimum: CGFloat
+        let ideal: CGSize
+    }
+
+    private func parts(_ subviews: Subviews) -> [Part] {
+        subviews.map {
+            Part(role: $0[LogSourceRowRole.self],
+                 minimum: $0.sizeThatFits(ProposedViewSize(width: 0, height: nil)).width,
+                 ideal: $0.sizeThatFits(.unspecified))
+        }
+    }
+
+    private func visible(_ parts: [Part], captions: Bool) -> [Int] {
+        parts.indices.filter { captions || parts[$0].role != .caption }
+    }
+
+    private func gaps(_ indices: [Int], _ parts: [Part]) -> CGFloat {
+        zip(indices, indices.dropFirst()).reduce(0) { total, pair in
+            total + (parts[pair.0].role == .caption ? captionSpacing : spacing)
+        }
+    }
+
+    private func idealWidth(_ parts: [Part], captions: Bool) -> CGFloat {
+        let indices = visible(parts, captions: captions)
+        return indices.reduce(0) { $0 + parts[$1].ideal.width } + gaps(indices, parts)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let parts = parts(subviews)
+        return CGSize(width: proposal.width ?? idealWidth(parts, captions: true),
+                      height: parts.map(\.ideal.height).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let parts = parts(subviews)
+        let captions = idealWidth(parts, captions: true) <= bounds.width + 0.5
+        let indices = visible(parts, captions: captions)
+        var widths = parts.map { $0.role == .caption ? $0.ideal.width : $0.minimum }
+        var extra = bounds.width - gaps(indices, parts) - indices.reduce(0) { $0 + widths[$1] }
+        for index in indices where parts[index].role == .fixed && extra > 0 {
+            let grow = min(extra, max(0, parts[index].ideal.width - widths[index]))
+            widths[index] += grow
+            extra -= grow
+        }
+        let flexible = indices.filter { parts[$0].role == .flexible }
+        if extra > 0, !flexible.isEmpty {
+            for index in flexible { widths[index] += extra / CGFloat(flexible.count) }
+        }
+        for index in parts.indices where !indices.contains(index) {
+            subviews[index].place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: .zero)
+        }
+        var x = bounds.minX
+        for (position, index) in indices.enumerated() {
+            subviews[index].place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading,
+                                  proposal: ProposedViewSize(width: widths[index], height: parts[index].ideal.height))
+            x += widths[index]
+            if position + 1 < indices.count {
+                x += parts[index].role == .caption ? captionSpacing : spacing
+            }
+        }
     }
 }
 
@@ -189,21 +344,22 @@ struct ResourceLogsToolbar: View {
     /// switches to icons with tooltips, so the header never grows a row.
     private var logViewerHeader: some View {
         VStack(alignment: .leading, spacing: RuneUILayoutMetrics.documentFrameBarVerticalInset) {
-            ViewThatFits(in: .horizontal) {
-                sourceHeaderRow(showsCaptions: true)
-                sourceHeaderRow(showsCaptions: false)
-            }
-            // The first form that fits the bar's width, from its ideal size,
-            // with no measured-width state that could feed back into layout.
-            // Buttons keep their own width, so a form fits only when the
-            // search field still has its minimum beside them.
-            ViewThatFits(in: .horizontal) {
-                actionHeaderRow(showsLabels: true)
-                actionHeaderRow(showsLabels: false)
-                // A narrow inspector: the buttons on one line, search below.
-                VStack(alignment: .leading, spacing: RuneUILayoutMetrics.documentFrameBarVerticalInset) {
-                    actionButtonsRow
-                    searchSlot
+            sourceHeaderRow
+            // One search field whatever the width: the layout only decides
+            // labels or icons, and whether search gets its own line, from the
+            // proposed width, with no state that could feed back into layout.
+            LogActionRowLayout(
+                spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing,
+                lineSpacing: RuneUILayoutMetrics.documentFrameBarVerticalInset
+            ) {
+                ViewThatFits(in: .horizontal) {
+                    playbackButtons.modifier(LogHeaderLabelVisibility(showsLabels: true))
+                    playbackButtons.modifier(LogHeaderLabelVisibility(showsLabels: false))
+                }
+                searchSlot
+                ViewThatFits(in: .horizontal) {
+                    fileMenus.modifier(LogHeaderLabelVisibility(showsLabels: true))
+                    fileMenus.modifier(LogHeaderLabelVisibility(showsLabels: false))
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -213,10 +369,12 @@ struct ResourceLogsToolbar: View {
         .accessibilityLabel("Log controls")
     }
 
-    private func sourceHeaderRow(showsCaptions: Bool) -> some View {
-        HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
+    /// The pickers keep their identity at every width; the layout only shows
+    /// or hides the captions in front of them.
+    private var sourceHeaderRow: some View {
+        LogSourceRowLayout(spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing, captionSpacing: RuneSpacing.tight) {
             if let selectedPodID, !podOptions.isEmpty {
-                LogHeaderLabeledField(t(.pod), showsCaption: showsCaptions) {
+                LogHeaderLabeledField(t(.pod)) {
                     FavoritePodPicker(
                         title: t(.pod),
                         pods: podOptions,
@@ -234,7 +392,7 @@ struct ResourceLogsToolbar: View {
             }
 
             if showsContainerPicker, !containerOptions.isEmpty {
-                LogHeaderLabeledField(t(.container), showsCaption: showsCaptions) {
+                LogHeaderLabeledField(t(.container)) {
                     LogToolbarPopupPicker(
                         "Container",
                         selection: $selectedContainer,
@@ -250,7 +408,7 @@ struct ResourceLogsToolbar: View {
             }
 
             if let sourceSummaryTitle, !sourceSummaryValues.isEmpty {
-                LogHeaderLabeledField(sourceSummaryTitle, showsCaption: showsCaptions) {
+                LogHeaderLabeledField(sourceSummaryTitle) {
                     Text(sourceSummaryValues.joined(separator: ", "))
                         .runeText(.caption)
                         .lineLimit(1)
@@ -260,7 +418,7 @@ struct ResourceLogsToolbar: View {
             }
 
             // Range follows the source; alone, it starts the row.
-            LogHeaderLabeledField("Range", flexible: false, showsCaption: showsCaptions) {
+            LogHeaderLabeledField("Range", flexible: false) {
                 LogToolbarPopupPicker(
                     "Log range",
                     selection: $selectedLogPreset,
@@ -269,7 +427,9 @@ struct ResourceLogsToolbar: View {
                     }
                 )
                 .modifier(RuneToolbarControlSurface(fillsWidth: true))
-                .frame(width: showsCaptions ? ResourceLogsLayoutMetrics.rangePickerWidth : ResourceLogsLayoutMetrics.compactRangePickerWidth)
+                .frame(minWidth: ResourceLogsLayoutMetrics.compactRangePickerWidth,
+                       idealWidth: ResourceLogsLayoutMetrics.rangePickerWidth,
+                       maxWidth: ResourceLogsLayoutMetrics.rangePickerWidth)
                 .help("Range: how much log history to load")
             }
         }
@@ -282,31 +442,20 @@ struct ResourceLogsToolbar: View {
             || (sourceSummaryTitle != nil && !sourceSummaryValues.isEmpty)
     }
 
-    private func actionHeaderRow(showsLabels: Bool) -> some View {
+    private var playbackButtons: some View {
         HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
             followButton
             reloadButton
-            searchSlot
-                .layoutPriority(1)
-            saveMenu
-            moreMenu
         }
-        .modifier(LogHeaderLabelVisibility(showsLabels: showsLabels))
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, minHeight: RuneControlHeight.toolbar, alignment: .leading)
+        .fixedSize()
     }
 
-    /// The narrow form: the buttons on one line (icons), search below.
-    private var actionButtonsRow: some View {
+    private var fileMenus: some View {
         HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
-            followButton
-            reloadButton
-            Spacer(minLength: 0)
             saveMenu
             moreMenu
         }
-        .modifier(LogHeaderLabelVisibility(showsLabels: false))
-        .frame(maxWidth: .infinity, minHeight: RuneControlHeight.toolbar, alignment: .leading)
+        .fixedSize()
     }
 
     private var reloadButton: some View {
@@ -2063,11 +2212,8 @@ struct ResourceLogsSearchBar: View {
                 }
                 .runeTextInputCursor()
 
-                ViewThatFits(in: .horizontal) {
-                    searchAccessories(compact: false)
-                    searchAccessories(compact: true)
-                }
-                .layoutPriority(2)
+                searchAccessories
+                    .layoutPriority(2)
             }
         }
         .frame(
@@ -2097,9 +2243,8 @@ struct ResourceLogsSearchBar: View {
         .accessibilityIdentifier("resource-log-search-chrome")
     }
 
-    private func searchAccessories(compact: Bool) -> some View {
+    private var searchAccessories: some View {
         ResourceLogSearchAccessories(
-            compact: compact,
             hasQuery: !normalizedQuery.isEmpty,
             matchCase: matchCase,
             hasMatches: searchSummary?.hasMatches == true,
@@ -2117,8 +2262,11 @@ struct ResourceLogsSearchBar: View {
                 if let searchSummary { prepareJumpPopover(for: searchSummary) }
             }
         }
-        .frame(width: compact ? ResourceLogSearchAccessories.compactWidth : ResourceLogSearchAccessories.regularWidth,
-               height: RuneUILayoutMetrics.iconButtonSize)
+        .frame(minWidth: ResourceLogSearchAccessories.compactWidth,
+               idealWidth: ResourceLogSearchAccessories.regularWidth,
+               maxWidth: ResourceLogSearchAccessories.regularWidth,
+               minHeight: RuneUILayoutMetrics.iconButtonSize,
+               maxHeight: RuneUILayoutMetrics.iconButtonSize)
         .popover(isPresented: $isJumpPopoverPresented, arrowEdge: .bottom) {
             if jumpMatchCount > 0 { jumpToMatchPopover(matchCount: jumpMatchCount) }
         }

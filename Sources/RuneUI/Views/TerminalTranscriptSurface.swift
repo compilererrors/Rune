@@ -24,7 +24,7 @@ struct TerminalTranscriptSurface: View {
     @State private var searchWorkLane =
         RuneSingleFlightLatestPendingWorkLane<TerminalTranscriptRenderModel>()
     @State private var isLargeTextPinnedToBottom = true
-    @State private var lastReportedGridSize: (columns: Int, rows: Int)?
+    @State private var gridReporter = TerminalGridReporter()
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.runeThemePalette) private var runeThemePalette
 
@@ -255,11 +255,7 @@ struct TerminalTranscriptSurface: View {
 
     private func reportGridSize(_ size: CGSize) {
         let grid = TerminalTranscriptSurface.terminalGridSize(surfaceSize: size, fontSize: fontSize)
-        guard lastReportedGridSize?.columns != grid.columns || lastReportedGridSize?.rows != grid.rows else {
-            return
-        }
-        lastReportedGridSize = grid
-        onResizeGrid(grid.columns, grid.rows)
+        gridReporter.report(columns: grid.columns, rows: grid.rows, to: onResizeGrid)
     }
 
     static func largeTextSearchNavigationRevision(
@@ -989,5 +985,36 @@ private final class TerminalTranscriptInteractionTextView: NSTextView, RuneKeybo
 
     @objc private func clearSelection(_ sender: Any?) {
         setSelectedRange(NSRange(location: selectedRange().location, length: 0))
+    }
+}
+
+/// Tells the shell its grid size once a resize settles. While a pane is
+/// dragged the size changes every frame; resizing the emulator, re-rendering
+/// the transcript and messaging the pod on each of those made the drag lag.
+/// A reference, so a changing size never re-renders the surface itself.
+@MainActor
+final class TerminalGridReporter {
+    static let settleDelay: Duration = .milliseconds(150)
+
+    private var lastReported: (columns: Int, rows: Int)?
+    private var pending: Task<Void, Never>?
+
+    func report(columns: Int, rows: Int, to onResize: @escaping (Int, Int) -> Void) {
+        pending?.cancel()
+        pending = nil
+        guard lastReported?.columns != columns || lastReported?.rows != rows else { return }
+        // The first size is the one the shell starts with: report it now.
+        guard lastReported != nil else {
+            lastReported = (columns, rows)
+            onResize(columns, rows)
+            return
+        }
+        pending = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.settleDelay)
+            guard let self, !Task.isCancelled else { return }
+            pending = nil
+            lastReported = (columns, rows)
+            onResize(columns, rows)
+        }
     }
 }

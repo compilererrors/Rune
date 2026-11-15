@@ -11094,9 +11094,8 @@ public final class RuneAppViewModel: ObservableObject {
         guard let session = state.terminalSessions.first(where: { $0.id == id }) else { return }
         guard session.status == .connected else { return }
 
-        if var emulator = terminalScreenEmulatorBySessionID[id] {
-            emulator.resize(columns: columns, rows: rows)
-            terminalScreenEmulatorBySessionID[id] = emulator
+        if terminalScreenEmulatorBySessionID[id] != nil {
+            terminalScreenEmulatorBySessionID[id]?.resize(columns: columns, rows: rows)
             pendingTerminalOutputSessionIDs.insert(id)
             scheduleTerminalOutputFlush()
         }

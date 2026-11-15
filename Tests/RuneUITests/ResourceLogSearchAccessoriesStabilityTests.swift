@@ -30,9 +30,23 @@ final class ResourceLogSearchAccessoriesStabilityTests: XCTestCase {
         }
     }
 
+    /// A pane resize only shows the other form; no controls are created.
+    func testResizingSwitchesFormsWithinOneView() {
+        let view = ResourceLogSearchAccessories.Adaptive()
+        let regular = view.regular, compact = view.compact
+        for width in [ResourceLogSearchAccessories.regularWidth + 40, ResourceLogSearchAccessories.compactWidth, ResourceLogSearchAccessories.regularWidth] {
+            view.frame = NSRect(x: 0, y: 0, width: width, height: RuneUILayoutMetrics.iconButtonSize)
+            view.layoutSubtreeIfNeeded()
+            let fits = width >= ResourceLogSearchAccessories.regularWidth
+            XCTAssertEqual(view.showsRegular, fits, "width \(width)")
+            XCTAssertEqual(compact.isHidden, fits, "width \(width)")
+            XCTAssertEqual(view.frame.maxX, (fits ? regular : compact).frame.maxX + view.frame.minX, "trailing at width \(width)")
+        }
+        XCTAssertTrue(view.regular === regular && view.compact === compact)
+    }
+
     private func accessories(compact: Bool, status: String, statusColor: Color) -> ResourceLogSearchAccessories {
         ResourceLogSearchAccessories(
-            compact: compact,
             hasQuery: true,
             matchCase: false,
             hasMatches: true,

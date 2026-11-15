@@ -46,6 +46,7 @@ public struct RuneRootView: View {
     @State var terminalShellPodID = ""
     @State var terminalPortForwardPodID = ""
     @State var terminalLogTabState = TerminalPodLogTabState()
+    @State var isComposingTerminalShellTab = false
     @State var terminalInspectorTab: TerminalInspectorTab = .defaultTab
     @State var hasRestoredTerminalWorkspaceState = false
     @State var liveDebugScenarioStarted = false

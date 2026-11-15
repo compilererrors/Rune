@@ -49,7 +49,7 @@ final class ResourceLogSearchAccessoriesTests: XCTestCase {
     }
 
     private func value(compact: Bool = false, matches: Bool = true, matchCase: Bool = false, status: String = "1 of 100", action: @escaping (ResourceLogSearchAccessories.Action) -> Void) -> ResourceLogSearchAccessories {
-        ResourceLogSearchAccessories(compact: compact, hasQuery: true, matchCase: matchCase, hasMatches: matches,
+        ResourceLogSearchAccessories(hasQuery: true, matchCase: matchCase, hasMatches: matches,
                                      status: status, statusLabel: "Search match \(status)", statusColor: .secondary,
                                      matchCaseHelp: "Match case", action: action)
     }

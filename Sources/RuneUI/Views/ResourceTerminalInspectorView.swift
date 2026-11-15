@@ -100,10 +100,20 @@ struct ResourceTerminalWorkspaceView: View {
     var onOpenSelectedPodLogs: ((PodSummary) -> Void)? = nil
     /// Whether choosing a pod starts its shell at once (see TerminalShellConnectPolicy).
     var autoConnectsShell = false
+    /// The draft "new shell tab", owned by the root so Cmd-W can close it.
+    var composingNewShellTab: Binding<Bool>? = nil
     @State private var isPortForwardExpanded = false
-    @State private var isComposingNewShellTab = false
+    @State private var localComposingNewShellTab = false
     @AppStorage(RuneSettingsKeys.terminalShellHeight) private var storedShellHeight: Double = 0
     @State private var shellHeightAtDragStart: CGFloat?
+    @State private var availableHeight: CGFloat = 0
+
+    private var isComposingNewShellTab: Bool {
+        get { composingNewShellTab?.wrappedValue ?? localComposingNewShellTab }
+        nonmutating set {
+            if let composingNewShellTab { composingNewShellTab.wrappedValue = newValue } else { localComposingNewShellTab = newValue }
+        }
+    }
 
     private var scopedSessions: [PodTerminalSession] {
         TerminalShellPodSelectionPolicy.sessions(
@@ -147,83 +157,87 @@ struct ResourceTerminalWorkspaceView: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorSectionSpacing) {
-                    TerminalPortForwardPanelView(
-                        isExpanded: $isPortForwardExpanded,
-                        contextName: contextName,
-                        selectedPod: portForwardPod,
-                        availablePods: availablePods,
-                        portForwardSessions: portForwardSessions,
-                        canApplyMutations: canApplyMutations,
-                        selectedPortForwardPodID: $selectedPortForwardPodID,
-                        localPort: $portForwardLocalPort,
-                        remotePort: $portForwardRemotePort,
-                        address: $portForwardAddress,
-                        isFavoritePod: isFavoritePod,
-                        onToggleFavoritePod: onToggleFavoritePod,
-                        onStartPortForward: onStartPortForward,
-                        onStopPortForward: onStopPortForward,
-                        onOpenPortForwardInBrowser: onOpenPortForwardInBrowser,
-                        onRetryPortForward: onRetryPortForward,
-                        onClearPortForward: onClearPortForward,
-                        onClearInactivePortForwards: onClearInactivePortForwards
-                    )
+        // Only the height sizes the shell. Reading it through a geometry
+        // reader rebuilt the whole terminal on every width change, so
+        // dragging the inspector's edge re-rendered it each frame.
+        ScrollView {
+            VStack(alignment: .leading, spacing: RuneUILayoutMetrics.inspectorSectionSpacing) {
+                TerminalPortForwardPanelView(
+                    isExpanded: $isPortForwardExpanded,
+                    contextName: contextName,
+                    selectedPod: portForwardPod,
+                    availablePods: availablePods,
+                    portForwardSessions: portForwardSessions,
+                    canApplyMutations: canApplyMutations,
+                    selectedPortForwardPodID: $selectedPortForwardPodID,
+                    localPort: $portForwardLocalPort,
+                    remotePort: $portForwardRemotePort,
+                    address: $portForwardAddress,
+                    isFavoritePod: isFavoritePod,
+                    onToggleFavoritePod: onToggleFavoritePod,
+                    onStartPortForward: onStartPortForward,
+                    onStopPortForward: onStopPortForward,
+                    onOpenPortForwardInBrowser: onOpenPortForwardInBrowser,
+                    onRetryPortForward: onRetryPortForward,
+                    onClearPortForward: onClearPortForward,
+                    onClearInactivePortForwards: onClearInactivePortForwards
+                )
 
-                    TerminalShellPanelView(
-                        session: visibleShellSession,
-                        sessions: scopedSessions,
-                        activeSessionID: visibleActiveSessionID,
-                        isComposingNewSession: isShowingNewShellDraft,
-                        selectedPod: shellPod,
-                        availablePods: availablePods,
-                        canApplyMutations: canApplyMutations,
-                        transcriptHeight: shellHeight(availableHeight: proxy.size.height),
-                        selectedShellPodID: $selectedShellPodID,
-                        terminalInput: $terminalInput,
-                        onStartSession: startShellSession,
-                        onReconnectSession: reconnectShellSession,
-                        onSend: onSend,
-                        onSendControlSequence: onSendControlSequence,
-                        onResizeSession: onResizeSession,
-                        onDisconnect: onDisconnect,
-                        onSelectSession: selectShellSession,
-                        onCloseSession: closeShellSession,
-                        onMoveSession: onMoveSession,
-                        onComposeNewSession: composeNewShellTab,
-                        onClearTranscript: onClearTranscript,
-                        onSaveActiveTranscript: onSaveActiveTerminalTranscript,
-                        onSaveAllTranscripts: onSaveAllTerminalTranscripts,
-                        onSaveActiveTranscriptToExportFolder: onSaveActiveTerminalTranscriptToExportFolder,
-                        onSaveActiveTranscriptAndOpen: onSaveActiveTerminalTranscriptAndOpen,
-                        onSaveAllTranscriptsToExportFolder: onSaveAllTerminalTranscriptsToExportFolder,
-                        onSaveAllTranscriptsAndOpen: onSaveAllTerminalTranscriptsAndOpen,
-                        isFavoritePod: isFavoritePod,
-                        onToggleFavoritePod: onToggleFavoritePod,
-                        onOpenSelectedPodLogs: onOpenSelectedPodLogs,
-                        autoConnects: autoConnectsShell
-                    )
+                TerminalShellPanelView(
+                    session: visibleShellSession,
+                    sessions: scopedSessions,
+                    activeSessionID: visibleActiveSessionID,
+                    isComposingNewSession: isShowingNewShellDraft,
+                    selectedPod: shellPod,
+                    availablePods: availablePods,
+                    canApplyMutations: canApplyMutations,
+                    transcriptHeight: shellHeight(availableHeight: availableHeight),
+                    selectedShellPodID: $selectedShellPodID,
+                    terminalInput: $terminalInput,
+                    onStartSession: startShellSession,
+                    onReconnectSession: reconnectShellSession,
+                    onSend: onSend,
+                    onSendControlSequence: onSendControlSequence,
+                    onResizeSession: onResizeSession,
+                    onDisconnect: onDisconnect,
+                    onSelectSession: selectShellSession,
+                    onCloseSession: closeShellSession,
+                    onMoveSession: onMoveSession,
+                    onComposeNewSession: composeNewShellTab,
+                    onClearTranscript: onClearTranscript,
+                    onSaveActiveTranscript: onSaveActiveTerminalTranscript,
+                    onSaveAllTranscripts: onSaveAllTerminalTranscripts,
+                    onSaveActiveTranscriptToExportFolder: onSaveActiveTerminalTranscriptToExportFolder,
+                    onSaveActiveTranscriptAndOpen: onSaveActiveTerminalTranscriptAndOpen,
+                    onSaveAllTranscriptsToExportFolder: onSaveAllTerminalTranscriptsToExportFolder,
+                    onSaveAllTranscriptsAndOpen: onSaveAllTerminalTranscriptsAndOpen,
+                    isFavoritePod: isFavoritePod,
+                    onToggleFavoritePod: onToggleFavoritePod,
+                    onOpenSelectedPodLogs: onOpenSelectedPodLogs,
+                    autoConnects: autoConnectsShell
+                )
 
-                    RuneResizeGrip(
-                        help: "Drag to resize the terminal. Double-click to reset.",
-                        onDragChanged: { translation in
-                            let start = shellHeightAtDragStart ?? shellHeight(availableHeight: proxy.size.height)
-                            shellHeightAtDragStart = start
-                            storedShellHeight = Double(clampedShellHeight(start + translation, availableHeight: proxy.size.height))
-                        },
-                        onDragEnded: { shellHeightAtDragStart = nil },
-                        onReset: { storedShellHeight = 0 }
-                    )
-                    .padding(.top, -RuneUILayoutMetrics.inspectorSectionSpacing)
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                RuneResizeGrip(
+                    help: "Drag to resize the terminal. Double-click to reset.",
+                    onDragChanged: { translation in
+                        let start = shellHeightAtDragStart ?? shellHeight(availableHeight: availableHeight)
+                        shellHeightAtDragStart = start
+                        storedShellHeight = Double(clampedShellHeight(start + translation, availableHeight: availableHeight))
+                    },
+                    onDragEnded: { shellHeightAtDragStart = nil },
+                    onReset: { storedShellHeight = 0 }
+                )
+                .padding(.top, -RuneUILayoutMetrics.inspectorSectionSpacing)
             }
-            .id("terminal")
-            .scrollContentBackground(.hidden)
-            .background(Color.clear)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .id("terminal")
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+            if abs(height - availableHeight) >= 0.5 { availableHeight = height }
+        }
         .onChange(of: scopedActiveSessionID) { _, newValue in
             if newValue != nil {
                 isComposingNewShellTab = false

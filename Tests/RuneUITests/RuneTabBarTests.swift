@@ -49,10 +49,29 @@ final class RuneTabBarTests: XCTestCase {
         XCTAssertGreaterThan(enlarged.font?.pointSize ?? 0, standard.font?.pointSize ?? 0)
     }
 
+    /// Dragging a pane edge moves the bar across the width its tabs need.
+    /// The native control must survive that: recreating it on each crossing
+    /// made resizing hitch.
+    @MainActor
+    func testResizingAcrossTheFitWidthKeepsTheSameControl() throws {
+        let names = kinds
+        let host = NSHostingView(rootView: RuneTabBar("Resource type", selection: .constant(0), tabs: Array(names.indices)) { names[$0] }
+            .frame(maxWidth: .infinity, alignment: .leading))
+        host.frame = NSRect(x: 0, y: 0, width: 1_100, height: 50)
+        host.layoutSubtreeIfNeeded()
+        let control = try XCTUnwrap(firstSubview(of: NSSegmentedControl.self, in: host))
+        for width in [CGFloat(240), 1_100, 300, 900, 1_100] {
+            host.frame.size.width = width
+            host.layoutSubtreeIfNeeded()
+            let current = try XCTUnwrap(firstSubview(of: NSSegmentedControl.self, in: host), "at \(width)")
+            XCTAssertTrue(current === control, "the segmented control was recreated at \(width) points")
+        }
+    }
+
     func testOverflowScrollsInsteadOfMenuFallback() throws {
         let source = try String(contentsOfFile: sourcePath, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("ScrollView(.horizontal, showsIndicators: true)"))
+        XCTAssertTrue(source.contains("ScrollView(.horizontal, showsIndicators: false)"), "no scroller that could change the bar's height")
         XCTAssertTrue(source.contains("Scroll horizontally to reveal additional choices"))
         XCTAssertTrue(source.contains("control.scrollToVisible("), "the selected tab is kept in view")
         XCTAssertFalse(source.contains("ScrollViewReader"), "scrolling the bar must not scroll the inspector around it")

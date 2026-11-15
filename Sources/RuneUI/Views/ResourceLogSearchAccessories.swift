@@ -3,13 +3,14 @@ import SwiftUI
 
 /// Keep the native controls alive while queries alternate between pending and current results.
 /// The view always receives the latest action closure, including after a resource change.
+/// One view holds both forms and shows the one its width fits, so resizing
+/// a pane never creates or tears down controls.
 struct ResourceLogSearchAccessories: NSViewRepresentable {
     enum Action: Int { case clear, matchCase, previous, next, jump }
 
     static let regularWidth: CGFloat = 4 * RuneUILayoutMetrics.iconButtonSize + ResourceLogsLayoutMetrics.searchMatchStatusWidth + 12
     static let compactWidth: CGFloat = RuneUILayoutMetrics.iconButtonSize + ResourceLogsLayoutMetrics.compactSearchMatchStatusWidth
 
-    let compact: Bool
     let hasQuery: Bool
     let matchCase: Bool
     let hasMatches: Bool
@@ -20,16 +21,62 @@ struct ResourceLogSearchAccessories: NSViewRepresentable {
     let action: (Action) -> Void
     @Environment(\.runeThemePalette) private var palette
 
-    func makeNSView(context: Context) -> Controls {
-        Controls(compact: compact)
+    func makeNSView(context: Context) -> Adaptive {
+        Adaptive()
     }
 
-    func updateNSView(_ view: Controls, context: Context) {
+    func updateNSView(_ view: Adaptive, context: Context) {
         view.update(from: self)
     }
 
-    static func dismantleNSView(_ view: Controls, coordinator: ()) {
+    static func dismantleNSView(_ view: Adaptive, coordinator: ()) {
         view.invalidate()
+    }
+
+    /// The regular controls when they fit, else the compact ones, trailing.
+    final class Adaptive: NSView {
+        let regular = Controls(compact: false)
+        let compact = Controls(compact: true)
+
+        init() {
+            super.init(frame: .zero)
+            setAccessibilityElement(false)
+            addSubview(regular)
+            addSubview(compact)
+            compact.isHidden = true
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        var showsRegular: Bool { !regular.isHidden }
+
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: RuneUILayoutMetrics.iconButtonSize)
+        }
+
+        override func layout() {
+            super.layout()
+            let fitsRegular = bounds.width >= ResourceLogSearchAccessories.regularWidth - 0.5
+            if regular.isHidden == fitsRegular { regular.isHidden = !fitsRegular }
+            if compact.isHidden != fitsRegular { compact.isHidden = fitsRegular }
+            let height = RuneUILayoutMetrics.iconButtonSize
+            let regularFrame = NSRect(x: bounds.width - ResourceLogSearchAccessories.regularWidth, y: (bounds.height - height) / 2,
+                                      width: ResourceLogSearchAccessories.regularWidth, height: height)
+            let compactFrame = NSRect(x: bounds.width - ResourceLogSearchAccessories.compactWidth, y: (bounds.height - height) / 2,
+                                      width: ResourceLogSearchAccessories.compactWidth, height: height)
+            if regular.frame != regularFrame { regular.frame = regularFrame }
+            if compact.frame != compactFrame { compact.frame = compactFrame }
+        }
+
+        func update(from value: ResourceLogSearchAccessories) {
+            regular.update(from: value)
+            compact.update(from: value)
+        }
+
+        func invalidate() {
+            regular.invalidate()
+            compact.invalidate()
+        }
     }
 
     final class Controls: NSView {
