@@ -731,7 +731,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer {
             hostView.removeFromSuperview()
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
 
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -817,7 +817,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             )
             window.contentViewController = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
 
             viewModel.state.selectedSection = .workloads
             viewModel.state.selectedWorkloadKind = .pod
@@ -1266,7 +1266,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             )
             window.contentViewController = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
 
             try await assertStableTransition(
                 in: window,
@@ -1364,7 +1364,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             )
             window.contentViewController = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
 
             try await assertStableTransition(
                 in: window,
@@ -1488,7 +1488,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             )
             window.contentViewController = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
 
             let loadingSnapshot: RuneRootLayoutSnapshot
             do {
@@ -1606,7 +1606,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         hostView.autoresizingMask = [.width, .height]
         container.addSubview(hostView)
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         let loading = try await waitForAppKitSplitSnapshot(in: container)
 
@@ -1744,7 +1744,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             )
             window.contentViewController = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
 
             let baseline = try await stableSnapshot(
                 in: window,
@@ -1942,7 +1942,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             )
             window.contentViewController = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
 
             let eventsSnapshot = try await stableSnapshot(
                 in: window,
@@ -2376,7 +2376,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         window.contentViewController = host
         host.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         let snapshot = try await waitForSnapshot(in: window, snapshots: { snapshots }) {
             $0.section == section
@@ -2449,7 +2449,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         hostView.autoresizingMask = [.width, .height]
         container.addSubview(hostView)
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await Task.sleep(nanoseconds: settleNanoseconds)
         container.layoutSubtreeIfNeeded()
@@ -2562,7 +2562,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             hostView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         let timeout = Date().addingTimeInterval(2.0)
         while Date() < timeout {
@@ -2882,7 +2882,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             hostView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         let timeout = Date().addingTimeInterval(2.0)
         while Date() < timeout {
@@ -3051,7 +3051,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             hostView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         container.layoutSubtreeIfNeeded()
 
         guard settleNanoseconds > 0 else {

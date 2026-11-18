@@ -66,7 +66,7 @@ final class RuneResourceTableScaleBenchmarkTests: XCTestCase {
         host.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
         window.contentView = host
         window.orderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         let mountStarted = ContinuousClock.now
         pump(host) { (self.firstTableView(in: host)?.numberOfRows ?? 0) == allPods.count }

@@ -50,7 +50,7 @@ final class TerminalPromptRenderingTests: XCTestCase {
                         isEnabled: isEnabled,
                         appearance: appearance.value
                     )
-                    defer { window.orderOut(nil) }
+                    defer { RuneTestWindow.close(window) }
 
                     try await settle(window: window)
 

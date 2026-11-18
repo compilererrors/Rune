@@ -17,13 +17,13 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testTerminalSectionSettlesToIdle() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 2_000)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         try await assertIdle("the Terminal section with three tabs and logs")
     }
 
     func testOpeningANewTabWithPlusSettlesToIdle() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 2_000)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let sessionsBefore = harness.viewModel.state.terminalSessions.count
         let started = ContinuousClock.now
         try clickShellPlus(in: harness.window)
@@ -37,7 +37,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// shell for the next pod), switching tabs in between, with logs open.
     func testPressingPlusRepeatedlyNeverLoops() async throws {
         let harness = try await makeHarness(sessionCount: 1, transcriptLines: 200, podCount: 8)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         for round in 0..<6 {
             try clickShellPlus(in: harness.window)
             try await settle(seconds: 0.6)
@@ -49,7 +49,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testStartingAndSwitchingTabsSettlesToIdle() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 2_000)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let viewModel = harness.viewModel
         let pods = viewModel.state.pods
         viewModel.startTerminalSession(for: pods[2], container: nil)
@@ -86,7 +86,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
                 isBusy = (Self.processCPUSeconds() - cpuStart) / 0.4 > 0.3
             }
             if isBusy { busyWidths.append(detailWidth) }
-            harness.window.orderOut(nil)
+            RuneTestWindow.close(harness.window)
         }
         XCTAssertEqual(busyWidths, [], "the log header keeps re-laying out at these inspector widths")
     }
@@ -97,7 +97,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// emulator, the throttled flush and the transcript view.
     func testTerminalOutputEndToEndKPI() async throws {
         let harness = try await makeHarness(sessionCount: 1, transcriptLines: 50)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let transcript = try XCTUnwrap(shellTranscriptTextView(in: harness.window))
         var samples: [Double] = []
         for round in 0..<3 {
@@ -125,7 +125,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// and does not keep waking up.
     func testIdleCPUAndWakeupsKPI() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 2_000)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         try await settle(seconds: 1.0)
         var shares: [Double] = []
         var wakeupsPerSecond: [Double] = []
@@ -149,7 +149,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// Switching between ten shell tabs with long transcripts.
     func testShellTabSwitchKPI() async throws {
         let harness = try await makeHarness(sessionCount: 10, transcriptLines: 2_000)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         for index in 0..<10 {
             harness.viewModel.enqueueTerminalSessionOutput(id: "shell-\(index)", text: "tab-marker-\(index)\r\n$ ")
         }
@@ -180,7 +180,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// Resizing the whole window with the Terminal section and logs shown.
     func testWindowLiveResizeKPI() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 2_000, windowSize: NSSize(width: 1500, height: 900))
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         var samples: [Double] = []
         for step in 0..<40 {
             let width = 1500 - CGFloat(step < 20 ? step : 40 - step) * 12
@@ -201,7 +201,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     func testMemoryWithManyTabsAndLongLogsKPI() async throws {
         let before = Self.physicalFootprintMegabytes()
         let harness = try await makeHarness(sessionCount: 10, transcriptLines: 5_000)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         harness.viewModel.state.setPodLogs((0..<20_000).map { "2026-01-01T10:00:00Z level=info message=\"request \($0)\"" }.joined(separator: "\n"))
         for index in 0..<10 { harness.viewModel.selectTerminalSession(id: "shell-\(index)"); try await settle(seconds: 0.1) }
         try await settle(seconds: 1.0)
@@ -238,7 +238,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testCommandWClosesTheActiveShellTabWhereTheShellHasFocus() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 20)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let transcript = try XCTUnwrap(shellTranscriptTextView(in: harness.window))
         harness.window.makeFirstResponder(transcript)
         harness.viewModel.selectTerminalSession(id: "shell-1")
@@ -259,7 +259,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testCommandWInTheLogsLeavesTheShellTabsAlone() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 20)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         // Focus the shell first, then click into the inspector, as a user would.
         harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
         let splitView = try XCTUnwrap(findSplitView(in: harness.window.contentView!))
@@ -276,7 +276,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testCommandKClearsTheShellOnlyWhenTheShellHasFocus() async throws {
         let harness = try await makeHarness(sessionCount: 2, transcriptLines: 20)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
         try press("k", 40, .command, in: harness.window)
         try await settle(seconds: 0.3)
@@ -296,7 +296,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         defer { if let previous { defaults.set(previous, forKey: RuneSettingsKeys.terminalFontSize) } else { defaults.removeObject(forKey: RuneSettingsKeys.terminalFontSize) } }
         defaults.set(12.0, forKey: RuneSettingsKeys.terminalFontSize)
         let harness = try await makeHarness(sessionCount: 1, transcriptLines: 20)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
 
         try press("=", 24, .command, in: harness.window)
@@ -310,7 +310,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testControlTabCyclesTheShellTabs() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 20)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
         harness.viewModel.selectTerminalSession(id: "shell-2")
         try press("\t", 48, .control, in: harness.window)
@@ -321,7 +321,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testCommandShiftTReopensTheShellTabJustClosed() async throws {
         let harness = try await makeHarness(sessionCount: 3, transcriptLines: 20)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
         harness.viewModel.selectTerminalSession(id: "shell-1")
         let closedPod = try XCTUnwrap(harness.viewModel.state.terminalSession?.podName)
@@ -337,7 +337,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testCommandTInTheLogsOpensALogTabNotAShell() async throws {
         let harness = try await makeHarness(sessionCount: 2, transcriptLines: 20)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let splitView = try XCTUnwrap(findSplitView(in: harness.window.contentView!))
         let inspector = splitView.arrangedSubviews[2].convert(splitView.arrangedSubviews[2].bounds, to: nil)
         try appClick(at: NSPoint(x: inspector.midX, y: inspector.minY + 40), in: harness.window)
@@ -393,7 +393,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// per step; the terminal learns its new size once the drag settles.
     func testDraggingTheInspectorDividerOnlyLaysOut() async throws {
         let harness = try await makeHarness(sessionCount: 2, transcriptLines: 400, windowSize: NSSize(width: 1500, height: 900))
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         harness.viewModel.enqueueTerminalSessionOutput(id: "shell-0", text: (0..<200).map { "line \($0)\r\n" }.joined() + "$ ")
         try await settle(seconds: 0.6)
 
@@ -488,7 +488,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         }
         print("SCROLLER STYLE", NSScroller.preferredScrollerStyle.rawValue)
         let harness = try await makeHarness(sessionCount: 2, transcriptLines: 300, podCount: 8, windowSize: NSSize(width: 1728, height: 1080))
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         for round in 0..<5 {
             try clickShellPlus(in: harness.window)
             try await settle(seconds: 0.6)
@@ -524,7 +524,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
                     try await settle(seconds: 0.35)
                     try await assertIdle("\(scrollBars) scroll bars, inspector \(Int(detailWidth)), round \(round + 1)", window: 0.5)
                 }
-                harness.window.orderOut(nil)
+                RuneTestWindow.close(harness.window)
             }
         }
     }
@@ -535,7 +535,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// the whole transcript on every chunk.
     func testStreamedOutputIntoALongTranscriptStaysFast() async throws {
         let harness = try await makeHarness(sessionCount: 1, transcriptLines: 0)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let viewModel = harness.viewModel
         let id = try XCTUnwrap(viewModel.state.terminalSessions.first?.id)
         let long = (0..<60_000).map { "line \($0) of a long build log output for the session\r\n" }.joined()
@@ -562,7 +562,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     func testOutputDoesNotRewriteTheSavedWorkspace() async throws {
         let store = CountingTerminalWorkspaceStore()
         let harness = try await makeHarness(sessionCount: 2, transcriptLines: 100, store: store, persists: true)
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let viewModel = harness.viewModel
         let id = try XCTUnwrap(viewModel.state.terminalSessions.first?.id)
         try await settle(seconds: 0.5)

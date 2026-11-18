@@ -37,7 +37,7 @@ final class TerminalTranscriptUpdateCostTests: XCTestCase {
         let transcript = (0..<4_000).map { "line \($0) of build output with some width to it\n" }.joined() + "$ "
         let model = Model(text: transcript)
         let window = try await mount(Host(model: model))
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         let storage = try XCTUnwrap(transcriptTextView(in: window)?.textStorage)
 
         var edits = 0
@@ -60,7 +60,7 @@ final class TerminalTranscriptUpdateCostTests: XCTestCase {
         let transcript = (0..<20_000).map { "line \($0)\n" }.joined() + "$ "
         let model = Model(text: transcript)
         let window = try await mount(Host(model: model))
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         let textView = try XCTUnwrap(transcriptTextView(in: window))
         let storage = try XCTUnwrap(textView.textStorage)
 

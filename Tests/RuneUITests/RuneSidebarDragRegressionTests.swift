@@ -61,7 +61,7 @@ final class RuneSidebarDragRegressionTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer {
             hostView.removeFromSuperview()
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
         try await Task.sleep(nanoseconds: 2_000_000_000)
         container.layoutSubtreeIfNeeded()
@@ -154,7 +154,7 @@ final class RuneSidebarDragRegressionTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer {
             hostView.removeFromSuperview()
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
         try await Task.sleep(nanoseconds: 2_000_000_000)
         container.layoutSubtreeIfNeeded()

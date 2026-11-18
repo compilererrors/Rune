@@ -54,7 +54,7 @@ final class RuneToolbarControlTests: XCTestCase {
                 window.isReleasedWhenClosed = false
                 window.contentView = host
                 window.makeKeyAndOrderFront(nil)
-                defer { window.orderOut(nil) }
+                defer { RuneTestWindow.close(window) }
                 for _ in 0..<4 {
                     host.layoutSubtreeIfNeeded()
                     RunLoop.main.run(until: Date().addingTimeInterval(0.03))

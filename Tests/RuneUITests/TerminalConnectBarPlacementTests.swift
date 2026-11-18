@@ -25,7 +25,7 @@ final class TerminalConnectBarPlacementTests: XCTestCase {
         ]
         for (name, status, transcript) in cases {
             let window = try await mount(session(status: status, transcript: transcript))
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
             let scrollView = try XCTUnwrap(transcriptScrollView(in: window), name)
             let frame = scrollView.convert(scrollView.bounds, to: nil)
             frames[name] = frame

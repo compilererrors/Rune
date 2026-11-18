@@ -3613,7 +3613,7 @@ final class RuneAppStateTests: XCTestCase {
         )
         window.contentViewController = controller
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         controller.view.layoutSubtreeIfNeeded()
 
         let operatorWorkspace = SavedWorkspaceSnapshot(

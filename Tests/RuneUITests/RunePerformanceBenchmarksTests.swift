@@ -2102,7 +2102,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
         window.contentViewController = host
         window.contentView?.layoutSubtreeIfNeeded()
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         let scrollView = try XCTUnwrap(findManifestTextScrollView(in: host.view))
         let textView = try XCTUnwrap(scrollView.documentView as? NSTextView)

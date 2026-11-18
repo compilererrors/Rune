@@ -32,7 +32,7 @@ final class YAMLFindCursorRuntimeTests: XCTestCase {
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
         defer {
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
             window.contentViewController = nil
         }
 
@@ -108,7 +108,7 @@ final class YAMLFindCursorRuntimeTests: XCTestCase {
             if let originalPointerLocation {
                 CGWarpMouseCursorPosition(originalPointerLocation)
             }
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
             window.contentViewController = nil
         }
 
@@ -177,7 +177,7 @@ final class YAMLFindCursorRuntimeTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer {
             NSCursor.arrow.set()
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
 
         try await settle(window: window)

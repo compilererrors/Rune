@@ -213,7 +213,7 @@ final class RuneScrollSmoothnessBenchmarkTests: XCTestCase {
         host.frame = NSRect(x: 0, y: 0, width: width, height: height)
         window.contentView = host
         window.orderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         settle(window, seconds: findScrollView == nil ? 0.6 : 1.5)
 
         let scrollView = try XCTUnwrap((findScrollView ?? { self.firstScrollView(in: $0) })(host))

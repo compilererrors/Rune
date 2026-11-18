@@ -59,7 +59,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             scenario: .compactMatrix,
             size: CGSize(width: 320, height: 2_200)
         )
-        defer { hosted.window.orderOut(nil) }
+        defer { RuneTestWindow.close(hosted.window) }
 
         let snapshot = hosted.snapshot
         XCTAssertTrue(snapshot.containsRequiredRegions(for: .compactMatrix))
@@ -125,7 +125,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             scenario: .minimumWindow,
             size: CGSize(width: RuneWindowLayoutDefaults.minimumWidth, height: RuneWindowLayoutDefaults.minimumHeight)
         )
-        defer { hosted.window.orderOut(nil) }
+        defer { RuneTestWindow.close(hosted.window) }
 
         let snapshot = hosted.snapshot
         XCTAssertTrue(snapshot.containsRequiredRegions(for: .minimumWindow))
@@ -164,7 +164,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             dynamicTypeSize: .large,
             colorScheme: .light
         )
-        defer { regular.window.orderOut(nil) }
+        defer { RuneTestWindow.close(regular.window) }
 
         let enlarged = try hostGallery(
             scenario: .compactMatrix,
@@ -172,7 +172,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             dynamicTypeSize: .accessibility3,
             colorScheme: .dark
         )
-        defer { enlarged.window.orderOut(nil) }
+        defer { RuneTestWindow.close(enlarged.window) }
 
         XCTAssertTrue(regular.snapshot.containsRequiredRegions(for: .compactMatrix))
         XCTAssertTrue(enlarged.snapshot.containsRequiredRegions(for: .compactMatrix))
@@ -210,7 +210,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             scenario: .workflowSurfaces,
             size: CGSize(width: 480, height: 1_600)
         )
-        defer { hosted.window.orderOut(nil) }
+        defer { RuneTestWindow.close(hosted.window) }
 
         let snapshot = hosted.snapshot
         XCTAssertTrue(snapshot.containsRequiredRegions(for: .workflowSurfaces))
@@ -269,7 +269,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             dynamicTypeSize: .accessibility2,
             colorScheme: .dark
         )
-        defer { hosted.window.orderOut(nil) }
+        defer { RuneTestWindow.close(hosted.window) }
 
         XCTAssertTrue(hosted.snapshot.containsRequiredRegions(for: .authenticationSurfaces))
         XCTAssertGreaterThanOrEqual(
@@ -344,7 +344,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
                 colorScheme: configuration.colorScheme,
                 theme: configuration.theme
             )
-            defer { hosted.window.orderOut(nil) }
+            defer { RuneTestWindow.close(hosted.window) }
 
             XCTAssertTrue(
                 hosted.snapshot.containsRequiredRegions(for: configuration.scenario),
@@ -417,7 +417,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             scenario: .compactMatrix,
             size: CGSize(width: 320, height: 2_200)
         )
-        defer { hosted.window.orderOut(nil) }
+        defer { RuneTestWindow.close(hosted.window) }
 
         let gallerySource = try String(contentsOfFile: gallerySourcePath, encoding: .utf8)
         let iconSource = try String(contentsOfFile: iconSourcePath, encoding: .utf8)
@@ -576,7 +576,7 @@ final class RuneUIComponentGalleryTests: XCTestCase {
             }
         }
 
-        window.orderOut(nil)
+        RuneTestWindow.close(window)
         XCTFail("Timed out waiting for \(scenario.rawValue) component-gallery layout probes; snapshots=\(snapshots.count)")
         throw CancellationError()
     }

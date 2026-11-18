@@ -114,7 +114,7 @@ final class RuneDisclosureSectionTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         settle(host)
 
         try click(NSPoint(x: 3, y: 16), in: host, window: window)
@@ -152,7 +152,7 @@ final class RuneDisclosureSectionTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         settle(host)
 

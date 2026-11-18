@@ -209,7 +209,7 @@ final class RuneInspectorKeyboardScrollingTests: XCTestCase {
         }
 
         func close() {
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
     }
 }

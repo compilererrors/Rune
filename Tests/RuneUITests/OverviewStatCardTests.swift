@@ -97,7 +97,7 @@ final class OverviewStatCardTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.02))

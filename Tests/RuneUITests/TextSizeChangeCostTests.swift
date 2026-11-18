@@ -44,7 +44,7 @@ final class TextSizeChangeCostTests: XCTestCase {
 
         let logs = (0..<20_000).map { "2026-01-01T10:00:00Z \u{1B}[32mINFO\u{1B}[0m component=api request \($0) handled in \($0 % 97) ms" }.joined(separator: "\n")
         let window = try await mount(LogHost(logs: logs))
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         let textView = try XCTUnwrap(firstTextView(in: window))
 
         var steps: [Double] = []
@@ -92,7 +92,7 @@ final class TextSizeChangeCostTests: XCTestCase {
     private func measureTranscriptSteps(text: String, label: String, budget: Double, shownSize: @escaping (NSWindow) -> CGFloat?) async throws {
         let model = Model()
         let window = try await mount(TranscriptHost(model: model, text: text))
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         XCTAssertNotNil(shownSize(window), "\(label) is on screen")
 
         var steps: [Double] = []

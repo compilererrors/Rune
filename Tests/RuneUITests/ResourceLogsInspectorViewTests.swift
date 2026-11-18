@@ -1853,7 +1853,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
 
     @MainActor
     private func closeTestWindow(_ window: NSWindow) {
-        window.orderOut(nil)
+        RuneTestWindow.close(window)
         window.contentViewController = nil
         window.contentView = nil
     }

@@ -14,7 +14,7 @@ final class RuneNoticeBannerTests: XCTestCase {
             let host = makeHost(notice: notice, width: width, fontSize: fontSize, onOpenFolder: { _ in }, onOpenFile: { _ in })
             let plainHost = makeHost(notice: notice, width: width, fontSize: fontSize)
             let window = show(host)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
 
             XCTAssertEqual(host.fittingSize.width, width, accuracy: 0.5)
             XCTAssertGreaterThanOrEqual(host.fittingSize.height, plainHost.fittingSize.height + RuneUILayoutMetrics.iconButtonSize)
@@ -63,7 +63,7 @@ final class RuneNoticeBannerTests: XCTestCase {
             onDismiss: { dismissCount += 1 }
         )
         let window = show(host)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         let nodes = accessibilityNodes(in: host)
         guard nodes.contains(where: { $0.role == .button }) else {
             throw XCTSkip("SwiftUI accessibility button proxies are unavailable in this host process.")

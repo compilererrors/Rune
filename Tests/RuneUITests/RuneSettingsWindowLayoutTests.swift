@@ -19,7 +19,7 @@ final class RuneSettingsWindowLayoutTests: XCTestCase {
         window.contentViewController = host
         window.setContentSize(NSSize(width: 820, height: 640))
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         try await Task.sleep(nanoseconds: 1_200_000_000)
 
         let tabs = try XCTUnwrap(firstSubview(of: NSSegmentedControl.self, in: try XCTUnwrap(window.contentView)), "visible pane tab bar")

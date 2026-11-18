@@ -120,7 +120,7 @@ final class RuneSpacePagingTests: XCTestCase {
         var visibleHeight: CGFloat { scrollView.contentView.bounds.height }
 
         func close() {
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
 
         private static func firstTextView(in view: NSView) -> NSTextView? {

@@ -138,7 +138,7 @@ final class RuneThemeContrastTests: XCTestCase {
             window.isReleasedWhenClosed = false
             window.contentView = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
             for _ in 0..<3 {
                 host.layoutSubtreeIfNeeded()
                 RunLoop.main.run(until: Date().addingTimeInterval(0.02))
@@ -199,7 +199,7 @@ final class RuneThemeContrastTests: XCTestCase {
             window.isReleasedWhenClosed = false
             window.contentView = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
             for _ in 0..<3 {
                 host.layoutSubtreeIfNeeded()
                 RunLoop.main.run(until: Date().addingTimeInterval(0.03))
@@ -250,7 +250,7 @@ final class RuneThemeContrastTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         for appearance in [RuneAppearanceTheme.paper, .daylight] {
             let theme = appearance.resolvedTheme
             host.rootView = ContrastPreview().runeAppearanceTheme(theme)

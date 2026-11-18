@@ -40,7 +40,7 @@ final class LargeLogSearchVisibilityRuntimeTests: XCTestCase {
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
         defer {
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
             window.contentViewController = nil
             window.contentView = nil
         }

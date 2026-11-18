@@ -18,7 +18,7 @@ final class InspectorDocumentGridTests: XCTestCase {
                 contentStyle: .describe
             )
         )
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -44,7 +44,7 @@ final class InspectorDocumentGridTests: XCTestCase {
                 fontSize: 12
             )
         )
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 

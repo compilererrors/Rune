@@ -120,7 +120,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             try await settle(window: window)
 
             guard let terminalScrollView = findTerminalTranscriptScrollView(in: host.view) else {
-                window.orderOut(nil)
+                RuneTestWindow.close(window)
                 return XCTFail("Expected terminal transcript scroll view at \(size.width)x\(size.height)")
             }
 
@@ -130,7 +130,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
             XCTAssertLessThanOrEqual(frame.maxX, host.view.bounds.maxX + 1)
             XCTAssertTrue(terminalScrollView.hasHorizontalScroller)
 
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
     }
 
@@ -277,7 +277,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
         try await settle(window: window)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         guard let promptTextView = allTextViews(in: host.view).first(where: \.isEditable) else {
             XCTFail("Expected editable terminal prompt text view.")
@@ -370,7 +370,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
         try await settle(window: window)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         guard let promptTextView = allTextViews(in: host.view).first(where: \.isEditable) else {
             XCTFail("Expected editable terminal prompt text view.")
@@ -457,7 +457,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
         try await settle(window: window)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         guard let transcript = allTextViews(in: host.view).first(where: { !$0.isEditable && $0.isSelectable }) else {
             XCTFail("Expected interactive terminal transcript text view.")
@@ -588,7 +588,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer {
             window.contentViewController = nil
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
 
         try await settle(window: window)
@@ -740,7 +740,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
         try await settle(window: window)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         XCTAssertFalse(
             allPopUpButtons(in: host.view).contains { popup in
@@ -2810,7 +2810,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -4077,7 +4077,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer {
             window.contentViewController = nil
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
         }
         try await settle(window: window)
         XCTAssertEqual(state.selectedSection, .workloads)
@@ -4193,8 +4193,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         defer {
             first.2.contentViewController = nil
             second.2.contentViewController = nil
-            first.2.orderOut(nil)
-            second.2.orderOut(nil)
+            RuneTestWindow.close(first.2)
+            RuneTestWindow.close(second.2)
             _ = first.1
             _ = second.1
         }

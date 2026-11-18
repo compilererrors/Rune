@@ -14,7 +14,7 @@ final class RuneTerminalTypingSafeguardTests: XCTestCase {
 
     func testEveryPrintableKeyReachesTheShellInputThroughTheAppKeyPath() async throws {
         let harness = try await makeHarness()
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let prompt = harness.prompt
 
         for character in Self.printable {
@@ -31,7 +31,7 @@ final class RuneTerminalTypingSafeguardTests: XCTestCase {
     /// round-16 terminal surface was not, which is why "l" could not be typed).
     func testTheShellInputSuspendsRuneShortcuts() async throws {
         let harness = try await makeHarness()
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let responder = harness.window.firstResponder as? NSTextView
         XCTAssertTrue(responder === harness.prompt)
         let context = RuneRootKeyboardNavigationContext(
@@ -52,7 +52,7 @@ final class RuneTerminalTypingSafeguardTests: XCTestCase {
 
     func testKeystrokesStayFastKPI() async throws {
         let harness = try await makeHarness()
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         harness.prompt.string = ""
 
         let text = String(repeating: "kubectl get pods -L app ", count: 8)
@@ -85,7 +85,7 @@ final class RuneTerminalTypingSafeguardTests: XCTestCase {
     /// switches and closes.
     func testOpeningSwitchingAndClosingTabsStaysResponsiveAndTypable() async throws {
         let harness = try await makeHarness()
-        defer { harness.window.orderOut(nil) }
+        defer { RuneTestWindow.close(harness.window) }
         let viewModel = harness.viewModel
         let pod = try XCTUnwrap(viewModel.state.selectedPod)
         let started = ContinuousClock.now

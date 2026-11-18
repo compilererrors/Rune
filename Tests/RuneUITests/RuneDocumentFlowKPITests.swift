@@ -41,7 +41,7 @@ final class RuneDocumentFlowKPITests: XCTestCase {
         }
         let model = TextModel(lines(0..<10_000))
         let window = try await mount(LogHost(model: model))
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         let textView = try XCTUnwrap(firstTextView(in: window) { !$0.isEditable })
 
         var samples: [Double] = []
@@ -69,14 +69,14 @@ final class RuneDocumentFlowKPITests: XCTestCase {
         let added = "\n10:02 \u{1B}[32mINFO\u{1B}[0m third\n────────────────\n10:03 plain fourth"
         let model = TextModel(first)
         let window = try await mount(LogHost(model: model))
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         let textView = try XCTUnwrap(firstTextView(in: window) { !$0.isEditable })
         model.text += added
         try await waitUntil { textView.string.hasSuffix("plain fourth") }
 
         let reference = TextModel(first + added)
         let referenceWindow = try await mount(LogHost(model: reference))
-        defer { referenceWindow.orderOut(nil) }
+        defer { RuneTestWindow.close(referenceWindow) }
         let referenceView = try XCTUnwrap(firstTextView(in: referenceWindow) { !$0.isEditable })
         XCTAssertEqual(textView.string, referenceView.string)
         XCTAssertTrue(try XCTUnwrap(textView.textStorage).isEqual(to: try XCTUnwrap(referenceView.textStorage)), "appended lines are styled as a full reformat styles them")
@@ -92,7 +92,7 @@ final class RuneDocumentFlowKPITests: XCTestCase {
         }.joined(separator: "\n")
         let model = TextModel("apiVersion: v1\nkind: Pod\nmetadata:\n  name: sample\nspec:\n  containers:\n" + manifest)
         let window = try await mount(YAMLHost(model: model))
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
         let textView = try XCTUnwrap(firstTextView(in: window) { $0.isEditable })
         window.makeFirstResponder(textView)
         textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))

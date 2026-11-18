@@ -46,7 +46,7 @@ final class LogTextViewUpdateCostTests: XCTestCase {
                 try await Task.sleep(nanoseconds: 5_000_000)
             }
             NotificationCenter.default.removeObserver(observer)
-            window.orderOut(nil)
+            RuneTestWindow.close(window)
             XCTAssertEqual(edits, 0, "\(theme): renders without new logs re-formatted them \(edits) times")
         }
     }

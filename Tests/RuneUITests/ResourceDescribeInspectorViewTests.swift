@@ -25,7 +25,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
             Image: example/app:1
         """
         let (host, window) = makeDescribeHost(describeText: describeText)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -71,7 +71,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -128,7 +128,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -219,7 +219,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -267,7 +267,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -324,7 +324,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
             )
             window.contentViewController = host
             window.makeKeyAndOrderFront(nil)
-            defer { window.orderOut(nil) }
+            defer { RuneTestWindow.close(window) }
 
             try await settle(window: window)
             let textView = try XCTUnwrap(findTextScrollView(in: host.view)?.documentView as? NSTextView)
@@ -620,7 +620,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -672,7 +672,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -745,7 +745,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -819,7 +819,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
         let textView = try XCTUnwrap(
@@ -868,7 +868,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -1062,7 +1062,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -1165,7 +1165,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -1232,7 +1232,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -1263,7 +1263,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
     func testDescribePaneAllowsScrollingLongDescribeOutput() async throws {
         let describeText = makeLongDescribeText()
         let (host, window) = makeDescribeHost(describeText: describeText)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -1294,7 +1294,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
 
     func testDescribeTextSurfaceStaysInsideInspectorBounds() async throws {
         let (host, window) = makeDescribeHost(describeText: makeLongDescribeText())
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
 
@@ -1335,7 +1335,7 @@ final class ResourceDescribeInspectorViewTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settle(window: window)
         try await settle(window: window)

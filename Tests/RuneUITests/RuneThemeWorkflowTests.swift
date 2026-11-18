@@ -245,7 +245,7 @@ final class RuneThemeWorkflowTests: XCTestCase {
         )
         window.contentViewController = host
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        defer { RuneTestWindow.close(window) }
 
         try await settleThemeWindow()
 
