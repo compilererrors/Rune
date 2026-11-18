@@ -93,6 +93,20 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 	<false/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<!-- A terminal or log tab while it is dragged within its tab bar; never leaves the app. -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>app.rune.terminal-tab</string>
+			<key>UTTypeDescription</key>
+			<string>Rune terminal tab</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Kubernetes API servers are user-configured dynamic hosts, often with private CAs.

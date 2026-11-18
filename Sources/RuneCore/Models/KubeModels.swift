@@ -437,6 +437,14 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         return names.first
     }
 
+    /// The container whose logs show first, picked the same way, so a pod's
+    /// shell and logs open on the same container.
+    public var defaultLogContainerName: String? {
+        let names = logContainerNames
+        if let defaultContainerName, names.contains(defaultContainerName) { return defaultContainerName }
+        return names.first
+    }
+
     public var cpuDisplay: String { cpuUsage ?? "—" }
     public var memoryDisplay: String { memoryUsage ?? "—" }
     public var containerNames: [String] {

@@ -690,7 +690,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
         XCTAssertTrue(terminalFocusBlock.contains("selectedLogContainer = reloadLogs ? defaultLogContainerName(for: pod) : \"\""))
         XCTAssertTrue(viewModelSource.contains("private func defaultLogContainerName(for pod: PodSummary) -> String"))
-        XCTAssertTrue(viewModelSource.contains("pod.logContainerNames.first ?? \"\""))
+        XCTAssertTrue(viewModelSource.contains("pod.defaultLogContainerName ?? \"\""), "the pod's default container, else its first")
     }
 
     func testPodLogsInspectorPodPickerShowsAllNamespacePods() async throws {

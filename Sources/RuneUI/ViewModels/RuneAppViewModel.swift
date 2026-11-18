@@ -1314,7 +1314,14 @@ public final class RuneAppViewModel: ObservableObject {
     /// Lines sent to each shell, oldest first, waiting for the shell to echo
     /// them. Only an echoed line is a command: a password typed at a prompt
     /// that hides its input never appears, and is never recorded.
-    private var unechoedTerminalLinesBySessionID: [String: [String]] = [:]
+    private var unechoedTerminalLinesBySessionID: [String: [UnechoedTerminalLine]] = [:]
+
+    private struct UnechoedTerminalLine {
+        let text: String
+        let sentAt: ContinuousClock.Instant
+        /// Line breaks seen in the output since it was sent.
+        var lineBreaksSeen = 0
+    }
     private let terminalCommandHistoryDefaults: UserDefaults
     @Published public var portForwardLocalPortInput: String = "8080"
     @Published public var portForwardRemotePortInput: String = "8080"
@@ -7735,7 +7742,7 @@ public final class RuneAppViewModel: ObservableObject {
     }
 
     private func defaultLogContainerName(for pod: PodSummary) -> String {
-        pod.logContainerNames.first ?? ""
+        pod.defaultLogContainerName ?? ""
     }
 
     private func selectPod(_ pod: PodSummary?, trackHistory: Bool) {
@@ -11363,30 +11370,50 @@ public final class RuneAppViewModel: ObservableObject {
         guard terminalCommandHistoryLimit > 0,
               !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         var lines = unechoedTerminalLinesBySessionID[sessionID] ?? []
-        lines.append(line)
+        lines.append(UnechoedTerminalLine(text: line, sentAt: .now))
         if lines.count > Self.unechoedTerminalLineLimit { lines.removeFirst() }
         unechoedTerminalLinesBySessionID[sessionID] = lines
     }
 
     private static let unechoedTerminalLineLimit = 16
+    /// How long, and over how many lines of output, a sent line may wait for
+    /// its echo. Output already on its way when the line was sent comes
+    /// first, so the echo is rarely on the very next line break.
+    private static let terminalEchoWait: Duration = .seconds(2)
+    private static let terminalEchoLineBreakLimit = 64
 
     /// Feeds output a line at a time while sent lines wait for their echo.
     /// A shell shows what it was sent before it moves to the next line, so
-    /// at each line break the oldest waiting line is a command if it is the
-    /// text before the cursor, and is dropped if not (hidden input).
+    /// at a line break a waiting line is a command if it is the text before
+    /// the cursor. Lines sent before the one that matched were passed
+    /// without an echo (hidden input) and are dropped, as is a line that
+    /// has waited too long.
     private func feedTerminalOutputConfirmingEchoedLines(_ text: String, sessionID id: String) {
         var rest = Substring(text)
         while var waiting = unechoedTerminalLinesBySessionID[id], !waiting.isEmpty,
               let lineBreak = rest.firstIndex(where: { $0 == "\n" || $0 == "\r\n" }) {
             terminalScreenEmulatorBySessionID[id]?.feed(String(rest[..<lineBreak]))
-            let line = waiting.removeFirst()
-            unechoedTerminalLinesBySessionID[id] = waiting.isEmpty ? nil : waiting
-            if let emulator = terminalScreenEmulatorBySessionID[id],
-               !emulator.isUsingAlternateScreen,
-               emulator.hasTextBeforeCursor(line),
-               let session = state.terminalSessions.first(where: { $0.id == id }) {
-                recordTerminalCommand(line, in: session)
+            let emulator = terminalScreenEmulatorBySessionID[id]
+            let echoed = emulator.flatMap { emulator in
+                emulator.isUsingAlternateScreen ? nil : waiting.firstIndex { emulator.hasTextBeforeCursor($0.text) }
             }
+            if let echoed {
+                let line = waiting[echoed].text
+                waiting.removeSubrange(...echoed)
+                if let session = state.terminalSessions.first(where: { $0.id == id }) {
+                    recordTerminalCommand(line, in: session)
+                }
+            } else {
+                let now = ContinuousClock.now
+                waiting = waiting.compactMap { line in
+                    var line = line
+                    line.lineBreaksSeen += 1
+                    let expired = line.lineBreaksSeen >= Self.terminalEchoLineBreakLimit
+                        || line.sentAt.duration(to: now) > Self.terminalEchoWait
+                    return expired ? nil : line
+                }
+            }
+            unechoedTerminalLinesBySessionID[id] = waiting.isEmpty ? nil : waiting
             let afterLineBreak = rest.index(after: lineBreak)
             terminalScreenEmulatorBySessionID[id]?.feed(String(rest[lineBreak..<afterLineBreak]))
             rest = rest[afterLineBreak...]
@@ -15677,9 +15704,16 @@ public final class RuneAppViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: delay)
             }
             guard !Task.isCancelled else { return }
-            let issues = await Task.detached(priority: .userInitiated) {
+            // A newer edit cancels this task; pass that on to the parse,
+            // which runs detached and would otherwise finish for nothing.
+            let validation = Task.detached(priority: .userInitiated) {
                 YAMLValidator.validate(yaml, target: target)
-            }.value
+            }
+            let issues = await withTaskCancellationHandler {
+                await validation.value
+            } onCancel: {
+                validation.cancel()
+            }
             guard let self, !Task.isCancelled, self.state.resourceYAML == yaml else { return }
             self.state.setResourceYAMLValidationIssues(issues)
             self.state.finishResourceYAMLValidation()

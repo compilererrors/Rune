@@ -991,6 +991,7 @@ final class KubernetesClientTests: XCTestCase {
 
         XCTAssertEqual(pods.map(\.defaultContainerName), ["app", nil, "gone"])
         XCTAssertEqual(pods.map(\.defaultExecContainerName), ["app", "proxy", "proxy"], "an annotation naming no container falls back to the first")
+        XCTAssertEqual(pods.map(\.defaultLogContainerName), ["app", "proxy", "proxy"], "logs open on the same container as the shell")
     }
 
     func testOutputParserParsesKubernetesPodJSON() throws {

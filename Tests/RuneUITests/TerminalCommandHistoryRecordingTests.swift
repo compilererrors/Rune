@@ -95,6 +95,29 @@ final class TerminalCommandHistoryRecordingTests: XCTestCase {
         XCTAssertEqual(viewModel.terminalCommandHistory.entries.map(\.command), ["uname -a", "date"])
     }
 
+    /// Output already on its way when a command is sent comes first; its
+    /// echo follows a few lines later.
+    func testACommandSentWhileEarlierOutputArrivesIsRecorded() {
+        let viewModel = connectedViewModel()
+        viewModel.sendTerminalControlSequence("ls -la\r")
+        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "build step 41\r\nbuild step 42\r\n")
+        XCTAssertTrue(viewModel.terminalCommandHistory.entries.isEmpty, "not echoed yet")
+        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "ls -la\r\ntotal 0\r\n$ ")
+        XCTAssertEqual(viewModel.terminalCommandHistory.entries.map(\.command), ["ls -la"])
+    }
+
+    /// A hidden line does not wait for ever: once enough output has gone
+    /// by, a later line that happens to end with it is not taken for its echo.
+    func testAHiddenLineStopsWaitingAfterEnoughOutput() {
+        let viewModel = connectedViewModel()
+        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "Password: ")
+        type(["h", "u", "n", "t", "e", "r", "2", "\r"], in: viewModel, echoes: false, response: "")
+        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: (0..<80).map { "line \($0)\r\n" }.joined())
+        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "the value was hunter2\r\n$ ")
+        XCTAssertTrue(viewModel.terminalCommandHistory.entries.isEmpty)
+        XCTAssertNil(savedHistoryText().range(of: "hunter2"))
+    }
+
     func testACommandWrappedOverSeveralRowsIsRecorded() {
         let viewModel = connectedViewModel()
         let command = "echo " + (1...40).map { "word\($0)" }.joined(separator: " ")

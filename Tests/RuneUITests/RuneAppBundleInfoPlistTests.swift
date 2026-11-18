@@ -1,5 +1,7 @@
 import AppKit
 import CoreGraphics
+@testable import RuneUI
+import UniformTypeIdentifiers
 import XCTest
 
 final class RuneAppBundleInfoPlistTests: XCTestCase {
@@ -188,6 +190,23 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         for fragment in forbiddenDistributionFragments {
             XCTAssertFalse(contents.contains(fragment))
         }
+    }
+
+    /// The tab drag type is an exported type; macOS expects the app's
+    /// Info.plist to declare every type the app exports.
+    func testBuildScriptDeclaresTheTabDragType() throws {
+        let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
+        let contents = try String(contentsOf: script, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("<key>UTExportedTypeDeclarations</key>"))
+        XCTAssertTrue(contents.contains("<string>\(UTType.runeTerminalTab.identifier)</string>"))
+    }
+
+    func testLeanReleaseGateSaysWhenItCannotStrip() throws {
+        let script = repositoryRoot.appendingPathComponent("scripts/verify-lean-release.sh")
+        let contents = try String(contentsOf: script, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("|| fail_gate \"could not strip"), "a failed strip names the gate instead of exiting silently")
     }
 
     func testBuildScriptCopiesSwiftPackageResourcesIntoAppBundle() throws {

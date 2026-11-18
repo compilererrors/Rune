@@ -26,6 +26,8 @@ enum YAMLValidator {
         do {
             let parser = try Parser(yaml: text)
             while let root = try parser.nextRoot() {
+                // Superseded by a newer edit: its result is not shown.
+                if Task.isCancelled { return [] }
                 roots.append(root)
             }
         } catch let error as YamlError {
@@ -44,6 +46,7 @@ enum YAMLValidator {
 
         let documents = roots.filter { !$0.isEmptyDocument }
         for (documentIndex, root) in documents.enumerated() {
+            if Task.isCancelled { return [] }
             issues += kubernetesIssues(
                 in: root,
                 target: documentIndex == 0 && documents.count == 1 ? target : nil,

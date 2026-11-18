@@ -141,6 +141,86 @@ final class RuneFakeClusterYAMLWorkflowIntegrationTests: XCTestCase {
         })
     }
 
+    /// A ConfigMap holding a tab-indented Makefile, with a label that has no
+    /// value, is valid YAML: the editor shows no error, Apply runs the
+    /// server-side dry-run and the write goes through.
+    func testTabsInABlockScalarAndAnEmptyLabelValueDoNotBlockApply() async throws {
+        let previousDryRunSetting = UserDefaults.standard.object(
+            forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun
+        )
+        UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = true
+        defer {
+            restoreSetting(
+                previousDryRunSetting,
+                forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun
+            )
+        }
+
+        let harness = try await makeHarness()
+        defer { harness.cleanup() }
+
+        try await selectBravoConfigMap(in: harness)
+
+        let draft = [
+            "apiVersion: v1",
+            "kind: ConfigMap",
+            "metadata:",
+            "  name: bravo-spoke-settings",
+            "  namespace: bravo-zone",
+            "  labels:",
+            "    tier:",
+            "data:",
+            "  Makefile: |",
+            "    build:",
+            "    \tgo build ./...",
+            "    test:",
+            "    \tgo test ./...",
+        ].joined(separator: "\n")
+        harness.state.updateResourceYAMLDraft(draft)
+
+        try await waitUntil(timeout: 4) {
+            harness.state.resourceYAML == draft && !harness.state.isValidatingResourceYAML
+        }
+        try await Task.sleep(nanoseconds: 450_000_000)
+        let issues = harness.state.resourceYAMLValidationIssues
+        XCTAssertFalse(
+            issues.contains(where: { $0.severity == .error }),
+            "Tabs inside a block scalar and an empty label value are not errors: \(issues.map(\.message))"
+        )
+        XCTAssertEqual(
+            issues.filter { $0.severity == .warning }.map(\.message),
+            ["metadata.labels.tier has no value; write \"\" for an empty string"]
+        )
+        XCTAssertTrue(harness.viewModel.canDryRunSelectedResourceYAML, "Dry Run stays available")
+
+        harness.viewModel.requestApplySelectedResourceYAML()
+
+        try await waitUntil(timeout: 4) {
+            harness.viewModel.pendingWriteDryRunStatus
+                == "Passed. Kubernetes accepted the server-side dry-run."
+        }
+        guard case let .apply(kind, name, yaml, _)? = harness.viewModel.pendingWriteAction else {
+            return XCTFail("Expected a pending ConfigMap apply for the tab-indented draft.")
+        }
+        XCTAssertEqual(kind, .configMap)
+        XCTAssertEqual(name, "bravo-spoke-settings")
+        XCTAssertEqual(yaml, draft, "the tabs reach the server unchanged")
+
+        harness.viewModel.confirmPendingWriteAction()
+
+        try await waitUntil(timeout: 4) {
+            harness.state.writeAuditLog.contains(where: {
+                $0.action == "Apply YAML"
+                    && $0.namespace == "bravo-zone"
+                    && $0.resource == "configmap/bravo-spoke-settings"
+                    && $0.status == "Succeeded"
+            })
+        }
+        XCTAssertTrue(harness.server.requestLines().contains {
+            isConfigMapApplyRequest($0, namespace: "bravo-zone")
+        })
+    }
+
     func testCancellingPendingApplyAfterDryRunNeverWritesToCluster() async throws {
         let previousDryRunSetting = UserDefaults.standard.object(
             forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun

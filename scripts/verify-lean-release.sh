@@ -21,7 +21,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/rune-lean-gate.XXXXXX")"
 trap 'rm -rf "${work}"' EXIT
 
 cp "${binary}" "${work}/binary"
-xcrun strip "${work}/binary" 2>/dev/null
+xcrun strip "${work}/binary" 2>/dev/null || fail_gate "could not strip a copy of ${PRODUCT_NAME} to compare sizes."
 shipped_bytes="$(stat -f %z "${binary}")"
 stripped_bytes="$(stat -f %z "${work}/binary")"
 # Re-stripping only drops the code signature, so allow a small slack.

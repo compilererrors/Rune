@@ -2609,7 +2609,11 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             return deduplicatedValidationIssues(issues)
         }
 
-        if trimmed.contains("is invalid:") || trimmed.contains("error validating data") {
+        // The server rejected the draft; whatever status it used, that is
+        // not a transport failure.
+        if trimmed.contains("is invalid:")
+            || trimmed.contains("error validating data")
+            || trimmed.contains("failed to create typed patch object") {
             return [
                 YAMLValidationIssue(
                     source: .kubernetes,
@@ -2665,8 +2669,9 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         from output: String,
         yaml: String
     ) -> [YAMLValidationIssue] {
-        if let typedPatchIssue = parseTypedPatchValidationIssue(from: output, yaml: yaml) {
-            return [typedPatchIssue]
+        let typedPatchIssues = parseTypedPatchValidationIssues(from: output, yaml: yaml)
+        if !typedPatchIssues.isEmpty {
+            return typedPatchIssues
         }
 
         let pattern = #"ValidationError\(([^)]+)\):\s*([^;\n\]]+)"#
@@ -2701,69 +2706,81 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         return []
     }
 
-    private static func parseTypedPatchValidationIssue(
+    /// A server-side apply the API server cannot type: "failed to create
+    /// typed patch object (...): .path: expected <type>, got <value>", once
+    /// per field. The server answers HTTP 500 although the draft is at
+    /// fault, so these are read before anything is taken for a transport
+    /// failure.
+    private static func parseTypedPatchValidationIssues(
         from output: String,
         yaml: String
-    ) -> YAMLValidationIssue? {
-        let pattern = #"\.([A-Za-z0-9_.\-\[\]]+):\s*expected numeric \(int or float\),\s*got\s+[A-Za-z0-9_-]+"#
+    ) -> [YAMLValidationIssue] {
+        let pattern = #"(?:^|\s)\.(\S+?):\s*expected ([A-Za-z]+)[^,\n]*,\s*got\b"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return nil
+            return []
         }
 
         let nsOutput = output as NSString
-        guard let match = regex.firstMatch(
-            in: output,
-            range: NSRange(location: 0, length: nsOutput.length)
-        ), match.numberOfRanges >= 2 else {
-            return nil
+        return regex.matches(in: output, range: NSRange(location: 0, length: nsOutput.length)).compactMap { match in
+            guard match.numberOfRanges >= 3 else { return nil }
+            let fieldPath = nsOutput.substring(with: match.range(at: 1))
+            let expected = nsOutput.substring(with: match.range(at: 2)).lowercased()
+            let advice: String
+            switch expected {
+            case "numeric":
+                advice = "must be a number. Fix or remove the field before applying."
+            case "string":
+                advice = "must be a string. Quote the value before applying."
+            default:
+                advice = "must be a \(expected). Fix the field before applying."
+            }
+            let location = validationLocation(forFieldPath: fieldPath, in: yaml)
+            return YAMLValidationIssue(
+                source: .kubernetes,
+                severity: .error,
+                message: "`\(fieldPath)` \(advice)",
+                line: location?.line,
+                column: location?.column,
+                range: location?.range
+            )
         }
-
-        let fieldPath = nsOutput.substring(with: match.range(at: 1))
-        let location = validationLocation(forFieldPath: fieldPath, in: yaml)
-        return YAMLValidationIssue(
-            source: .kubernetes,
-            severity: .error,
-            message: "`\(fieldPath)` must be a number. Fix or remove the field before applying.",
-            line: location?.line,
-            column: location?.column,
-            range: location?.range
-        )
     }
 
     private static func validationLocation(
         forFieldPath fieldPath: String,
         in yaml: String
     ) -> (line: Int, column: Int, range: YAMLValidationRange?)? {
-        guard let key = fieldPath.split(separator: ".").last.map(String.init),
-              !key.isEmpty
-        else {
-            return nil
-        }
-
-        let pattern = #"^([ \t]*)"# + NSRegularExpression.escapedPattern(for: key) + #"\s*:"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return nil
-        }
-
+        let components = fieldPath.split(separator: ".").map(String.init)
+        guard !components.isEmpty else { return nil }
         let lines = yaml.split(
             omittingEmptySubsequences: false,
             whereSeparator: \.isNewline
         ).map(String.init)
-        for (index, line) in lines.enumerated() {
-            let nsLine = line as NSString
-            guard let match = regex.firstMatch(
-                in: line,
-                range: NSRange(location: 0, length: nsLine.length)
-            ) else {
-                continue
-            }
 
-            let lineNumber = index + 1
-            return (
-                line: lineNumber,
-                column: match.range(at: 1).length + 1,
-                range: validationRange(in: yaml, line: lineNumber)
-            )
+        // The key is the last component, unless the key itself has dots in
+        // it (an annotation such as `example.test/count`): then it is the
+        // last few. Try the shortest first.
+        for start in stride(from: components.count - 1, through: 0, by: -1) {
+            let key = components[start...].joined(separator: ".")
+            guard !key.isEmpty else { continue }
+            let pattern = #"^([ \t]*)"# + NSRegularExpression.escapedPattern(for: key) + #"\s*:"#
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            for (index, line) in lines.enumerated() {
+                let nsLine = line as NSString
+                guard let match = regex.firstMatch(
+                    in: line,
+                    range: NSRange(location: 0, length: nsLine.length)
+                ) else {
+                    continue
+                }
+
+                let lineNumber = index + 1
+                return (
+                    line: lineNumber,
+                    column: match.range(at: 1).length + 1,
+                    range: validationRange(in: yaml, line: lineNumber)
+                )
+            }
         }
 
         return nil

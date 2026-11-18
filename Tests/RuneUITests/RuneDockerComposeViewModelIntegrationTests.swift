@@ -767,6 +767,266 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         }
     }
 
+    /// What the editor's YAML checks claim about Kubernetes, asked of a real
+    /// API server: a draft the editor accepts must pass a server-side
+    /// dry-run, and a draft it marks as an error must fail one. Every
+    /// request is a dry-run; nothing is written.
+    func testDockerComposeServerDryRunAgreesWithTheLocalYAMLValidator() async throws {
+        let harness = try makeHarness()
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+        let id = Self.shortTestID()
+
+        func configMap(_ name: String, metadata: [String] = [], data: [String] = ["  key: value"]) -> String {
+            ([
+                "apiVersion: v1",
+                "kind: ConfigMap",
+                "metadata:",
+                "  name: rune-it-yaml-\(name)-\(id)",
+                "  namespace: \(namespace)",
+            ] + metadata + ["data:"] + data).joined(separator: "\n")
+        }
+        func deployment(_ name: String, replicas: String) -> String {
+            [
+                "apiVersion: apps/v1",
+                "kind: Deployment",
+                "metadata:",
+                "  name: rune-it-yaml-\(name)-\(id)",
+                "  namespace: \(namespace)",
+                "spec:",
+                "  replicas: \(replicas)",
+                "  selector:",
+                "    matchLabels:",
+                "      app: rune-it-yaml-\(name)-\(id)",
+                "  template:",
+                "    metadata:",
+                "      labels:",
+                "        app: rune-it-yaml-\(name)-\(id)",
+                "    spec:",
+                "      containers:",
+                "      - name: main",
+                "        image: busybox:1.36",
+                "        command: [\"sleep\", \"3600\"]",
+            ].joined(separator: "\n")
+        }
+
+        let drafts: [(name: String, yaml: String)] = [
+            ("plain", configMap("plain")),
+            // YAML 1.1 reads these plain words as booleans; YAML 1.2 as strings.
+            ("label-yes", configMap("label-yes", metadata: ["  labels:", "    enabled: yes"])),
+            ("label-on", configMap("label-on", metadata: ["  labels:", "    enabled: on"])),
+            ("label-true", configMap("label-true", metadata: ["  labels:", "    enabled: true"])),
+            ("label-quoted-true", configMap("label-quoted-true", metadata: ["  labels:", "    enabled: \"true\""])),
+            ("annotation-number", configMap("annotation-number", metadata: ["  annotations:", "    example.test/count: 3"])),
+            ("label-empty", configMap("label-empty", metadata: ["  labels:", "    tier:"])),
+            ("annotation-null", configMap("annotation-null", metadata: ["  annotations:", "    example.test/note: ~"])),
+            ("replicas-number", deployment("replicas-number", replicas: "1")),
+            ("replicas-quoted", deployment("replicas-quoted", replicas: "\"1\"")),
+            ("replicas-word", deployment("replicas-word", replicas: "one")),
+            ("tab-in-block", configMap("tab-in-block", data: ["  Makefile: |", "    build:", "    \tgo build ./..."])),
+            ("tab-first-in-block", configMap("tab-first-in-block", data: ["  script: |", "    \techo ok"])),
+            ("tab-indentation", configMap("tab-indentation", data: ["\tkey: value"])),
+        ]
+
+        for draft in drafts {
+            let editorErrors = YAMLValidator.validate(draft.yaml)
+                .filter { $0.severity == .error }
+                .map(\.message)
+            let serverIssues = try await harness.kubeClient.validateResourceYAML(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                yaml: draft.yaml
+            )
+            let serverErrors = serverIssues.filter { $0.severity == .error }.map(\.message)
+            XCTAssertEqual(
+                serverErrors.count,
+                serverIssues.count,
+                "\(draft.name): a failed dry-run is an error, never a lesser issue: \(serverIssues.map { "\($0.severity): \($0.message)" })"
+            )
+            XCTAssertEqual(
+                editorErrors.isEmpty,
+                serverErrors.isEmpty,
+                "\(draft.name): the editor reports \(editorErrors), the dry-run reports \(serverErrors)"
+            )
+        }
+    }
+
+    /// A pod that names its default container: the shell and the logs both
+    /// open on it, as `kubectl exec` and `kubectl logs` do, not on the first.
+    func testDockerComposeShellAndLogsFollowThePodDefaultContainerAnnotation() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        let sources = [KubeConfigSource(url: harness.kubeconfigURL)]
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespace = "alpha-zone"
+        let podName = "rune-it-default-container-\(Self.shortTestID())"
+        func container(_ name: String) -> [String] {
+            [
+                "  - name: \(name)",
+                "    image: busybox:1.36",
+                "    imagePullPolicy: IfNotPresent",
+                "    command: [\"/bin/sh\", \"-ec\", \"echo \(name)-ready; exec sleep 3600\"]",
+                "    env:",
+                "    - name: RUNE_CONTAINER",
+                "      value: \(name)",
+            ]
+        }
+        let podYAML = ([
+            "apiVersion: v1",
+            "kind: Pod",
+            "metadata:",
+            "  name: \(podName)",
+            "  namespace: \(namespace)",
+            "  labels:",
+            "    app.kubernetes.io/managed-by: rune-integration-test",
+            "  annotations:",
+            "    kubectl.kubernetes.io/default-container: app",
+            "spec:",
+            "  terminationGracePeriodSeconds: 0",
+            "  containers:",
+        ] + container("proxy") + container("app")).joined(separator: "\n")
+
+        addTeardownBlock {
+            try? await harness.kubeClient.deleteResource(
+                from: sources,
+                context: context,
+                namespace: namespace,
+                kind: .pod,
+                name: podName
+            )
+        }
+        try await harness.kubeClient.applyYAML(from: sources, context: context, namespace: namespace, yaml: podYAML)
+
+        let runningDeadline = Date().addingTimeInterval(90)
+        var isRunning = false
+        while !isRunning, Date() < runningDeadline {
+            let listed = try await harness.kubeClient.listPods(from: sources, context: context, namespace: namespace)
+            isRunning = listed.contains { $0.name == podName && $0.status == "Running" }
+            if !isRunning { try await Task.sleep(nanoseconds: 500_000_000) }
+        }
+        XCTAssertTrue(isRunning, "the test pod started")
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.pod)
+        try await waitUntil(timeout: 30) {
+            harness.state.pods.contains { $0.name == podName } && !harness.state.isLoading
+        }
+        let pod = try XCTUnwrap(harness.state.pods.first { $0.name == podName })
+        XCTAssertEqual(pod.containerNames, ["proxy", "app"])
+        XCTAssertEqual(pod.defaultContainerName, "app", "the pod list reads the annotation")
+
+        harness.viewModel.startTerminalSession(for: pod)
+        addTeardownBlock { @MainActor in
+            if let id = harness.state.terminalSession?.id { harness.viewModel.closeTerminalSession(id: id) }
+        }
+        try await waitUntil(timeout: 30) {
+            harness.state.terminalSession?.status == .connected
+                && harness.state.terminalSession?.transcript.contains("/ #") == true
+        }
+        XCTAssertEqual(harness.state.terminalSession?.containerName, "app")
+
+        harness.viewModel.terminalSessionInput = "echo in-$RUNE_CONTAINER"
+        harness.viewModel.sendTerminalSessionInput()
+        try await waitUntil(timeout: 15) {
+            harness.state.terminalSession?.transcript.contains("in-app") == true
+        }
+        XCTAssertFalse(harness.state.terminalSession?.transcript.contains("in-proxy") == true)
+
+        harness.viewModel.focusTerminalPodInspector(pod, reloadLogs: true)
+        XCTAssertEqual(harness.viewModel.selectedLogContainer, "app")
+        try await waitUntil(timeout: 30) {
+            harness.state.podLogs.contains("app-ready")
+        }
+        XCTAssertFalse(harness.state.podLogs.contains("proxy-ready"), "only the default container's logs")
+    }
+
+    /// The command history against a real shell and a real terminal: a
+    /// command is kept once the shell echoes it, input typed while the
+    /// terminal hides it is not, and a command typed while earlier output
+    /// is still arriving is kept too.
+    func testDockerComposeCommandHistoryKeepsCommandsAndNotHiddenInput() async throws {
+        let defaults = UserDefaults.standard
+        let historyKeys = [
+            RuneSettingsKeys.terminalCommandHistory,
+            RuneSettingsKeys.terminalCommandHistoryEnabled,
+            RuneSettingsKeys.terminalCommandHistoryLimit,
+        ]
+        let previousHistorySettings = historyKeys.map { defaults.object(forKey: $0) }
+        defaults.removeObject(forKey: RuneSettingsKeys.terminalCommandHistory)
+        defaults.set(true, forKey: RuneSettingsKeys.terminalCommandHistoryEnabled)
+        defaults.set(50, forKey: RuneSettingsKeys.terminalCommandHistoryLimit)
+        let previousDemoSetting = defaults.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        defaults.runeEnableDemoCluster = false
+        defer {
+            restoreDemoSetting(previousDemoSetting)
+            for (key, value) in zip(historyKeys, previousHistorySettings) {
+                restoreUserDefault(value, forKey: key)
+            }
+        }
+
+        let harness = try makeHarness()
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.pod)
+        try await waitUntil(timeout: 30) {
+            harness.state.pods.contains { $0.name == "alpha-log-matrix" } && !harness.state.isLoading
+        }
+        let pod = try XCTUnwrap(harness.state.pods.first { $0.name == "alpha-log-matrix" })
+
+        harness.viewModel.startTerminalSession(for: pod, container: "main")
+        addTeardownBlock { @MainActor in
+            if let id = harness.state.terminalSession?.id { harness.viewModel.closeTerminalSession(id: id) }
+        }
+        try await waitUntil(timeout: 30) {
+            harness.state.terminalSession?.status == .connected
+                && harness.state.terminalSession?.transcript.contains("/ #") == true
+        }
+
+        let id = Self.shortTestID()
+        func commands() -> [String] { harness.viewModel.terminalCommandHistory.entries.map(\.command) }
+        func transcript() -> String { harness.state.terminalSession?.transcript ?? "" }
+
+        // A command typed in the terminal and echoed by the shell.
+        let plain = "echo rune-history-\(id)"
+        harness.viewModel.sendTerminalControlSequence(plain + "\r")
+        try await waitUntil(timeout: 15) { commands().contains(plain) }
+
+        // Input the terminal does not show: the next line typed is read by
+        // `read` with echo turned off, as a password prompt does.
+        let hiddenPrompt = "stty -echo; read RUNE_HIDDEN; stty echo; echo hidden-done-\(id)"
+        let hiddenInput = "hunter2-\(id)"
+        harness.viewModel.sendTerminalControlSequence(hiddenPrompt + "\r")
+        try await waitUntil(timeout: 15) { commands().contains(hiddenPrompt) }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        harness.viewModel.sendTerminalControlSequence(hiddenInput + "\r")
+        try await waitUntil(timeout: 15) {
+            transcript().components(separatedBy: "hidden-done-\(id)").count - 1 >= 2
+        }
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        XCTAssertFalse(commands().contains { $0.contains(hiddenInput) }, "hidden input is not a command: \(commands())")
+        let saved = defaults.data(forKey: RuneSettingsKeys.terminalCommandHistory).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        XCTAssertFalse(saved.contains(hiddenInput), "and is not saved on disk")
+        XCTAssertFalse(transcript().contains(hiddenInput), "the terminal never showed it")
+
+        // A command typed while a running command is still printing.
+        let typedAhead = "echo typed-ahead-\(id)"
+        harness.viewModel.sendTerminalControlSequence("for i in 1 2 3 4 5 6; do echo stream-$i-\(id); sleep 0.3; done\r")
+        try await waitUntil(timeout: 15) { transcript().contains("stream-1-\(id)") }
+        harness.viewModel.sendTerminalControlSequence(typedAhead + "\r")
+        try await waitUntil(timeout: 20) {
+            transcript().contains("stream-6-\(id)") && commands().contains(typedAhead)
+        }
+        XCTAssertTrue(commands().contains(typedAhead), "kept although earlier output came first: \(commands())")
+    }
+
     func testDockerComposeViewModelExecAndPortForwardUseLocalCluster() async throws {
         let harness = try makeHarness()
         let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)

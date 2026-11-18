@@ -118,6 +118,18 @@ final class RuneYAMLValidatorTests: XCTestCase {
         try assertRange(try XCTUnwrap(issues.first), in: text, startsWith: "tier")
     }
 
+    /// A validation superseded by a newer edit stops between documents; its
+    /// result would not be shown, so it reports nothing.
+    func testACancelledValidationReportsNothing() async {
+        let text = "kind: Pod\n---\nkind: Pod\n"
+        XCTAssertFalse(YAMLValidator.validate(text).isEmpty, "the documents have problems to report")
+        let issues = await Task.detached { () -> [YAMLValidationIssue] in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return YAMLValidator.validate(text)
+        }.value
+        XCTAssertEqual(issues, [])
+    }
+
     func testDuplicateKeyIsNamed() throws {
         let text = """
         apiVersion: v1

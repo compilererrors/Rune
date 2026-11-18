@@ -127,4 +127,48 @@ final class KubernetesValidationErrorPresentationTests: XCTestCase {
         XCTAssertFalse(issue.message.contains("synthetic-workload"))
         XCTAssertFalse(issue.message.contains("safe"))
     }
+
+    /// What a K3s 1.36 API server answers when a label or annotation value
+    /// is not a string: HTTP 500 with one line per field. The draft is at
+    /// fault, so each field is an error at its own line, never a transport
+    /// warning that would let the dry-run count as passed.
+    func testTypedPatchStringFailuresAreErrorsAtTheirFields() throws {
+        let yaml = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: synthetic-settings
+          namespace: synthetic-zone
+          labels:
+            enabled: yes
+          annotations:
+            example.test/count: 3
+        data:
+          key: value
+        """
+        let output = """
+        HTTP 500: failed to create typed patch object (synthetic-zone/synthetic-settings; /v1, Kind=ConfigMap): errors:
+          .metadata.annotations.example.test/count: expected string, got &value.valueUnstructured{Value:3}
+          .metadata.labels.enabled: expected string, got &value.valueUnstructured{Value:true}
+        """
+
+        let issues = KubernetesClient.parseValidationIssues(from: output, yaml: yaml)
+
+        XCTAssertEqual(issues.map(\.source), [.kubernetes, .kubernetes])
+        XCTAssertEqual(issues.map(\.severity), [.error, .error])
+        XCTAssertEqual(issues.map(\.message), [
+            "`metadata.annotations.example.test/count` must be a string. Quote the value before applying.",
+            "`metadata.labels.enabled` must be a string. Quote the value before applying.",
+        ])
+        XCTAssertEqual(issues.map(\.line), [9, 7])
+    }
+
+    func testAnUnreadTypedPatchFailureIsStillAnError() throws {
+        let output = "HTTP 500: failed to create typed patch object (synthetic-zone/synthetic-settings; /v1, Kind=ConfigMap): synthetic unknown reason"
+
+        let issue = try XCTUnwrap(KubernetesClient.parseValidationIssues(from: output, yaml: "kind: ConfigMap").first)
+
+        XCTAssertEqual(issue.source, .kubernetes)
+        XCTAssertEqual(issue.severity, .error)
+    }
 }
