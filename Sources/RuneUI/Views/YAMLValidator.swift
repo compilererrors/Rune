@@ -20,8 +20,7 @@ enum YAMLValidator {
     static func validate(_ text: String, target: YAMLValidationTarget? = nil) -> [YAMLValidationIssue] {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         let index = YAMLValidationLineIndex(text)
-        var issues = tabIndentationIssues(in: text, index: index)
-        let tabLines = Set(issues.compactMap(\.line))
+        var issues: [YAMLValidationIssue] = []
 
         var roots: [Node] = []
         do {
@@ -30,8 +29,14 @@ enum YAMLValidator {
                 roots.append(root)
             }
         } catch let error as YamlError {
-            if let issue = syntaxIssue(for: error, index: index), !tabLines.contains(issue.line ?? -1) {
-                issues.append(issue)
+            // A tab is an error only where the parser stops on it. Inside a
+            // block scalar (a Makefile or script in a ConfigMap) it is
+            // content, and the document parses.
+            let syntax = syntaxIssue(for: error, index: index)
+            if let line = syntax?.line, let tab = tabIndentationIssue(onLine: line, index: index) {
+                issues.append(tab)
+            } else if let syntax {
+                issues.append(syntax)
             }
         } catch {
             issues.append(YAMLValidationIssue(source: .syntax, severity: .error, message: error.localizedDescription))
@@ -79,23 +84,19 @@ enum YAMLValidator {
         }
     }
 
-    /// libyaml rejects tabs in indentation with "found character that cannot
-    /// start any token"; say what is wrong and where, at the tab itself.
-    private static func tabIndentationIssues(in text: String, index: YAMLValidationLineIndex) -> [YAMLValidationIssue] {
-        var issues: [YAMLValidationIssue] = []
-        for line in 1...max(1, index.lineCount) {
-            let content = index.lineText(line)
-            var column = 1
-            for scalar in content.unicodeScalars {
-                if scalar == "\t" {
-                    issues.append(issue(.syntax, .error, "Tabs are not allowed in YAML indentation.", line: line, column: column, index: index, length: 1))
-                    break
-                }
-                if scalar != " " { break }
-                column += 1
+    /// libyaml rejects a tab in indentation with "found character that cannot
+    /// start any token"; say what is wrong and where, at the tab itself. Nil
+    /// when the line's indentation holds no tab.
+    private static func tabIndentationIssue(onLine line: Int, index: YAMLValidationLineIndex) -> YAMLValidationIssue? {
+        var column = 1
+        for scalar in index.lineText(line).unicodeScalars {
+            if scalar == "\t" {
+                return issue(.syntax, .error, "Tabs are not allowed in YAML indentation.", line: line, column: column, index: index, length: 1)
             }
+            if scalar != " " { return nil }
+            column += 1
         }
-        return issues
+        return nil
     }
 
     // MARK: Kubernetes
@@ -141,11 +142,21 @@ enum YAMLValidator {
                     }
                     for (key, value) in values where !value.isPlainStringLike {
                         let keyText = key.string ?? "?"
-                        issues.append(issue(
-                            .kubernetes, .error,
-                            "metadata.\(field).\(keyText) must be a string; quote the value",
-                            at: value.mark, index: index
-                        ))
+                        // An empty value is accepted (and is how a patch
+                        // removes a key), so it only gets a note.
+                        if value.null != nil {
+                            issues.append(issue(
+                                .kubernetes, .warning,
+                                "metadata.\(field).\(keyText) has no value; write \"\" for an empty string",
+                                at: key.mark, index: index
+                            ))
+                        } else {
+                            issues.append(issue(
+                                .kubernetes, .error,
+                                "metadata.\(field).\(keyText) must be a string; quote the value",
+                                at: value.mark, index: index
+                            ))
+                        }
                     }
                 }
             } else {

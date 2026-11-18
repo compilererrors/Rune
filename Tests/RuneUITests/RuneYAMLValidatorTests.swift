@@ -72,6 +72,52 @@ final class RuneYAMLValidatorTests: XCTestCase {
         XCTAssertEqual(issues.filter { $0.line == 4 }.count, 1, "one message per line, not the parser's generic one as well")
     }
 
+    /// A tab in the text of a block scalar is content (a Makefile or a
+    /// script in a ConfigMap); the document is valid and must stay appliable.
+    func testTabsInsideBlockScalarsAreNotErrors() {
+        let text = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: sample\ndata:\n  Makefile: |\n    build:\n    \tgo build ./...\n    \t\n  notes: >\n    folded\n    \ttext\n"
+        XCTAssertEqual(YAMLValidator.validate(text), [])
+    }
+
+    func testATabThatBreaksTheDocumentIsStillReportedNextToValidTabs() throws {
+        let text = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: sample\ndata:\n  script: |\n    run:\n    \techo ok\n\tbroken: true\n"
+        let issues = YAMLValidator.validate(text)
+        XCTAssertEqual(issues.map(\.message), ["Tabs are not allowed in YAML indentation."])
+        XCTAssertEqual(issues.first?.line, 9, "the tab the parser stopped on, not the one inside the block scalar")
+    }
+
+    /// The parser (and Kubernetes' own, a port of it) reads a block scalar's
+    /// indentation from its first line, so a tab there is an error.
+    func testATabOnTheFirstLineOfABlockScalarIsReported() throws {
+        let text = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: sample\ndata:\n  script: |\n    \techo ok\n"
+        let issue = try XCTUnwrap(YAMLValidator.validate(text).first)
+        XCTAssertEqual(issue.message, "Tabs are not allowed in YAML indentation.")
+        XCTAssertEqual(issue.line, 7)
+    }
+
+    func testAnEmptyLabelOrAnnotationValueIsAWarningNotAnError() throws {
+        let text = """
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: sample
+          labels:
+            tier:
+          annotations:
+            example.test/note: ~
+            example.test/count: 3
+        """
+        let issues = YAMLValidator.validate(text)
+        XCTAssertEqual(issues.filter { $0.severity == .warning }.map(\.message), [
+            "metadata.labels.tier has no value; write \"\" for an empty string",
+            "metadata.annotations.example.test/note has no value; write \"\" for an empty string",
+        ])
+        XCTAssertEqual(issues.filter { $0.severity == .error }.map(\.message), [
+            "metadata.annotations.example.test/count must be a string; quote the value",
+        ], "a number is still an error")
+        try assertRange(try XCTUnwrap(issues.first), in: text, startsWith: "tier")
+    }
+
     func testDuplicateKeyIsNamed() throws {
         let text = """
         apiVersion: v1
