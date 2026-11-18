@@ -948,9 +948,10 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
     }
 
     /// The command history against a real shell and a real terminal: a
-    /// command is kept once the shell echoes it, input typed while the
-    /// terminal hides it is not, and a command typed while earlier output
-    /// is still arriving is kept too.
+    /// command is kept once the shell echoes it at its prompt, input typed
+    /// while the terminal hides it is not, an answer to a program's
+    /// question is not, and a command typed while earlier output is still
+    /// arriving is kept too.
     func testDockerComposeCommandHistoryKeepsCommandsAndNotHiddenInput() async throws {
         let defaults = UserDefaults.standard
         let historyKeys = [
@@ -998,6 +999,9 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let plain = "echo rune-history-\(id)"
         harness.viewModel.sendTerminalControlSequence(plain + "\r")
         try await waitUntil(timeout: 15) { commands().contains(plain) }
+        guard commands().contains(plain) else {
+            return XCTFail("The echoed command was not recorded. Status: \(String(describing: harness.state.terminalSession?.status)). Screen: \(transcript().suffix(300).debugDescription)")
+        }
 
         // Input the terminal does not show: the next line typed is read by
         // `read` with echo turned off, as a password prompt does.
@@ -1015,6 +1019,20 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let saved = defaults.data(forKey: RuneSettingsKeys.terminalCommandHistory).map { String(decoding: $0, as: UTF8.self) } ?? ""
         XCTAssertFalse(saved.contains(hiddenInput), "and is not saved on disk")
         XCTAssertFalse(transcript().contains(hiddenInput), "the terminal never showed it")
+
+        // Input a program asks for and the terminal shows: `read` takes the
+        // next line. The shell did not read it as a command, so it is not one.
+        let visibleInput = "visible-answer-\(id)"
+        harness.viewModel.sendTerminalControlSequence("read RUNE_VISIBLE; echo visible-done-\(id)\r")
+        try await waitUntil(timeout: 15) { commands().contains("read RUNE_VISIBLE; echo visible-done-\(id)") }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        harness.viewModel.sendTerminalControlSequence(visibleInput + "\r")
+        try await waitUntil(timeout: 15) {
+            transcript().components(separatedBy: "visible-done-\(id)").count - 1 >= 2
+        }
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        XCTAssertTrue(transcript().contains(visibleInput), "the terminal showed it")
+        XCTAssertFalse(commands().contains { $0.contains(visibleInput) }, "an answer to a program is not a command: \(commands())")
 
         // A command typed while a running command is still printing.
         let typedAhead = "echo typed-ahead-\(id)"

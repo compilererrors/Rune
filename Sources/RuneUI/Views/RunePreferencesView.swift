@@ -1279,7 +1279,7 @@ public struct RunePreferencesView: View {
                     step: 25,
                     placeholder: "50",
                     defaultValue: RuneSettingsKeys.terminalCommandHistoryLimitDefault,
-                    detail: "Shell commands kept for the Terminal's Commands tab, newest first, saved on this Mac only. Commands can contain secrets: 0 keeps none and clears the list.",
+                    detail: "Shell commands kept for the Terminal's Commands tab, newest first, saved on this Mac only. A line is kept when it was typed at a shell prompt ending in $, # or %; answers to a program's question and hidden input are not. Commands can still contain secrets: 0 keeps none and clears the list.",
                     normalize: RuneSettingsKeys.clampedTerminalCommandHistoryLimit
                 )
                 .disabled(!terminalCommandHistoryEnabled)

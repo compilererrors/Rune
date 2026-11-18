@@ -109,6 +109,34 @@ final class KubernetesRESTSessionPoolTests: XCTestCase {
         XCTAssertFalse(pool.session(for: key()) { newSession() } === current)
     }
 
+    /// A request picks its session up before it creates its task. A reset
+    /// (the network changed), an eviction or a capacity retirement in
+    /// between must leave that session usable: URLSession raises an
+    /// Objective-C exception for a task created on an invalidated session,
+    /// and that ends the process. If this test's process survives, it passes.
+    func testASessionHandedOutBeforeItIsRetiredCanStillStartARequest() throws {
+        let unreachable = try XCTUnwrap(URL(string: "http://127.0.0.1:9/"))
+
+        let resetPool = makePool()
+        let beforeReset = resetPool.session(for: key()) { newSession() }
+        let stream = newSession()
+        _ = resetPool.registerStream(stream)
+        resetPool.resetAll()
+        beforeReset.dataTask(with: unreachable).cancel()
+        stream.dataTask(with: unreachable).cancel()
+        stream.invalidateAndCancel()
+
+        let evictPool = makePool()
+        let beforeEvict = evictPool.session(for: key()) { newSession() }
+        evictPool.evict(key(), ifCurrent: beforeEvict)
+        beforeEvict.dataTask(with: unreachable).cancel()
+
+        let fullPool = makePool(maxEntries: 1)
+        let oldest = fullPool.session(for: key("https://first.synthetic.test:6443")) { newSession() }
+        _ = fullPool.session(for: key("https://second.synthetic.test:6443")) { newSession() }
+        oldest.dataTask(with: unreachable).cancel()
+    }
+
     func testResetRetiresSharedSessionsAndCancelsStreams() async throws {
         let pool = makePool()
         let shared = pool.session(for: key()) { newSession() }

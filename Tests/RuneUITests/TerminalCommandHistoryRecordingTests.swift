@@ -88,21 +88,49 @@ final class TerminalCommandHistoryRecordingTests: XCTestCase {
         XCTAssertEqual(viewModel.terminalCommandHistory.entries.map(\.command), ["ls -la"])
     }
 
-    func testSeveralPastedLinesAreEachRecordedAsTheyAreEchoed() {
+    /// A shell reads pasted lines one at a time and shows each at its own
+    /// prompt, after the output of the one before.
+    func testSeveralPastedLinesAreEachRecordedAsTheShellReadsThem() {
         let viewModel = connectedViewModel()
         viewModel.sendTerminalControlSequence("date\runame -a\r")
-        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "date\r\nuname -a\r\n$ ")
+        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "date\r\nMon Jan  5 10:00:00 UTC 2026\r\n$ uname -a\r\nLinux\r\n$ ")
         XCTAssertEqual(viewModel.terminalCommandHistory.entries.map(\.command), ["uname -a", "date"])
     }
 
-    /// Output already on its way when a command is sent comes first; its
-    /// echo follows a few lines later.
-    func testACommandSentWhileEarlierOutputArrivesIsRecorded() {
+    /// As in a shell's own history (and so in Terminal and iTerm2): what a
+    /// program asks for is not a command, even when the terminal shows it.
+    func testAnAnswerToAProgramsQuestionIsNotRecorded() {
+        let viewModel = connectedViewModel()
+        type(["l", "o", "g", "i", "n", "\r"], in: viewModel, response: "Token: ")
+        type(["a", "b", "c", "1", "2", "3", "\r"], in: viewModel, response: "Continue? [y/N] ")
+        type(["y", "\r"], in: viewModel, response: "")
+        type(["v", "a", "l", "u", "e", "\r"], in: viewModel)
+        XCTAssertEqual(viewModel.terminalCommandHistory.entries.map(\.command), ["login"], "only the line typed at the shell prompt")
+        XCTAssertNil(savedHistoryText().range(of: "abc123"))
+
+        type(["p", "w", "d", "\r"], in: viewModel)
+        XCTAssertEqual(viewModel.terminalCommandHistory.entries.map(\.command), ["pwd", "login"], "back at the prompt, commands are recorded again")
+    }
+
+    func testShellPromptsAreRecognisedByTheirLastCharacter() {
+        for prompt in ["$ ", "# ", "% ", "/ # ", "root@api-0:/app# ", "user@host:~$ ", "host% ", "$"] {
+            XCTAssertTrue(RuneAppViewModel.looksLikeShellPrompt(prompt), prompt)
+        }
+        for prompt in ["", "Token: ", "Password: ", "Continue? [y/N] ", ">>> ", "mysql> ", "> "] {
+            XCTAssertFalse(RuneAppViewModel.looksLikeShellPrompt(prompt), prompt)
+        }
+    }
+
+    /// A command typed while another is still printing: the terminal shows
+    /// it at once, between the output, and the shell shows it again at its
+    /// prompt when it reads it. That second showing makes it a command.
+    func testACommandTypedWhileAnotherIsRunningIsRecordedWhenTheShellReadsIt() {
         let viewModel = connectedViewModel()
         viewModel.sendTerminalControlSequence("ls -la\r")
         viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "build step 41\r\nbuild step 42\r\n")
-        XCTAssertTrue(viewModel.terminalCommandHistory.entries.isEmpty, "not echoed yet")
-        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "ls -la\r\ntotal 0\r\n$ ")
+        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "ls -la\r\nbuild step 43\r\n")
+        XCTAssertTrue(viewModel.terminalCommandHistory.entries.isEmpty, "shown, but not yet at a prompt")
+        viewModel.enqueueTerminalSessionOutput(id: "shell-1", text: "$ ls -la\r\ntotal 0\r\n$ ")
         XCTAssertEqual(viewModel.terminalCommandHistory.entries.map(\.command), ["ls -la"])
     }
 

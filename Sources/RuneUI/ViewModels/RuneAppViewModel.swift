@@ -1549,6 +1549,9 @@ public final class RuneAppViewModel: ObservableObject {
     private var commandPaletteResultCacheOrder: [String] = []
     private var cachedProductionNameMarker: (contextName: String, isMatch: Bool)?
     private var requiresProductionSecondConfirmation = UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation
+    /// The save-last-state setting as last seen; nil before the first settings change.
+    private var observedSaveLastAppState: Bool?
+    private var lastSavedAppStateSnapshot: LastAppStateSnapshot?
     private var observedCustomLogPresetOne =
         UserDefaults.standard.runeCustomLogPresetConfig(slot: .one)
     private var observedCustomLogPresetTwo =
@@ -1964,16 +1967,23 @@ public final class RuneAppViewModel: ObservableObject {
                 scheduleLogsReloadForSelection()
             }
         }
-        if UserDefaults.standard.runeSaveLastAppState {
+        // This runs on every settings write, whichever key changed. A saved
+        // state is written again only when it differs (see
+        // `saveLastAppStateIfChanged`), and turning saving off clears what
+        // was kept once, not on every later write.
+        let savesLastAppState = UserDefaults.standard.runeSaveLastAppState
+        if savesLastAppState {
             scheduleLastAppStatePersistence()
-        } else {
+        } else if observedSaveLastAppState != false {
             lastAppStatePersistTask?.cancel()
             lastAppStatePersistTask = nil
             pendingLastAppStateRestore = nil
             pendingLastAppStateRestoreGeneration = nil
             lastAppStateStore.clearLastAppState()
             terminalWorkspaceStateStore.clearTerminalWorkspaceState()
+            lastSavedAppStateSnapshot = nil
         }
+        observedSaveLastAppState = savesLastAppState
         commandPaletteContextMetadataCache.removeAll(keepingCapacity: true)
         commandPaletteContextsWithoutMetadata.removeAll(keepingCapacity: true)
         invalidateCommandPaletteResultCache()
@@ -2594,9 +2604,18 @@ public final class RuneAppViewModel: ObservableObject {
                   UserDefaults.standard.runeSaveLastAppState,
                   self.pendingLastAppStateRestore == nil
             else { return }
-            self.lastAppStateStore.saveLastAppState(self.currentLastAppStateSnapshot)
+            self.saveLastAppStateIfChanged()
             self.lastAppStatePersistTask = nil
         }
+    }
+
+    /// Writes the state only when it differs from what was last written:
+    /// most settings writes that schedule a save change nothing in it.
+    private func saveLastAppStateIfChanged() {
+        let snapshot = currentLastAppStateSnapshot
+        guard snapshot != lastSavedAppStateSnapshot else { return }
+        lastAppStateStore.saveLastAppState(snapshot)
+        lastSavedAppStateSnapshot = snapshot
     }
 
     public func persistLastAppStateNow() {
@@ -2605,7 +2624,9 @@ public final class RuneAppViewModel: ObservableObject {
         guard UserDefaults.standard.runeSaveLastAppState,
               pendingLastAppStateRestore == nil
         else { return }
-        lastAppStateStore.saveLastAppState(currentLastAppStateSnapshot)
+        let snapshot = currentLastAppStateSnapshot
+        lastAppStateStore.saveLastAppState(snapshot)
+        lastSavedAppStateSnapshot = snapshot
     }
 
     public func loadPersistedTerminalWorkspaceState() -> TerminalWorkspaceStateSnapshot? {
@@ -11384,22 +11405,30 @@ public final class RuneAppViewModel: ObservableObject {
 
     /// Feeds output a line at a time while sent lines wait for their echo.
     /// A shell shows what it was sent before it moves to the next line, so
-    /// at a line break a waiting line is a command if it is the text before
-    /// the cursor. Lines sent before the one that matched were passed
-    /// without an echo (hidden input) and are dropped, as is a line that
-    /// has waited too long.
+    /// at a line break a waiting line was echoed if it is the text before
+    /// the cursor. It is a command only if a shell prompt stands in front
+    /// of it: a line a program asked for ("Token: ") is not one, as it is
+    /// not in a shell's own history. Lines sent before a recorded command
+    /// were passed by (hidden input, answers to a program) and are dropped,
+    /// as is a line that has waited too long.
     private func feedTerminalOutputConfirmingEchoedLines(_ text: String, sessionID id: String) {
         var rest = Substring(text)
         while var waiting = unechoedTerminalLinesBySessionID[id], !waiting.isEmpty,
               let lineBreak = rest.firstIndex(where: { $0 == "\n" || $0 == "\r\n" }) {
             terminalScreenEmulatorBySessionID[id]?.feed(String(rest[..<lineBreak]))
             let emulator = terminalScreenEmulatorBySessionID[id]
-            let echoed = emulator.flatMap { emulator in
-                emulator.isUsingAlternateScreen ? nil : waiting.firstIndex { emulator.hasTextBeforeCursor($0.text) }
+            // A line shown without a shell prompt in front of it keeps
+            // waiting: typed while a command was still running, the terminal
+            // shows it at once and the shell shows it again, at its prompt,
+            // when it reads it.
+            let command = emulator.flatMap { emulator in
+                emulator.isUsingAlternateScreen ? nil : waiting.firstIndex { line in
+                    emulator.textPreceding(line.text).map(Self.looksLikeShellPrompt) ?? false
+                }
             }
-            if let echoed {
-                let line = waiting[echoed].text
-                waiting.removeSubrange(...echoed)
+            if let command {
+                let line = waiting[command].text
+                waiting.removeSubrange(...command)
                 if let session = state.terminalSessions.first(where: { $0.id == id }) {
                     recordTerminalCommand(line, in: session)
                 }
@@ -11419,6 +11448,16 @@ public final class RuneAppViewModel: ObservableObject {
             rest = rest[afterLineBreak...]
         }
         terminalScreenEmulatorBySessionID[id]?.feed(String(rest))
+    }
+
+    /// Whether the text a line was typed after ends like a shell prompt:
+    /// `$`, `#` or `%`, as sh, bash, ash and zsh print by default. Rune has
+    /// no shell integration inside a pod, so this is how it tells a command
+    /// from an answer to a program's question.
+    nonisolated static func looksLikeShellPrompt(_ text: String) -> Bool {
+        let prompt = text.hasSuffix(" ") ? text.dropLast() : Substring(text)
+        guard let last = prompt.last else { return false }
+        return last == "$" || last == "#" || last == "%"
     }
 
     private func forgetTerminalInputTracking(sessionID: String) {

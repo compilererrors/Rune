@@ -45,17 +45,20 @@ final class KubernetesRESTSessionPool<Session>: @unchecked Sendable {
     private let idleTimeout: TimeInterval
     private let now: @Sendable () -> Date
     private let urlSession: (Session) -> URLSession
+    private let retirementGrace: TimeInterval
     private var resetObserver: NSObjectProtocol?
 
     init(
         maxEntries: Int = 12,
         idleTimeout: TimeInterval = 300,
+        retirementGrace: TimeInterval = 30,
         now: @escaping @Sendable () -> Date = Date.init,
         observeConnectionResets: Bool = true,
         urlSession: @escaping (Session) -> URLSession
     ) {
         self.maxEntries = max(1, maxEntries)
         self.idleTimeout = idleTimeout
+        self.retirementGrace = retirementGrace
         self.now = now
         self.urlSession = urlSession
         if observeConnectionResets {
@@ -89,7 +92,7 @@ final class KubernetesRESTSessionPool<Session>: @unchecked Sendable {
             entry.lastUsed = current
             entries[key] = entry
             lock.unlock()
-            retired.forEach { $0.finishTasksAndInvalidate() }
+            retire(retired)
             return entry.session
         }
         let session = make()
@@ -101,8 +104,25 @@ final class KubernetesRESTSessionPool<Session>: @unchecked Sendable {
             retired.append(removed.urlSession)
         }
         lock.unlock()
-        retired.forEach { $0.finishTasksAndInvalidate() }
+        retire(retired)
         return session
+    }
+
+    /// Invalidates sessions the pool no longer hands out, later rather than
+    /// now. A request that picked a session up a moment ago may not have
+    /// created its task yet, and URLSession raises an Objective-C exception
+    /// for a task created on an invalidated session, which ends the process.
+    /// Requests already running finish either way, so waiting costs nothing
+    /// but a little memory.
+    private func retire(_ sessions: [URLSession]) {
+        guard !sessions.isEmpty else { return }
+        guard retirementGrace > 0 else {
+            sessions.forEach { $0.finishTasksAndInvalidate() }
+            return
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + retirementGrace) {
+            sessions.forEach { $0.finishTasksAndInvalidate() }
+        }
     }
 
     func evict(_ key: KubernetesRESTSessionKey, ifCurrent session: URLSession) {
@@ -113,7 +133,7 @@ final class KubernetesRESTSessionPool<Session>: @unchecked Sendable {
         }
         entries.removeValue(forKey: key)
         lock.unlock()
-        entry.urlSession.finishTasksAndInvalidate()
+        retire([entry.urlSession])
     }
 
     func registerStream(_ session: URLSession) -> UUID {
@@ -137,8 +157,13 @@ final class KubernetesRESTSessionPool<Session>: @unchecked Sendable {
         entries.removeAll()
         streams.removeAll()
         lock.unlock()
-        shared.forEach { $0.finishTasksAndInvalidate() }
-        streaming.forEach { $0.invalidateAndCancel() }
+        retire(shared)
+        // A stream's owner invalidates its session when the stream ends.
+        // Here only its running tasks are cancelled, so a stream that has
+        // registered but not started yet is not left with a dead session.
+        streaming.forEach { session in
+            session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
+        }
     }
 
     var cachedSessionCount: Int {

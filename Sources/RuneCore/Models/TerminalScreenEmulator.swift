@@ -147,23 +147,30 @@ public struct TerminalScreenEmulator: Sendable {
     /// back over the rows it wrapped across. True when a shell has echoed
     /// what was typed; false at a prompt that hides its input.
     public func hasTextBeforeCursor(_ text: String) -> Bool {
+        textPreceding(text) != nil
+    }
+
+    /// What is on the row before `text`, when `text` sits just before the
+    /// cursor: for an echoed line, the prompt it was typed at. Nil when
+    /// `text` is not there.
+    public func textPreceding(_ text: String) -> String? {
         var remaining = Array(text)
-        guard !remaining.isEmpty else { return false }
+        guard !remaining.isEmpty else { return nil }
         var row = screen.cursorRow
         var end = screen.cursorColumn
         while screen.lines.indices.contains(row) {
             let line = screen.lines[row]
-            guard end <= line.count else { return false }
+            guard end <= line.count else { return nil }
             let count = min(end, remaining.count)
-            guard line[(end - count)..<end].elementsEqual(remaining.suffix(count)) else { return false }
+            guard line[(end - count)..<end].elementsEqual(remaining.suffix(count)) else { return nil }
             remaining.removeLast(count)
-            if remaining.isEmpty { return true }
+            if remaining.isEmpty { return String(line[..<(end - count)]) }
             // The text continues on the row above only if that row is full.
             row -= 1
-            guard row >= 0, screen.lines[row].count == columns else { return false }
+            guard row >= 0, screen.lines[row].count == columns else { return nil }
             end = columns
         }
-        return false
+        return nil
     }
 
     private mutating func consumeEscape(in input: [Character], index: inout Int) -> Bool {

@@ -1558,6 +1558,11 @@ final class KubernetesRESTClient: @unchecked Sendable {
         var attempt = 1
         var restSession = initialSession
         while true {
+            // A retry may come long after the session was picked up; take
+            // the pool's current one, never a session it has since retired.
+            if attempt > 1, let sessionKey {
+                restSession = session(for: resolved, key: sessionKey)
+            }
             let attemptStarted = ContinuousClock.now
             let data: Data
             let response: URLResponse
