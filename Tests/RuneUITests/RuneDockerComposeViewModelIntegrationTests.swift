@@ -731,6 +731,42 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         return columns
     }
 
+    /// A pod shell in a pod with two containers, none chosen, opens in the
+    /// first (as kubectl does), says so, and runs commands.
+    func testDockerComposeShellInAMultiContainerPodOpensInTheFirstContainer() async throws {
+        let harness = try makeHarness()
+        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        UserDefaults.standard.runeEnableDemoCluster = false
+        defer { restoreDemoSetting(previousDemoSetting) }
+
+        try await harness.viewModel.reloadContexts()
+        try await selectOrbitContext(in: harness)
+        harness.viewModel.setSection(.workloads)
+        harness.viewModel.setWorkloadKind(.pod)
+        try await waitUntil(timeout: 30) {
+            harness.state.pods.contains { $0.name == "alpha-log-matrix" } && !harness.state.isLoading
+        }
+        let pod = try XCTUnwrap(harness.state.pods.first { $0.name == "alpha-log-matrix" })
+        XCTAssertGreaterThan(pod.containerNames.count, 1, "the fixture pod has a sidecar")
+
+        harness.viewModel.startTerminalSession(for: pod)
+        addTeardownBlock { @MainActor in
+            if let id = harness.state.terminalSession?.id { harness.viewModel.closeTerminalSession(id: id) }
+        }
+        try await waitUntil(timeout: 30) {
+            harness.state.terminalSession?.status == .connected
+                && harness.state.terminalSession?.transcript.contains("/ #") == true
+        }
+        XCTAssertEqual(harness.state.terminalSession?.containerName, pod.containerNames.first)
+        XCTAssertTrue(harness.state.terminalSession?.transcript.contains("Using container") == true)
+
+        harness.viewModel.terminalSessionInput = "echo rune-$((6*7))"
+        harness.viewModel.sendTerminalSessionInput()
+        try await waitUntil(timeout: 15) {
+            harness.state.terminalSession?.transcript.contains("rune-42") == true
+        }
+    }
+
     func testDockerComposeViewModelExecAndPortForwardUseLocalCluster() async throws {
         let harness = try makeHarness()
         let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)

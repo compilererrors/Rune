@@ -3,6 +3,7 @@ import OSLog
 import RuneCore
 import SwiftUI
 
+#if DEBUG
 /// Ground-truth `NSView` frames for layout debugging. Enable with `RUNE_DEBUG_APPKIT_FRAMES=1`.
 enum RuneAppKitFrameDebug {
     static var isEnabled: Bool {
@@ -54,15 +55,20 @@ struct AppKitFrameReporterRepresentable: NSViewRepresentable {
         nsView.label = label
     }
 }
+#endif
 
 extension View {
     /// Attaches an invisible `NSView` that logs stable window-space frames when `RUNE_DEBUG_APPKIT_FRAMES=1`.
     @ViewBuilder
     func runeAppKitFrameReporter(_ label: String) -> some View {
+        #if DEBUG
         if RuneAppKitFrameDebug.isEnabled {
             background(AppKitFrameReporterRepresentable(label: label))
         } else {
             self
         }
+        #else
+        self
+        #endif
     }
 }

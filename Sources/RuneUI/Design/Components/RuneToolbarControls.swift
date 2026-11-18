@@ -188,6 +188,9 @@ struct RuneToolbarButtonStyle: ButtonStyle {
     var isSelected = false
     var isProminent = false
     var isIconOnly = false
+    /// Fills the width offered instead of hugging the label; long labels
+    /// truncate (list rows such as terminal commands).
+    var fillsWidth = false
     var tint: Color? = nil
     var role: RuneButtonRole? = nil
     @Environment(\.runeThemePalette) private var palette
@@ -199,6 +202,7 @@ struct RuneToolbarButtonStyle: ButtonStyle {
             isPressed: configuration.isPressed,
             isProminent: isProminent,
             isIconOnly: isIconOnly,
+            fillsWidth: fillsWidth,
             tint: isDestructive ? RuneSemanticColorRole.danger.color(in: palette) : tint,
             role: isDestructive ? .destructive : isProminent ? .primary : role
         ))

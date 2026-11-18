@@ -491,6 +491,9 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.appearanceTheme) private var appearanceThemeRaw = RuneSettingsKeys.appearanceThemeDefault
     @AppStorage(RuneSettingsKeys.terminalScrollbackLineLimit) private var terminalScrollbackLineLimit =
         RuneSettingsKeys.terminalScrollbackLineLimitDefault
+    @AppStorage(RuneSettingsKeys.terminalCommandHistoryEnabled) private var terminalCommandHistoryEnabled = true
+    @AppStorage(RuneSettingsKeys.terminalCommandHistoryLimit) private var terminalCommandHistoryLimit =
+        RuneSettingsKeys.terminalCommandHistoryLimitDefault
     @AppStorage(RuneSettingsKeys.saveLastAppState) private var saveLastAppState = true
     private let inklineRecommendation = ExportOpenerRecommendation(appName: "Inkline", kind: .plainText)
     private let quikZipRecommendation = ExportOpenerRecommendation(appName: "QuikZip", kind: .archive)
@@ -1255,6 +1258,31 @@ public struct RunePreferencesView: View {
                     detail: "Keeps recent shell output bounded while preserving the latest context for long-running sessions.",
                     normalize: RuneSettingsKeys.clampedTerminalScrollbackLineLimit
                 )
+
+                Divider()
+
+                settingsToggleRow(
+                    "Record command history",
+                    help: "Keeps shell commands run in pod terminals for the Commands tab, on this Mac only. Turning it off clears the list and saves nothing until it is on again.",
+                    isOn: Binding(
+                        get: { terminalCommandHistoryEnabled },
+                        set: { UserDefaults.standard.runeTerminalCommandHistoryEnabled = $0 }
+                    )
+                )
+
+                Divider()
+
+                RuneSettingsIntegerLimitEditor(
+                    title: "Command history",
+                    value: $terminalCommandHistoryLimit,
+                    valueSuffix: "commands",
+                    step: 25,
+                    placeholder: "50",
+                    defaultValue: RuneSettingsKeys.terminalCommandHistoryLimitDefault,
+                    detail: "Shell commands kept for the Terminal's Commands tab, newest first, saved on this Mac only. Commands can contain secrets: 0 keeps none and clears the list.",
+                    normalize: RuneSettingsKeys.clampedTerminalCommandHistoryLimit
+                )
+                .disabled(!terminalCommandHistoryEnabled)
             }
 
             settingsSection("Memory") {

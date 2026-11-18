@@ -34,6 +34,26 @@ final class ResourceLogANSIFormatterTests: XCTestCase {
         XCTAssertEqual(plainColor, NSColor.labelColor)
     }
 
+    /// Follow mode formats added lines on their own; a colour the earlier
+    /// text left open has to carry into them, as it does after a reload.
+    func testAColourLeftOpenCarriesIntoTextFormattedAfterIt() {
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let first = ResourceLogANSIFormatter.formatted("start \u{1B}[1;31mfailing\n", font: font)
+        XCTAssertEqual(first.openSGR, "\u{1B}[1m\u{1B}[31m")
+
+        let next = ResourceLogANSIFormatter.formatted("still red\u{1B}[0m\nplain\n", continuing: first.openSGR, font: font)
+        XCTAssertEqual(next.text.string, "still red\nplain\n", "the carried codes add no text")
+        XCTAssertEqual(next.text.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, NSColor.systemRed)
+        let plain = (next.text.string as NSString).range(of: "plain")
+        XCTAssertEqual(next.text.attribute(.foregroundColor, at: plain.location, effectiveRange: nil) as? NSColor, NSColor.labelColor)
+        XCTAssertEqual(next.openSGR, "", "a reset closes it")
+
+        let whole = ResourceLogANSIFormatter.attributedString(from: "start \u{1B}[1;31mfailing\nstill red\u{1B}[0m\nplain\n", font: font)
+        let split = NSMutableAttributedString(attributedString: first.text)
+        split.append(next.text)
+        XCTAssertEqual(split, whole, "formatting in two chunks equals formatting at once")
+    }
+
     func testInspectorSearchRangesUseANSIFormattedTextOffsets() {
         let rawText = "\u{1B}[31mERROR\u{1B}[0m needle\n"
 

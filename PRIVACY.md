@@ -1,8 +1,8 @@
 # Privacy Policy
 
-Policy version: 1.0
+Policy version: 1.1
 
-Effective date: April 30, 2026
+Effective date: November 18, 2026
 
 Rune is a local macOS Kubernetes client. Rune does not operate a backend service for collecting, analyzing, selling, or sharing user data.
 
@@ -30,7 +30,7 @@ When Rune needs continued access to user-selected local files, such as kubeconfi
 
 ## Data Stored Locally
 
-Rune stores some data locally on your Mac to provide the app's functionality. This may include app preferences, window or layout preferences, selected Kubernetes contexts and namespaces, cached Kubernetes responses, kubeconfig file references, security-scoped bookmarks for user-selected files, and connection-related secrets stored in the macOS Keychain.
+Rune stores some data locally on your Mac to provide the app's functionality. This may include app preferences, window or layout preferences, selected Kubernetes contexts and namespaces, cached Kubernetes responses, a history of the shell commands you run in pod terminals (which you can limit, clear, or turn off in Settings), kubeconfig file references, security-scoped bookmarks for user-selected files, and connection-related secrets stored in the macOS Keychain.
 
 This data remains on your device. It is not transmitted to Rune, collected by Rune, sold, shared, used for analytics, or used for tracking.
 

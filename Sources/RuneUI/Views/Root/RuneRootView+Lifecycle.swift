@@ -80,7 +80,9 @@ extension RuneRootView {
                 "configured shell=\(resolvedShellVariant.debugLabel, privacy: .public) editor=\(resolvedManifestInlineEditorImplementation.debugLabel, privacy: .public)"
             )
         }
+        #if DEBUG
         startLiveDebugScenarioIfNeeded()
+        #endif
         applySavedWorkspaceInspectorState(
             viewModel.savedWorkspaceInspectorRestoreRequest?.inspectorState
         )

@@ -85,10 +85,8 @@ struct TerminalSessionTabBar: View {
     }
 
     func selectAdjacentSession(offset: Int) {
-        guard !sessions.isEmpty else { return }
-        let currentIndex = sessions.firstIndex { $0.id == activeSessionID } ?? 0
-        let nextIndex = (currentIndex + offset + sessions.count) % sessions.count
-        onSelectSession(sessions[nextIndex].id)
+        guard let id = TerminalTabCycle.adjacentID(in: sessions.map(\.id), active: activeSessionID, offset: offset) else { return }
+        onSelectSession(id)
     }
 
     private func draftTab(number: Int) -> some View {

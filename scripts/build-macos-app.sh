@@ -41,6 +41,15 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_BUNDLE}/Contents/MacOS/${PRODUCT_NAME}"
 
+# Keep symbols in a dSYM next to dist and ship a stripped binary.
+if [[ "${CONFIGURATION}" == "release" && "${STRIP_RELEASE_BINARY:-1}" == "1" ]]; then
+  DSYM_PATH="${DSYM_PATH:-${ROOT_DIR}/dist/dSYMs/${PRODUCT_NAME}-${MARKETING_VERSION}-${BUNDLE_VERSION}.dSYM}"
+  mkdir -p "$(dirname "${DSYM_PATH}")"
+  rm -rf "${DSYM_PATH}"
+  xcrun dsymutil "${BIN_PATH}" -o "${DSYM_PATH}"
+  xcrun strip "${APP_BUNDLE}/Contents/MacOS/${PRODUCT_NAME}"
+fi
+
 if [[ -f "${ICON_SOURCE}" ]]; then
   cp "${ICON_SOURCE}" "${APP_BUNDLE}/Contents/Resources/${ICON_NAME}"
 else
@@ -51,10 +60,6 @@ for resource_bundle in "${BIN_DIR}"/*.bundle; do
   [[ -d "${resource_bundle}" ]] || continue
   cp -R "${resource_bundle}" "${APP_BUNDLE}/Contents/Resources/"
 done
-
-if [[ -f "${ROOT_DIR}/assets/rune_logo_main.png" ]]; then
-  cp "${ROOT_DIR}/assets/rune_logo_main.png" "${APP_BUNDLE}/Contents/Resources/rune_logo_main.png"
-fi
 
 cat > "${APP_BUNDLE}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -113,8 +113,13 @@ final class RuneDesignSystemGuardTests: XCTestCase {
         )
     }
 
+    /// The design README is a local document, not part of the repository.
     func testDesignReadmeDocumentsTheRulesWithoutTables() throws {
-        let readme = try String(contentsOf: designDirectory.appendingPathComponent("README.md"), encoding: .utf8)
+        let readmeURL = repositoryRoot.appendingPathComponent(".local/docs/design/README.md")
+        guard FileManager.default.fileExists(atPath: readmeURL.path) else {
+            throw XCTSkip("The design README is kept locally.")
+        }
+        let readme = try String(contentsOf: readmeURL, encoding: .utf8)
         for component in ["RuneToolbarButtonStyle", "RuneCompactButtonStyle", "RuneTabBar", "RuneFormTextFieldStyle",
                           "RuneBadge", "RuneStatusDot", "RuneToolbarOverflowRow", "RuneToolbarMenu", "RuneToolbarButtonGroup", "RuneControlTextFieldStyle", "RuneControlCard", "RuneStableLabel", "runeText"] {
             XCTAssertTrue(readme.contains(component), "README must say when to use \(component)")
@@ -123,13 +128,14 @@ final class RuneDesignSystemGuardTests: XCTestCase {
         XCTAssertTrue(tableRows.isEmpty, "Documentation uses sections, never tables")
     }
 
-    private var sourceRoot: URL {
+    private var repositoryRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/RuneUI")
     }
+
+    private var sourceRoot: URL { repositoryRoot.appendingPathComponent("Sources/RuneUI") }
 
     private var designDirectory: URL { sourceRoot.appendingPathComponent("Design") }
 

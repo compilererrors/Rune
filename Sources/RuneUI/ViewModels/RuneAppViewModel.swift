@@ -1306,6 +1306,16 @@ public final class RuneAppViewModel: ObservableObject {
     @Published public var scaleReplicaInput: Int = 1
     @Published public var execCommandInput: String = "printenv"
     @Published public var terminalSessionInput: String = ""
+    /// Shell commands run in pod terminals, for the Commands tab.
+    @Published public private(set) var terminalCommandHistory = TerminalCommandHistory()
+    /// What has been typed on each session's current line, while Rune can
+    /// still tell what it is (cursor keys and Tab make it unknown).
+    private var typedTerminalLineBySessionID: [String: (text: String, isKnown: Bool)] = [:]
+    /// Lines sent to each shell, oldest first, waiting for the shell to echo
+    /// them. Only an echoed line is a command: a password typed at a prompt
+    /// that hides its input never appears, and is never recorded.
+    private var unechoedTerminalLinesBySessionID: [String: [String]] = [:]
+    private let terminalCommandHistoryDefaults: UserDefaults
     @Published public var portForwardLocalPortInput: String = "8080"
     @Published public var portForwardRemotePortInput: String = "8080"
     @Published public var portForwardAddressInput: String = "127.0.0.1"
@@ -1373,6 +1383,18 @@ public final class RuneAppViewModel: ObservableObject {
 
     private let kubeClient: KubernetesClient
     private let terminalBackend: PodTerminalSessionBackend
+    /// The demo cluster's shells run in memory, never on a real cluster.
+    private let demoTerminalBackend: PodTerminalSessionBackend = RuneDemoPodShell()
+    private var demoTerminalSessionIDs: Set<String> = []
+    /// Closed shell tabs, newest last, for Cmd-Shift-T.
+    private var recentlyClosedTerminalTargets: [ClosedTerminalTarget] = []
+
+    private struct ClosedTerminalTarget: Equatable {
+        let contextName: String
+        let namespace: String
+        let podName: String
+        let containerName: String?
+    }
     private let bookmarkManager: BookmarkManager
     private let pendingKubeConfigSourceAccess = SecurityScopedAccess()
     private let picker: KubeConfigPicking
@@ -1617,11 +1639,14 @@ public final class RuneAppViewModel: ObservableObject {
         portForwardStart: PortForwardStarting? = nil,
         cronJobSuspendPatch: CronJobSuspendPatching? = nil,
         resourceManifestLoad: ResourceManifestLoading? = nil,
-        operatorResourceManifestLoad: OperatorResourceManifestLoading? = nil
+        operatorResourceManifestLoad: OperatorResourceManifestLoading? = nil,
+        terminalCommandHistoryDefaults: UserDefaults = .standard
     ) {
         self.state = state
         self.kubeClient = kubeClient
         self.terminalBackend = terminalBackend ?? kubeClient
+        self.terminalCommandHistoryDefaults = terminalCommandHistoryDefaults
+        self.terminalCommandHistory = Self.loadTerminalCommandHistory(from: terminalCommandHistoryDefaults)
         self.bookmarkManager = bookmarkManager
         self.picker = picker
         self.gkeCredentialFilePicker = gkeCredentialFilePicker
@@ -1945,6 +1970,8 @@ public final class RuneAppViewModel: ObservableObject {
         commandPaletteContextMetadataCache.removeAll(keepingCapacity: true)
         commandPaletteContextsWithoutMetadata.removeAll(keepingCapacity: true)
         invalidateCommandPaletteResultCache()
+        // Settings changes the command history limit in its own window.
+        applyTerminalCommandHistoryLimit()
     }
 
     public var workloadKinds: [KubeResourceKind] {
@@ -10429,7 +10456,9 @@ public final class RuneAppViewModel: ObservableObject {
         switch state.selectedWorkloadKind {
         case .pod:
             guard let pod = state.selectedPod else { return }
-            state.appendPodLogRead(
+            // A reload replaces the read, as on a real cluster; appending
+            // stacked the same demo lines once per reload.
+            state.replacePodLogRead(
                 "2026-05-05T10:00:00Z started demo API\n2026-05-05T10:00:02Z handled GET /healthz\n",
                 contextName: contextName,
                 namespace: namespace,
@@ -10438,7 +10467,7 @@ public final class RuneAppViewModel: ObservableObject {
             state.clearUnifiedServiceLogs()
         case .deployment:
             guard let deployment = state.selectedDeployment else { return }
-            state.appendUnifiedServiceLogRead(
+            state.replaceUnifiedServiceLogRead(
                 "[api-6f78d9d7c9-2xkq8] 2026-05-05T10:03:00Z deployment rollout complete\n[api-6f78d9d7c9-2xkq8] 2026-05-05T10:03:04Z ready to serve traffic\n",
                 pods: state.pods.map(\.name),
                 contextName: contextName,
@@ -10448,7 +10477,7 @@ public final class RuneAppViewModel: ObservableObject {
             )
         case .service:
             guard let service = state.selectedService else { return }
-            state.appendUnifiedServiceLogRead(
+            state.replaceUnifiedServiceLogRead(
                 "[api-6f78d9d7c9-2xkq8] 2026-05-05T10:04:00Z service route accepted demo request\n[worker-7c9d8f6b5c-mk42q] 2026-05-05T10:04:03Z processed background job\n",
                 pods: state.pods.map(\.name),
                 contextName: contextName,
@@ -10914,14 +10943,21 @@ public final class RuneAppViewModel: ObservableObject {
 
         let kubeConfigSources = state.kubeConfigSources
         let namespace = state.selectedNamespace
-        let containerName = Self.normalizedTerminalContainerSelection(container, pod: pod)
+        // With several containers and none chosen, the API server refuses
+        // the exec; use the one kubectl would (the default-container
+        // annotation, else the first) and say so.
+        let chosenContainer = Self.normalizedTerminalContainerSelection(container, pod: pod)
+        let defaultedContainer = chosenContainer == nil && pod.containerNames.count > 1 ? pod.defaultExecContainerName : nil
+        let containerName = chosenContainer ?? defaultedContainer
         if let replacingSessionID {
+            // A session kept from before a container was chosen for it has
+            // none; reconnecting it to the default container is the same target.
             guard let replaced = state.terminalSessions.first(where: { $0.id == replacingSessionID }),
                   replaced.targets(
                       contextName: context.name,
                       namespace: namespace,
                       podName: pod.name,
-                      containerName: containerName
+                      containerName: replaced.containerName == nil && defaultedContainer != nil ? nil : containerName
                   ) else {
                 state.setError(
                     RuneError.invalidInput(
@@ -10954,9 +10990,12 @@ public final class RuneAppViewModel: ObservableObject {
         let existingTranscript = replacingSessionID.flatMap { id in
             state.terminalSessions.first(where: { $0.id == id })?.transcript
         } ?? ""
-        let initialTranscript = existingTranscript.isEmpty
+        var initialTranscript = existingTranscript.isEmpty
             ? ""
             : existingTranscript + "\n[rune] Reconnecting to \(pod.name) in \(namespace)...\n"
+        if let defaultedContainer {
+            initialTranscript += "[rune] Using container \(defaultedContainer) of \(pod.containerNames.joined(separator: ", ")). Choose another in the container menu.\n"
+        }
         state.setTerminalSession(
             PodTerminalSession(
                 id: sessionID,
@@ -10973,12 +11012,19 @@ public final class RuneAppViewModel: ObservableObject {
             maxScrollbackLines: UserDefaults.standard.runeTerminalScrollbackLineLimit,
             initialText: initialTranscript
         )
+        forgetTerminalInputTracking(sessionID: sessionID)
         terminalSessionInput = ""
         state.selectedSection = .terminal
 
+        if context.name == demoContextName {
+            demoTerminalSessionIDs.insert(sessionID)
+        } else {
+            demoTerminalSessionIDs.remove(sessionID)
+        }
+        let backend = terminalBackend(forSessionID: sessionID)
         Task {
             do {
-                try await terminalBackend.startPodTerminalSession(
+                try await backend.startPodTerminalSession(
                     id: sessionID,
                     from: kubeConfigSources,
                     context: context,
@@ -11018,7 +11064,7 @@ public final class RuneAppViewModel: ObservableObject {
                                   containerName: containerName
                               )
                       }) else {
-                    await terminalBackend.stopPodTerminalSession(id: sessionID)
+                    await backend.stopPodTerminalSession(id: sessionID)
                     return
                 }
                 state.updateTerminalSessionStatus(id: sessionID, status: .connected)
@@ -11066,10 +11112,11 @@ public final class RuneAppViewModel: ObservableObject {
         let command = terminalSessionInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else { return }
         terminalSessionInput = ""
+        awaitTerminalEcho(of: command, sessionID: session.id)
 
         Task {
             do {
-                try await terminalBackend.writeToPodTerminalSession(id: session.id, text: command + "\n")
+                try await terminalBackend(forSessionID: session.id).writeToPodTerminalSession(id: session.id, text: command + "\n")
             } catch {
                 state.setError(error)
             }
@@ -11080,10 +11127,17 @@ public final class RuneAppViewModel: ObservableObject {
         guard let session = state.terminalSession else { return }
         guard session.status == .connected else { return }
         guard !text.isEmpty else { return }
+        trackTypedTerminalLine(text, in: session)
+        // Full-screen tools ask for application cursor keys; follow the
+        // shell's mode as far as its output has been read.
+        let text = TerminalKeyEncoding.applyingCursorKeyMode(
+            text,
+            application: terminalScreenEmulatorBySessionID[session.id]?.applicationCursorKeys ?? false
+        )
 
         Task {
             do {
-                try await terminalBackend.writeToPodTerminalSession(id: session.id, text: text)
+                try await terminalBackend(forSessionID: session.id).writeToPodTerminalSession(id: session.id, text: text)
             } catch {
                 state.setError(error)
             }
@@ -11102,7 +11156,7 @@ public final class RuneAppViewModel: ObservableObject {
 
         Task {
             do {
-                try await terminalBackend.resizePodTerminalSession(id: id, columns: columns, rows: rows)
+                try await terminalBackend(forSessionID: id).resizePodTerminalSession(id: id, columns: columns, rows: rows)
             } catch {
                 state.setError(error)
             }
@@ -11120,7 +11174,11 @@ public final class RuneAppViewModel: ObservableObject {
         }
         // Feed in place: copying the emulator out of the dictionary copied
         // its whole screen and scrollback on every chunk.
-        terminalScreenEmulatorBySessionID[id]?.feed(text)
+        if unechoedTerminalLinesBySessionID[id] == nil {
+            terminalScreenEmulatorBySessionID[id]?.feed(text)
+        } else {
+            feedTerminalOutputConfirmingEchoedLines(text, sessionID: id)
+        }
         pendingTerminalOutputSessionIDs.insert(id)
         scheduleTerminalOutputFlush()
     }
@@ -11164,6 +11222,7 @@ public final class RuneAppViewModel: ObservableObject {
         terminalSessionAttemptByID.removeValue(forKey: sessionID)
         pendingTerminalOutputSessionIDs.remove(sessionID)
         terminalScreenEmulatorBySessionID.removeValue(forKey: sessionID)
+        forgetTerminalInputTracking(sessionID: sessionID)
         terminalSessionInput = ""
         if resetState {
             state.setTerminalSession(nil)
@@ -11171,8 +11230,9 @@ public final class RuneAppViewModel: ObservableObject {
             guard session.status == .connected || session.status == .connecting else { return }
             state.updateTerminalSessionStatus(id: sessionID, status: .disconnected, exitCode: session.lastExitCode)
         }
+        let backend = terminalBackend(forSessionID: sessionID)
         Task {
-            await terminalBackend.stopPodTerminalSession(id: sessionID)
+            await backend.stopPodTerminalSession(id: sessionID)
         }
     }
 
@@ -11185,11 +11245,14 @@ public final class RuneAppViewModel: ObservableObject {
             terminalSessionAttemptByID.removeValue(forKey: sessionID)
             pendingTerminalOutputSessionIDs.remove(sessionID)
             terminalScreenEmulatorBySessionID.removeValue(forKey: sessionID)
+            forgetTerminalInputTracking(sessionID: sessionID)
         }
         terminalSessionInput = ""
+        let backends = sessionIDs.map { terminalBackend(forSessionID: $0) }
+        demoTerminalSessionIDs.subtract(sessionIDs)
         Task {
-            for sessionID in sessionIDs {
-                await terminalBackend.stopPodTerminalSession(id: sessionID)
+            for (sessionID, backend) in zip(sessionIDs, backends) {
+                await backend.stopPodTerminalSession(id: sessionID)
             }
         }
     }
@@ -11205,17 +11268,180 @@ public final class RuneAppViewModel: ObservableObject {
 
     public func closeTerminalSession(id: String) {
         let wasActive = state.activeTerminalSessionID == id
-        guard state.removeTerminalSession(id: id) != nil else { return }
+        guard let closed = state.removeTerminalSession(id: id) else { return }
+        let target = ClosedTerminalTarget(
+            contextName: closed.contextName,
+            namespace: closed.namespace,
+            podName: closed.podName,
+            containerName: closed.containerName
+        )
+        recentlyClosedTerminalTargets.removeAll { $0 == target }
+        recentlyClosedTerminalTargets.append(target)
+        if recentlyClosedTerminalTargets.count > 10 { recentlyClosedTerminalTargets.removeFirst() }
 
         terminalSessionAttemptByID.removeValue(forKey: id)
         pendingTerminalOutputSessionIDs.remove(id)
         terminalScreenEmulatorBySessionID.removeValue(forKey: id)
+        forgetTerminalInputTracking(sessionID: id)
         if wasActive {
             terminalSessionInput = ""
         }
+        let backend = terminalBackend(forSessionID: id)
+        demoTerminalSessionIDs.remove(id)
         Task {
-            await terminalBackend.stopPodTerminalSession(id: id)
+            await backend.stopPodTerminalSession(id: id)
         }
+    }
+
+    // MARK: Command history
+
+    public func clearTerminalCommandHistory() {
+        terminalCommandHistory.removeAll()
+        saveTerminalCommandHistory()
+    }
+
+    /// Applies the limit from Settings; a limit of 0 or history turned off
+    /// also drops what was kept.
+    public func applyTerminalCommandHistoryLimit() {
+        let limit = terminalCommandHistoryLimit
+        if limit == 0, !unechoedTerminalLinesBySessionID.isEmpty { unechoedTerminalLinesBySessionID.removeAll() }
+        // Runs on every settings change: publish only a real change.
+        guard terminalCommandHistory.entries.count > limit else { return }
+        terminalCommandHistory.apply(limit: limit)
+        saveTerminalCommandHistory()
+    }
+
+    private var terminalCommandHistoryLimit: Int {
+        terminalCommandHistoryDefaults.runeEffectiveTerminalCommandHistoryLimit
+    }
+
+    private func recordTerminalCommand(_ command: String, in session: PodTerminalSession) {
+        let limit = terminalCommandHistoryLimit
+        guard limit > 0 || !terminalCommandHistory.entries.isEmpty else { return }
+        terminalCommandHistory.record(
+            command,
+            contextName: session.contextName,
+            namespace: session.namespace,
+            podName: session.podName,
+            limit: limit
+        )
+        saveTerminalCommandHistory()
+    }
+
+    /// Follows the keys typed in the terminal so the line can be recorded on
+    /// Return. Anything that edits it in ways Rune cannot see (cursor keys,
+    /// Tab completion, history recall) leaves it unknown and unrecorded, and
+    /// so does anything typed into a full-screen tool.
+    private func trackTypedTerminalLine(_ text: String, in session: PodTerminalSession) {
+        if terminalScreenEmulatorBySessionID[session.id]?.isUsingAlternateScreen == true {
+            typedTerminalLineBySessionID.removeValue(forKey: session.id)
+            return
+        }
+        var line = typedTerminalLineBySessionID[session.id] ?? (text: "", isKnown: true)
+        for character in text {
+            switch character {
+            case "\r", "\n", "\r\n":
+                if line.isKnown { awaitTerminalEcho(of: line.text, sessionID: session.id) }
+                line = (text: "", isKnown: true)
+            case "\u{7F}", "\u{8}":
+                if !line.text.isEmpty { line.text.removeLast() }
+            case "\u{3}", "\u{15}":
+                line = (text: "", isKnown: true)
+            default:
+                if character.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) {
+                    line.text.append(character)
+                } else {
+                    line.isKnown = false
+                }
+            }
+        }
+        typedTerminalLineBySessionID[session.id] = line
+    }
+
+    /// Holds a line sent to the shell until its echo shows it was a command.
+    private func awaitTerminalEcho(of line: String, sessionID: String) {
+        guard terminalCommandHistoryLimit > 0,
+              !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        var lines = unechoedTerminalLinesBySessionID[sessionID] ?? []
+        lines.append(line)
+        if lines.count > Self.unechoedTerminalLineLimit { lines.removeFirst() }
+        unechoedTerminalLinesBySessionID[sessionID] = lines
+    }
+
+    private static let unechoedTerminalLineLimit = 16
+
+    /// Feeds output a line at a time while sent lines wait for their echo.
+    /// A shell shows what it was sent before it moves to the next line, so
+    /// at each line break the oldest waiting line is a command if it is the
+    /// text before the cursor, and is dropped if not (hidden input).
+    private func feedTerminalOutputConfirmingEchoedLines(_ text: String, sessionID id: String) {
+        var rest = Substring(text)
+        while var waiting = unechoedTerminalLinesBySessionID[id], !waiting.isEmpty,
+              let lineBreak = rest.firstIndex(where: { $0 == "\n" || $0 == "\r\n" }) {
+            terminalScreenEmulatorBySessionID[id]?.feed(String(rest[..<lineBreak]))
+            let line = waiting.removeFirst()
+            unechoedTerminalLinesBySessionID[id] = waiting.isEmpty ? nil : waiting
+            if let emulator = terminalScreenEmulatorBySessionID[id],
+               !emulator.isUsingAlternateScreen,
+               emulator.hasTextBeforeCursor(line),
+               let session = state.terminalSessions.first(where: { $0.id == id }) {
+                recordTerminalCommand(line, in: session)
+            }
+            let afterLineBreak = rest.index(after: lineBreak)
+            terminalScreenEmulatorBySessionID[id]?.feed(String(rest[lineBreak..<afterLineBreak]))
+            rest = rest[afterLineBreak...]
+        }
+        terminalScreenEmulatorBySessionID[id]?.feed(String(rest))
+    }
+
+    private func forgetTerminalInputTracking(sessionID: String) {
+        typedTerminalLineBySessionID.removeValue(forKey: sessionID)
+        unechoedTerminalLinesBySessionID.removeValue(forKey: sessionID)
+    }
+
+    private func saveTerminalCommandHistory() {
+        if terminalCommandHistory.entries.isEmpty {
+            terminalCommandHistoryDefaults.removeObject(forKey: RuneSettingsKeys.terminalCommandHistory)
+        } else if let data = try? JSONEncoder().encode(terminalCommandHistory) {
+            terminalCommandHistoryDefaults.set(data, forKey: RuneSettingsKeys.terminalCommandHistory)
+        }
+    }
+
+    private static func loadTerminalCommandHistory(from defaults: UserDefaults) -> TerminalCommandHistory {
+        guard let data = defaults.data(forKey: RuneSettingsKeys.terminalCommandHistory),
+              var history = try? JSONDecoder().decode(TerminalCommandHistory.self, from: data) else {
+            return TerminalCommandHistory()
+        }
+        let limit = defaults.runeEffectiveTerminalCommandHistoryLimit
+        guard limit > 0 else {
+            defaults.removeObject(forKey: RuneSettingsKeys.terminalCommandHistory)
+            return TerminalCommandHistory()
+        }
+        history.apply(limit: limit)
+        return history
+    }
+
+    /// Reopens the most recently closed shell tab of the current context and
+    /// namespace whose pod still exists. False when there is none.
+    @discardableResult
+    public func reopenLastClosedTerminalSession() -> Bool {
+        guard let contextName = state.selectedContext?.name else { return false }
+        let namespace = state.selectedNamespace
+        // A tab whose pod is not listed stays closed but is kept: the pod
+        // list may only be reloading.
+        for index in recentlyClosedTerminalTargets.indices.reversed() {
+            let target = recentlyClosedTerminalTargets[index]
+            guard target.contextName == contextName, target.namespace == namespace,
+                  let pod = state.pods.first(where: { $0.name == target.podName && $0.namespace == namespace }) else { continue }
+            recentlyClosedTerminalTargets.remove(at: index)
+            startTerminalSession(for: pod, container: target.containerName)
+            return true
+        }
+        return false
+    }
+
+    private func terminalBackend(forSessionID id: String) -> PodTerminalSessionBackend {
+        demoTerminalSessionIDs.contains(id) ? demoTerminalBackend : terminalBackend
     }
 
     public func clearTerminalSessionTranscript() {

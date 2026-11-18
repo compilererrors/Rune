@@ -43,10 +43,12 @@ struct AppKitManifestTextView: NSViewRepresentable {
             else { return }
 
             let presentation = textView.consumePendingEditPresentation()
+            // The very same string the text view holds, so updateNSView's
+            // comparison with it is instant instead of a scan of the document.
             if let onEditorEdit = parent.onEditorEdit {
-                onEditorEdit(textView.string, presentation)
+                onEditorEdit(textView.representedText, presentation)
             } else {
-                parent.text = textView.string
+                parent.text = textView.representedText
             }
         }
     }
@@ -406,6 +408,12 @@ private final class PlainManifestTextView: NSTextView {
     var lineNumberTextColor: NSColor { manifestPalette.comment }
     var lineNumberBackgroundColor: NSColor { manifestPalette.background }
     private var searchHighlightRanges: [NSRange] = []
+    /// Room past the laid-out text, so the last column and line clear the
+    /// scrollers. Every document size adds it.
+    private static let documentEdgeAllowance = NSSize(width: 40, height: 24)
+    /// The SGR colour and weight the log's text leaves open at its end, for
+    /// lines appended later (see `appendLogLines`).
+    private var logOpenSGR = ""
     private var activeSearchHighlightRange: NSRange?
     private var lastAppliedSearchKey = ""
     private var lastSearchNavigationRevision: Int?
@@ -473,7 +481,12 @@ private final class PlainManifestTextView: NSTextView {
             applyTextContainerInsets()
         }
 
-        if styleChanged || fontSizeChanged || issuesChanged || lineNumbersChanged || themeChanged {
+        // A text size step on logs only resizes the fonts in place: parsing
+        // every ANSI colour again took seconds on long logs.
+        let onlyFontSizeChanged = fontSizeChanged && !styleChanged && !issuesChanged && !lineNumbersChanged && !themeChanged
+        if onlyFontSizeChanged, contentStyle == .ansiLogs {
+            resizeFontsInPlace()
+        } else if styleChanged || fontSizeChanged || issuesChanged || lineNumbersChanged || themeChanged {
             refreshLayout()
         } else {
             refreshViewportGeometry()
@@ -535,8 +548,13 @@ private final class PlainManifestTextView: NSTextView {
 
     private func applyFontConfiguration() {
         let baseFont = currentBaseFont
-        font = baseFont
-        textColor = manifestPalette.foreground
+        // Setting `font` or `textColor` restyles every character. Logs carry
+        // their own fonts and ANSI colours: they are resized in place, and
+        // recoloured when the theme changes.
+        if contentStyle != .ansiLogs || (textStorage?.length ?? 0) == 0 {
+            font = baseFont
+            textColor = manifestPalette.foreground
+        }
         defaultParagraphStyle = Self.yamlParagraphStyle(font: baseFont)
         typingAttributes = [
             .font: baseFont,
@@ -577,6 +595,7 @@ private final class PlainManifestTextView: NSTextView {
     }
 
     func setStringKeepingSelection(_ newValue: String) {
+        if contentStyle == .ansiLogs, appendLogLines(from: newValue) { return }
         let selected = selectedRanges
         pendingEditPresentation = nil
         representedText = newValue
@@ -591,6 +610,65 @@ private final class PlainManifestTextView: NSTextView {
                 NSValue(range: clampedSelectionRange($0.rangeValue))
             }
         }
+    }
+
+    /// Follow mode adds lines at the end of the log. Format, store and lay
+    /// out only those: an update then costs one comparison of the old text's
+    /// bytes, not a new format and layout of the whole log.
+    /// Returns false when the new text is not the old text plus whole lines.
+    private func appendLogLines(from newValue: String) -> Bool {
+        let old = representedText
+        let oldCount = old.utf8.count
+        guard let storage = textStorage, storage.length > 0, oldCount > 0,
+              newValue.utf8.count > oldCount,
+              Self.hasUTF8Prefix(newValue, old) else { return false }
+        let start = newValue.utf8.index(newValue.startIndex, offsetBy: oldCount)
+        let added = String(newValue[start...])
+        // Only split the text at a line break, never inside an escape code.
+        guard old.utf8.last == 0x0A || added.utf8.first == 0x0A else { return false }
+
+        // A colour the old text left open carries into the added lines.
+        let (formatted, openSGR) = ResourceLogANSIFormatter.formatted(
+            added,
+            continuing: logOpenSGR,
+            font: currentBaseFont,
+            foreground: manifestPalette.foreground,
+            backgrounds: manifestPalette.textBackgrounds
+        )
+        logOpenSGR = openSGR
+        let offset = storage.length
+        representedText = newValue
+        pendingEditPresentation = nil
+        storage.beginEditing()
+        storage.append(formatted)
+        let addedSeparators = Self.separatorLineRanges(in: formatted.string).map {
+            NSRange(location: $0.location + offset, length: $0.length)
+        }
+        for range in addedSeparators {
+            storage.addAttribute(.foregroundColor, value: NSColor.clear, range: range)
+        }
+        storage.endEditing()
+        separatorLineRanges += addedSeparators
+        invalidateDocumentMetrics()
+        updateDocumentSize()
+        needsDisplay = true
+        return true
+    }
+
+    /// Whether `text` starts with `prefix`, comparing the bytes in one call
+    /// when both strings are native.
+    private static func hasUTF8Prefix(_ text: String, _ prefix: String) -> Bool {
+        let fast = text.utf8.withContiguousStorageIfAvailable { textBytes in
+            prefix.utf8.withContiguousStorageIfAvailable { prefixBytes -> Bool in
+                guard prefixBytes.count <= textBytes.count else { return false }
+                guard let textBase = textBytes.baseAddress, let prefixBase = prefixBytes.baseAddress else {
+                    return prefixBytes.isEmpty
+                }
+                return memcmp(textBase, prefixBase, prefixBytes.count) == 0
+            }
+        }
+        if let fast, let result = fast { return result }
+        return text.utf8.starts(with: prefix.utf8)
     }
 
     override func shouldChangeText(
@@ -693,12 +771,14 @@ private final class PlainManifestTextView: NSTextView {
         let fullRange = NSRange(location: 0, length: storage.length)
         let source = storage.string
         if contentStyle == .ansiLogs {
-            storage.setAttributedString(ResourceLogANSIFormatter.attributedString(
-                from: representedText,
+            let (formatted, openSGR) = ResourceLogANSIFormatter.formatted(
+                representedText,
                 font: currentBaseFont,
                 foreground: manifestPalette.foreground,
                 backgrounds: manifestPalette.textBackgrounds
-            ))
+            )
+            storage.setAttributedString(formatted)
+            logOpenSGR = openSGR
             separatorLineRanges = Self.separatorLineRanges(in: storage.string)
             for range in separatorLineRanges {
                 // The characters stay for copy and save; the rule is drawn instead.
@@ -711,7 +791,7 @@ private final class PlainManifestTextView: NSTextView {
             return
         }
 
-        let usesViewportAnalysis = contentStyle == .yaml && YAMLLanguageService.prefersViewportAnalysis(source)
+        let usesViewportAnalysis = usesYAMLViewportAnalysis(source)
         let styleRange = usesViewportAnalysis ? yamlViewportAnalysisRange(in: source) : fullRange
         let baseFont = currentBaseFont
         storage.beginEditing()
@@ -723,7 +803,7 @@ private final class PlainManifestTextView: NSTextView {
 
         if contentStyle == .yaml, storage.length > 0 {
             let analysis = usesViewportAnalysis
-                ? YAMLLanguageService.analyzeFragment(source, range: styleRange)
+                ? YAMLLanguageService.analyzeFragment(source, range: styleRange) { self.lineNumber(atUTF16Offset: $0) }
                 : YAMLLanguageService.analyze(source)
             // One source of truth: the issues the view model validated for
             // this text (YAMLValidator), never a second, partial analysis of
@@ -872,7 +952,12 @@ private final class PlainManifestTextView: NSTextView {
             return
         }
 
-        layoutManager.ensureLayout(forCharacterRange: range)
+        // With non-contiguous layout a range laid out on its own sits at an
+        // estimated height until the text above it is laid out; logs lay out
+        // up to the match so the jump lands on it (a text size step skips
+        // laying the whole log out).
+        let layoutRange = contentStyle == .ansiLogs ? NSRange(location: 0, length: NSMaxRange(range)) : range
+        layoutManager.ensureLayout(forCharacterRange: layoutRange)
         let glyphRange = layoutManager.glyphRange(
             forCharacterRange: range,
             actualCharacterRange: nil
@@ -929,6 +1014,17 @@ private final class PlainManifestTextView: NSTextView {
         return nsSource.lineRange(for: padded)
     }
 
+    /// Large YAML is styled around the viewport and sized from its line
+    /// count. Decided from this revision's line metrics, which the size and
+    /// the gutter use too, so a keystroke scans the text once.
+    private func usesYAMLViewportAnalysis(_ source: String) -> Bool {
+        guard contentStyle == .yaml, let storage = textStorage else { return false }
+        return YAMLLanguageService.prefersViewportAnalysis(
+            utf16Length: storage.length,
+            lineCount: documentLineMetrics(for: source).lineCount
+        )
+    }
+
     fileprivate var currentBaseFont: NSFont {
         NSFont.monospacedSystemFont(ofSize: configuredFontSize, weight: .regular)
     }
@@ -982,8 +1078,12 @@ private final class PlainManifestTextView: NSTextView {
     }
 
     override func didChangeText() {
+        // A native copy: SwiftUI compares the bound text on every update,
+        // and comparing the text view's bridged string is a slow scan.
+        var text = string
+        text.makeContiguousUTF8()
+        representedText = text
         super.didChangeText()
-        representedText = string
         invalidateDocumentMetrics()
         applyTextContainerInsets()
         refreshLayout()
@@ -1130,11 +1230,72 @@ private final class PlainManifestTextView: NSTextView {
         updateDocumentSize()
     }
 
+    /// Swaps every font in the text for the same font at the configured
+    /// size, keeping colours and backgrounds, then sizes the document.
+    private func resizeFontsInPlace() {
+        guard let storage = textStorage, storage.length > 0 else {
+            refreshLayout()
+            return
+        }
+        let size = configuredFontSize
+        let previousSize = (storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize
+        let previousFrame = frame.size
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let font = value as? NSFont, abs(font.pointSize - size) > 0.01 else { return }
+            storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toSize: size), range: range)
+        }
+        storage.endEditing()
+        if let previousSize, !scaleDocumentSize(from: previousFrame, previousFontSize: previousSize) {
+            updateDocumentSize()
+        }
+        invalidateIntrinsicContentSize()
+        needsDisplay = true
+    }
+
+    /// Every line of an unwrapped monospaced log grows by the same ratio, so
+    /// the document's laid-out size scales with the font instead of being
+    /// laid out again (a second on long logs).
+    private func scaleDocumentSize(from previous: NSSize, previousFontSize: CGFloat) -> Bool {
+        guard let layoutManager, previousFontSize > 0, abs(previousFontSize - configuredFontSize) > 0.01 else { return false }
+        let oldFont = NSFont.monospacedSystemFont(ofSize: previousFontSize, weight: .regular)
+        let newFont = currentBaseFont
+        let oldLineHeight = layoutManager.defaultLineHeight(for: oldFont)
+        let oldAdvance = oldFont.maximumAdvancement.width
+        guard oldLineHeight > 0, oldAdvance > 0 else { return false }
+        let heightRatio = layoutManager.defaultLineHeight(for: newFont) / oldLineHeight
+        let widthRatio = newFont.maximumAdvancement.width / oldAdvance
+        let visible = enclosingScrollView?.contentSize ?? bounds.size
+        let fixedWidth = textContainerInset.width * 2 + Self.documentEdgeAllowance.width
+        let fixedHeight = textContainerInset.height * 2 + Self.documentEdgeAllowance.height
+        let width = previous.width > visible.width + 1
+            ? max(visible.width, ceil((previous.width - fixedWidth) * widthRatio + fixedWidth))
+            : visible.width
+        let height = previous.height > visible.height + 1
+            ? max(visible.height, ceil((previous.height - fixedHeight) * heightRatio + fixedHeight))
+            : visible.height
+        let size = NSSize(width: width, height: height)
+        // Remember it as this font's size, so the next geometry refresh does
+        // not lay the whole log out to measure it again.
+        documentSizeCache = (
+            DocumentSizeCacheKey(
+                revision: documentRevision,
+                fontSizeTenths: Int((configuredFontSize * 10).rounded()),
+                visibleWidth: Int(visible.width.rounded(.up)),
+                visibleHeight: Int(visible.height.rounded(.up)),
+                usesEstimatedLargeYAMLSize: false
+            ),
+            size
+        )
+        applyDocumentSizeIfNeeded(size)
+        return true
+    }
+
     private func updateDocumentSize() {
         guard let layoutManager, let textContainer, let storage = textStorage else { return }
         let visibleSize = enclosingScrollView?.contentSize ?? bounds.size
         let source = storage.string
-        let usesEstimatedLargeYAMLSize = contentStyle == .yaml && YAMLLanguageService.prefersViewportAnalysis(source)
+        let usesEstimatedLargeYAMLSize = usesYAMLViewportAnalysis(source)
         let cacheKey = DocumentSizeCacheKey(
             revision: documentRevision,
             fontSizeTenths: Int((configuredFontSize * 10).rounded()),
@@ -1156,11 +1317,11 @@ private final class PlainManifestTextView: NSTextView {
             targetSize = NSSize(
                 width: max(
                     visibleSize.width,
-                    ceil(CGFloat(metrics.maxLineUTF16Length) * columnWidth + textContainerInset.width * 2 + 40)
+                    ceil(CGFloat(metrics.maxLineUTF16Length) * columnWidth + textContainerInset.width * 2 + Self.documentEdgeAllowance.width)
                 ),
                 height: max(
                     visibleSize.height,
-                    ceil(CGFloat(max(1, metrics.lineCount)) * lineHeight + textContainerInset.height * 2 + 24)
+                    ceil(CGFloat(max(1, metrics.lineCount)) * lineHeight + textContainerInset.height * 2 + Self.documentEdgeAllowance.height)
                 )
             )
         } else {
@@ -1169,11 +1330,11 @@ private final class PlainManifestTextView: NSTextView {
             targetSize = NSSize(
                 width: max(
                     visibleSize.width,
-                    ceil(usedRect.width + textContainerInset.width * 2 + 40)
+                    ceil(usedRect.width + textContainerInset.width * 2 + Self.documentEdgeAllowance.width)
                 ),
                 height: max(
                     visibleSize.height,
-                    ceil(usedRect.height + textContainerInset.height * 2 + 24)
+                    ceil(usedRect.height + textContainerInset.height * 2 + Self.documentEdgeAllowance.height)
                 )
             )
         }
@@ -1205,27 +1366,42 @@ private final class PlainManifestTextView: NSTextView {
         var utf16Offset = 0
         var previousWasCarriageReturn = false
 
-        for character in source.utf16 {
-            switch character {
-            case 10:
-                if previousWasCarriageReturn {
-                    lineStartUTF16Offsets[lineStartUTF16Offsets.count - 1] = utf16Offset + 1
-                } else {
+        // One pass over the UTF-8 bytes of a native string: reading the text
+        // view's bridged string a character at a time costs several times
+        // more. Outside logs (whose storage drops the escape codes) the
+        // represented text is that native string already.
+        var native = contentStyle == .ansiLogs || representedText.utf16.count != (textStorage?.length ?? -1) ? source : representedText
+        native.makeContiguousUTF8()
+        native.withUTF8 { bytes in
+            for byte in bytes {
+                switch byte {
+                case 10:
+                    if previousWasCarriageReturn {
+                        lineStartUTF16Offsets[lineStartUTF16Offsets.count - 1] = utf16Offset + 1
+                    } else {
+                        maxLineLength = max(maxLineLength, currentLineLength)
+                        currentLineLength = 0
+                        lineStartUTF16Offsets.append(utf16Offset + 1)
+                    }
+                    previousWasCarriageReturn = false
+                    utf16Offset += 1
+                case 13:
                     maxLineLength = max(maxLineLength, currentLineLength)
                     currentLineLength = 0
                     lineStartUTF16Offsets.append(utf16Offset + 1)
+                    previousWasCarriageReturn = true
+                    utf16Offset += 1
+                case 0x80...0xBF:
+                    // A continuation byte adds no UTF-16 unit of its own.
+                    break
+                default:
+                    // A lead byte of four bytes is a surrogate pair in UTF-16.
+                    let units = byte >= 0xF0 ? 2 : 1
+                    currentLineLength += units
+                    utf16Offset += units
+                    previousWasCarriageReturn = false
                 }
-                previousWasCarriageReturn = false
-            case 13:
-                maxLineLength = max(maxLineLength, currentLineLength)
-                currentLineLength = 0
-                lineStartUTF16Offsets.append(utf16Offset + 1)
-                previousWasCarriageReturn = true
-            default:
-                currentLineLength += 1
-                previousWasCarriageReturn = false
             }
-            utf16Offset += 1
         }
 
         maxLineLength = max(maxLineLength, currentLineLength)

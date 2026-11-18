@@ -29,16 +29,35 @@ reviews the first production confirmation, and cancels the final action.
 
 ## Selected release KPIs
 
-Run the tracked REST, native-auth, native-import, and resource-table release
-gate with:
+The release gate has two tiers.
+
+### Fast tier
+
+The flows people feel in every session: typing in the terminal and in YAML,
+shell output reaching the screen, switching shell tabs, resizing the window
+and the inspector, scrolling large tables and documents, following and
+searching logs, text size steps, and cold start. Run it before every release
+build:
+
+```bash
+KPI_TIER=fast CONFIGURATION=release RUNS=3 scripts/run-selected-kpis.sh
+```
+
+### Full tier
+
+The fast tier plus REST metrics, native auth, cloud import, idle CPU and
+wakeups, memory with many long tabs, and the remaining load and search paths.
+Run it nightly or before a major release:
 
 ```bash
 CONFIGURATION=release RUNS=3 scripts/run-selected-kpis.sh
 ```
 
+Timing KPIs are sensitive to machine load. Run them on a quiet machine, and
+compare a candidate with a baseline from paired, alternating runs.
+
 The runner stores local logs and privacy-safe environment metadata under the
-ignored `test-reports/` directory. Baseline policy is documented in
-`scripts/SELECTED_KPI_BASELINE.md`.
+ignored `test-reports/` directory.
 
 ## Compare benchmark measurements
 

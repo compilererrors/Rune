@@ -181,7 +181,7 @@ final class RunePreferencesLayoutTests: XCTestCase {
 
         XCTAssertEqual(
             performance.components(separatedBy: "RuneSettingsIntegerLimitEditor(").count - 1,
-            3
+            4
         )
         XCTAssertTrue(performance.contains("title: \"Scrollback\""))
         XCTAssertTrue(performance.contains("valueSuffix: \"lines\""))
@@ -189,6 +189,7 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertTrue(performance.contains("valueSuffix: \"resources\""))
         XCTAssertTrue(performance.contains("title: \"YAML undo\""))
         XCTAssertTrue(performance.contains("valueSuffix: \"snapshots\""))
+        XCTAssertTrue(performance.contains("title: \"Command history\""))
         XCTAssertFalse(performance.contains("HStack(alignment: .firstTextBaseline"))
     }
 

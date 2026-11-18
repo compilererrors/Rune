@@ -575,7 +575,11 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         scrollView.horizontalScrollElasticity = .allowed
         scrollView.verticalScrollElasticity = .allowed
 
-        let textView = TerminalTranscriptInteractionTextView(frame: .zero)
+        // TextKit 1 with non-contiguous layout lays out only the lines on
+        // screen. TextKit 2 laid out the whole transcript to size it, on every
+        // tab switch, and the search highlights need the layout manager anyway.
+        let textView = TerminalTranscriptInteractionTextView(usingTextLayoutManager: false)
+        textView.layoutManager?.allowsNonContiguousLayout = true
         textView.onPasteText = onPasteText
         textView.onInputSequence = onInputSequence
         textView.isEditable = false
@@ -618,6 +622,11 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
         }
 
         textView.string = text
+        // The first update then finds the font, colour and text applied
+        // already, instead of restyling and comparing the whole transcript.
+        context.coordinator.lastFontSize = fontSize
+        context.coordinator.lastTextColor = textView.textColor
+        context.coordinator.displayedText = text
         scrollView.documentView = textView
         return scrollView
     }
@@ -877,7 +886,7 @@ private struct TerminalTranscriptTextView: NSViewRepresentable {
     }
 }
 
-private final class TerminalTranscriptInteractionTextView: NSTextView, RuneKeyboardTypingSurface {
+private final class TerminalTranscriptInteractionTextView: NSTextView, RuneKeyboardTypingSurface, RuneTerminalInputSurface {
     var onPasteText: ((String) -> Void)?
     var onInputSequence: ((String) -> Void)?
 
@@ -894,27 +903,7 @@ private final class TerminalTranscriptInteractionTextView: NSTextView, RuneKeybo
     }
 
     static func terminalInputSequence(for event: NSEvent) -> String? {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if modifiers.contains(.command) || modifiers.contains(.option) {
-            return nil
-        }
-        switch event.keyCode {
-        case 36, 76: return "\r"
-        case 48: return "\t"
-        case 51: return "\u{007F}"
-        case 53: return "\u{001B}"
-        case 115: return "\u{001B}[H"
-        case 116: return "\u{001B}[5~"
-        case 117: return "\u{001B}[3~"
-        case 119: return "\u{001B}[F"
-        case 121: return "\u{001B}[6~"
-        case 123: return "\u{001B}[D"
-        case 124: return "\u{001B}[C"
-        case 125: return "\u{001B}[B"
-        case 126: return "\u{001B}[A"
-        default:
-            return event.characters?.isEmpty == false ? event.characters : nil
-        }
+        TerminalKeyEncoding.sequence(for: event)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

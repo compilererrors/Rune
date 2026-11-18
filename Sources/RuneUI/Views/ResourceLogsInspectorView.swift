@@ -335,7 +335,7 @@ struct ResourceLogsToolbar: View {
         }
     }
 
-    // MARK: Log viewer header (Design/README.md, "Log viewer")
+    // MARK: Log viewer header
 
     /// Two rows on one grid, as in Console, Lens and Loki/Datadog explorers:
     /// the source (pod or container, and the time range) on the first row;
@@ -452,6 +452,7 @@ struct ResourceLogsToolbar: View {
 
     private var fileMenus: some View {
         HStack(alignment: .center, spacing: RuneUILayoutMetrics.inspectorToolbarControlSpacing) {
+            RuneTextSizeControl()
             saveMenu
             moreMenu
         }
@@ -1694,7 +1695,7 @@ private struct ResourceLogsInspectorPaneCore: View {
         // One framed log document: source, actions and search in a bar
         // attached to its top edge, any tabs that switch the log on that
         // edge, the output below. No cards inside.
-        // One framed log document (Design/README.md, "Log viewer"): a
+        // One framed log document: a
         // two-row header attached to its top edge (source and range; follow,
         // reload, search, save, more), any tabs that switch the log on that
         // edge, the output, and insights as a slim line at the bottom.

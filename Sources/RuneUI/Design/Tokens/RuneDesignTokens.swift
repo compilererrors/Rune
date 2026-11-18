@@ -20,7 +20,7 @@ enum RuneSpacing {
 
 /// Continuous corner radii. Nested shapes are concentric (Apple HIG,
 /// macOS 26 design: nested shapes share a centre, so an outer radius equals
-/// the inner radius plus the padding between them). See Design/README.md.
+/// the inner radius plus the padding between them).
 enum RuneRadius {
     /// Pane shells, popovers and the command palette. They hold cards at
     /// loose padding (12–16 pt), where Rune caps the concentric step.
@@ -117,7 +117,7 @@ enum RuneControlHeight {
 
 /// Semantic type roles on top of the configurable interface font size
 /// (13 pt by default). Every text style in the app maps to one of these, so
-/// text follows the user's font size setting. See Design/README.md.
+/// text follows the user's font size setting.
 enum RuneTextRole: Sendable, Equatable, CaseIterable {
     case pageTitle
     case title

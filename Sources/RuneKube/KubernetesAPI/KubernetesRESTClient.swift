@@ -1873,6 +1873,18 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
     }
 
+    /// The API server's reason for a failed exec, except an ordinary
+    /// non-zero exit, which Rune reports as the exit code.
+    static func execFailureMessage(from data: Data) -> String? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let status = object["status"] as? String, status != "Success",
+            (object["reason"] as? String) != "NonZeroExitCode",
+            let message = object["message"] as? String, !message.isEmpty
+        else { return nil }
+        return message
+    }
+
     fileprivate static func execExitCode(from data: Data) -> Int32 {
         guard
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -4825,9 +4837,11 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
     func startReceiving() {
         Task {
             var exitCode: Int32 = 0
+            var receivedAnything = false
             while await !state.isTerminated {
                 do {
                     let message = try await task.receive()
+                    receivedAnything = true
                     let data: Data
                     switch message {
                     case let .data(value):
@@ -4846,17 +4860,39 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
                         }
                     case 3:
                         exitCode = KubernetesRESTClient.execExitCode(from: payload)
+                        if let failure = KubernetesRESTClient.execFailureMessage(from: payload) {
+                            onOutput("\r\n[rune] \(failure)\r\n")
+                        }
                         await state.markTerminated()
                     default:
                         continue
                     }
                 } catch {
+                    // A shell that never opened (the API server refused the
+                    // exec) must not look like one that exited cleanly.
+                    if !receivedAnything, await !state.isTerminated {
+                        exitCode = 1
+                        onOutput("[rune] \(Self.openFailureDescription(response: task.response, error: error))\r\n")
+                    }
                     await state.markTerminated()
                 }
             }
             task.cancel(with: .normalClosure, reason: nil)
             session.invalidateAndCancel()
             onTermination(exitCode)
+        }
+    }
+
+    static func openFailureDescription(response: URLResponse?, error: Error) -> String {
+        guard let status = (response as? HTTPURLResponse)?.statusCode else {
+            return "Could not open a shell: \(error.localizedDescription)"
+        }
+        switch status {
+        case 400: return "Could not open a shell (HTTP 400). If the pod has several containers, choose one."
+        case 401: return "Could not open a shell (HTTP 401): the credentials were not accepted."
+        case 403: return "Could not open a shell (HTTP 403): not allowed to exec into this pod."
+        case 404: return "Could not open a shell (HTTP 404): the pod or container was not found."
+        default: return "Could not open a shell (HTTP \(status))."
         }
     }
 

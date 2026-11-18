@@ -324,6 +324,7 @@ struct TerminalShellPanelView: View {
         HStack(alignment: .center, spacing: RuneSpacing.inset) {
             titleBlock
             Spacer(minLength: 0)
+            RuneTextSizeControl()
             exportMenu
         }
     }
@@ -903,7 +904,7 @@ struct TerminalPromptTextEditor: NSViewRepresentable {
     }
 }
 
-private final class TerminalPromptTextView: NSTextView {
+private final class TerminalPromptTextView: NSTextView, RuneTerminalInputSurface {
     var onSubmit: (() -> Void)?
     var onHistoryUp: (() -> Void)?
     var onHistoryDown: (() -> Void)?

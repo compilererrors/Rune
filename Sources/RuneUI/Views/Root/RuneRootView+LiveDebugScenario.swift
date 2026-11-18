@@ -4,6 +4,10 @@ import RuneCore
 import RuneSecurity
 import SwiftUI
 
+// The scripted layout scenario (RUNE_DEBUG_LAYOUT_LIVE_SCENARIO) runs only in
+// debug builds; release builds compile it out.
+#if DEBUG
+
 extension RuneRootView {
     func startLiveDebugScenarioIfNeeded() {
         guard RuneRootLayoutDebug.liveScenarioEnabled else { return }
@@ -565,3 +569,4 @@ extension RuneRootView {
         }
     }
 }
+#endif

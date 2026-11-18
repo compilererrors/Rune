@@ -79,9 +79,6 @@ let package = Package(
                 "RuneExport",
                 .product(name: "Yams", package: "Yams")
             ],
-            exclude: [
-                "Design/README.md"
-            ],
             resources: [
                 .process("Resources")
             ]

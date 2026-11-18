@@ -196,8 +196,12 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
 
         XCTAssertTrue(contents.contains("for resource_bundle in \"${BIN_DIR}\"/*.bundle"))
         XCTAssertTrue(contents.contains("cp -R \"${resource_bundle}\" \"${APP_BUNDLE}/Contents/Resources/\""))
-        XCTAssertTrue(contents.contains("assets/rune_logo_main.png"))
-        XCTAssertTrue(contents.contains("Contents/Resources/rune_logo_main.png"))
+        // The logo ships once, inside the package's resource bundle; the
+        // script no longer copies a second one next to it.
+        XCTAssertFalse(contents.contains("assets/rune_logo_main.png"))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repositoryRoot.appendingPathComponent("Sources/RuneUI/Resources/rune_logo_main.png").path
+        ))
     }
 
     @MainActor

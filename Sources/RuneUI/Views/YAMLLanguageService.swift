@@ -40,7 +40,15 @@ enum YAMLLanguageService {
         return lineIndexCache.index(for: source).lineCount > interactiveFullAnalysisLineLimit
     }
 
-    static func analyzeFragment(_ source: String, range requestedRange: NSRange) -> YAMLTextAnalysis {
+    /// The same decision from sizes the editor already knows, without
+    /// scanning the text again.
+    static func prefersViewportAnalysis(utf16Length: Int, lineCount: Int) -> Bool {
+        utf16Length > interactiveFullAnalysisCharacterLimit || lineCount > interactiveFullAnalysisLineLimit
+    }
+
+    /// `lineNumber` maps a UTF-16 offset to its 1-based line; pass the
+    /// editor's own line index so a keystroke does not build another one.
+    static func analyzeFragment(_ source: String, range requestedRange: NSRange, lineNumber lineNumberAt: ((Int) -> Int)? = nil) -> YAMLTextAnalysis {
         let nsSource = source as NSString
         guard nsSource.length > 0 else {
             return YAMLTextAnalysis(highlights: [], validationIssues: [])
@@ -56,7 +64,7 @@ enum YAMLLanguageService {
 
         let lineAlignedRange = nsSource.lineRange(for: boundedRange)
         let fragment = nsSource.substring(with: lineAlignedRange)
-        let lineOffset = max(0, lineNumber(for: lineAlignedRange.location, in: source) - 1)
+        let lineOffset = max(0, (lineNumberAt?(lineAlignedRange.location) ?? lineNumber(for: lineAlignedRange.location, in: source)) - 1)
         let analysis = analyzeUncached(fragment)
 
         return YAMLTextAnalysis(

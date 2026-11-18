@@ -311,7 +311,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 ephemeralContainerNamesLine: pod.ephemeralContainerNamesLine,
                 labels: pod.labels,
                 containerImagesLine: pod.containerImagesLine,
-                ownerReferencesLine: pod.ownerReferencesLine
+                ownerReferencesLine: pod.ownerReferencesLine,
+                defaultContainerName: pod.defaultContainerName
             )
         }
     }
@@ -2880,7 +2881,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             ephemeralContainerNamesLine: detail.ephemeralContainerNamesLine ?? base.ephemeralContainerNamesLine,
             labels: detail.labels.isEmpty ? base.labels : detail.labels,
             containerImagesLine: detail.containerImagesLine ?? base.containerImagesLine,
-            ownerReferencesLine: detail.ownerReferencesLine ?? base.ownerReferencesLine
+            ownerReferencesLine: detail.ownerReferencesLine ?? base.ownerReferencesLine,
+            defaultContainerName: detail.defaultContainerName ?? base.defaultContainerName
         )
     }
 
@@ -3078,7 +3080,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 ephemeralContainerNamesLine: pod.ephemeralContainerNamesLine,
                 labels: pod.labels,
                 containerImagesLine: pod.containerImagesLine,
-                ownerReferencesLine: pod.ownerReferencesLine
+                ownerReferencesLine: pod.ownerReferencesLine,
+                defaultContainerName: pod.defaultContainerName
             )
         }
     }
@@ -3109,7 +3112,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 ephemeralContainerNamesLine: pod.ephemeralContainerNamesLine,
                 labels: pod.labels,
                 containerImagesLine: pod.containerImagesLine,
-                ownerReferencesLine: pod.ownerReferencesLine
+                ownerReferencesLine: pod.ownerReferencesLine,
+                defaultContainerName: pod.defaultContainerName
             )
         }
     }

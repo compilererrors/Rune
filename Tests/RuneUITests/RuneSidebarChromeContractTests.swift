@@ -1703,7 +1703,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(workspaceSource.contains("let onSendControlSequence: (String) -> Void"))
         XCTAssertTrue(rootViewSource.contains("viewModel.sendTerminalControlSequence(text)"))
         XCTAssertTrue(viewModelSource.contains("public func sendTerminalControlSequence(_ text: String)"))
-        XCTAssertTrue(viewModelSource.contains("try await terminalBackend.writeToPodTerminalSession(id: session.id, text: text)"))
+        XCTAssertTrue(viewModelSource.contains("try await terminalBackend(forSessionID: session.id).writeToPodTerminalSession(id: session.id, text: text)"))
     }
 
     func testTerminalSurfaceReportsStableGridSizeForResizePropagation() throws {
@@ -1816,7 +1816,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let kubeClientSource = try String(contentsOfFile: kubernetesClientPath, encoding: .utf8)
 
         XCTAssertTrue(viewModelSource.contains("public func closeTerminalSession(id: String)"))
-        XCTAssertTrue(viewModelSource.contains("guard state.removeTerminalSession(id: id) != nil else { return }"))
+        XCTAssertTrue(viewModelSource.contains("guard let closed = state.removeTerminalSession(id: id) else { return }"), "closing removes the session, and remembers it for Cmd-Shift-T")
         let closeSessionBlock = try functionBlock(
             named: "public func closeTerminalSession(id: String)",
             endingBefore: "public func clearTerminalSessionTranscript()",
@@ -1824,9 +1824,10 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         )
         XCTAssertTrue(closeSessionBlock.contains("let wasActive = state.activeTerminalSessionID == id"))
         XCTAssertFalse(closeSessionBlock.contains("state.selectTerminalSession(id: id)"))
-        XCTAssertTrue(closeSessionBlock.contains("await terminalBackend.stopPodTerminalSession(id: id)"))
+        XCTAssertTrue(closeSessionBlock.contains("let backend = terminalBackend(forSessionID: id)"), "the demo and real shells are stopped by their own backend")
+        XCTAssertTrue(closeSessionBlock.contains("await backend.stopPodTerminalSession(id: id)"))
         XCTAssertTrue(viewModelSource.contains("public func stopTerminalSession(resetState: Bool = false)"))
-        XCTAssertTrue(viewModelSource.contains("await terminalBackend.stopPodTerminalSession(id: sessionID)"))
+        XCTAssertTrue(viewModelSource.contains("await backend.stopPodTerminalSession(id: sessionID)"))
         XCTAssertTrue(viewModelSource.contains("public func stopPortForward(_ session: PortForwardSession)"))
         XCTAssertTrue(viewModelSource.contains("await kubeClient.stopPortForward(sessionID: session.id)"))
         XCTAssertTrue(viewModelSource.contains("public func clearPortForwardSession(_ session: PortForwardSession)"))

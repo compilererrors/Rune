@@ -331,6 +331,7 @@ struct ResourceTerminalCommonCommandRow: View {
     static let minimumHeight: CGFloat = 28
 
     let command: String
+    var detail: String? = nil
     let copyHelp: String
     let onInsert: (String) -> Void
     let onCopy: () -> Void
@@ -342,7 +343,16 @@ struct ResourceTerminalCommonCommandRow: View {
                     Text(command)
                         .runeText(.code)
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
                     Spacer(minLength: 8)
+                    if let detail {
+                        Text(detail)
+                            .runeText(.micro)
+                            .foregroundStyle(.runeSecondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
                     Image(systemName: "arrow.turn.down.left")
                         .runeText(.microEmphasis)
                         .foregroundStyle(.runeSecondary)
@@ -354,7 +364,7 @@ struct ResourceTerminalCommonCommandRow: View {
                 )
                 .contentShape(Rectangle())
             }
-            .buttonStyle(RuneToolbarButtonStyle())
+            .buttonStyle(RuneToolbarButtonStyle(fillsWidth: true))
             .help("Insert into terminal prompt: \(command)")
             .accessibilityLabel("Insert \(command) into terminal prompt")
 
@@ -383,6 +393,12 @@ struct ResourceTerminalDetailsView: View {
     let selectedPod: PodSummary?
     let portForwardSessions: [PortForwardSession]
     let onFillCommand: (String) -> Void
+    var commandHistory: [TerminalCommandHistory.Entry] = []
+    var onClearCommandHistory: (() -> Void)? = nil
+    @AppStorage(RuneSettingsKeys.terminalCommonCommandsExpanded) private var isCommonCommandsExpanded = true
+    @AppStorage(RuneSettingsKeys.terminalCommandHistoryExpanded) private var isCommandHistoryExpanded = true
+    @AppStorage(RuneSettingsKeys.terminalCommandHistoryLimit) private var commandHistoryLimit = RuneSettingsKeys.terminalCommandHistoryLimitDefault
+    @AppStorage(RuneSettingsKeys.terminalCommandHistoryEnabled) private var isCommandHistoryEnabled = true
 
     private let commonCommands = [
         "pwd",
@@ -432,17 +448,33 @@ struct ResourceTerminalDetailsView: View {
 
             Divider()
 
-            VStack(alignment: .leading, spacing: RuneSpacing.xs) {
+            RuneDisclosureSection("Common Commands", isExpanded: $isCommonCommandsExpanded) {
+                VStack(alignment: .leading, spacing: RuneSpacing.xs) {
+                    ForEach(commonCommands, id: \.self) { command in
+                        ResourceTerminalCommonCommandRow(
+                            command: command,
+                            copyHelp: session == nil ? "Copy shell command" : "Copy kubectl exec command",
+                            onInsert: onFillCommand,
+                            onCopy: { copySuggestedCommand(command) }
+                        )
+                    }
+                }
+            } label: {
                 Text("Common Commands")
                     .runeText(.headline)
+            }
 
-                ForEach(commonCommands, id: \.self) { command in
-                    ResourceTerminalCommonCommandRow(
-                        command: command,
-                        copyHelp: session == nil ? "Copy shell command" : "Copy kubectl exec command",
-                        onInsert: onFillCommand,
-                        onCopy: { copySuggestedCommand(command) }
-                    )
+            Divider()
+
+            RuneDisclosureSection("Command History", isExpanded: $isCommandHistoryExpanded) {
+                commandHistoryContent
+            } label: {
+                HStack(spacing: RuneSpacing.xs) {
+                    Text("Command History")
+                        .runeText(.headline)
+                    if !commandHistory.isEmpty {
+                        RuneBadge("\(commandHistory.count)")
+                    }
                 }
             }
 
@@ -465,6 +497,53 @@ struct ResourceTerminalDetailsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
+
+    /// Commands run in pod shells, newest first: select one to put it in
+    /// the prompt (it is not run), or copy it. Rows are built as they scroll
+    /// into view; the history can hold a thousand.
+    @ViewBuilder
+    private var commandHistoryContent: some View {
+        LazyVStack(alignment: .leading, spacing: RuneSpacing.xs) {
+            if !isCommandHistoryEnabled || commandHistoryLimit <= 0 {
+                Text("Command history is off. Turn it on in Settings > Performance > Terminal.")
+                    .runeText(.micro)
+                    .foregroundStyle(.runeSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if commandHistory.isEmpty {
+                Text("Commands you run in a pod shell appear here.")
+                    .runeText(.micro)
+                    .foregroundStyle(.runeSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(commandHistory, id: \.self) { entry in
+                    ResourceTerminalCommonCommandRow(
+                        command: entry.command,
+                        detail: Self.historyDetail(for: entry),
+                        copyHelp: "Copy command",
+                        onInsert: onFillCommand,
+                        onCopy: { TerminalKubectlCommandBuilder.copyToPasteboard(entry.command) }
+                    )
+                    .help("\(entry.command)\nRan in \(entry.namespace)/\(entry.podName) on \(entry.contextName)")
+                }
+                if let onClearCommandHistory {
+                    Button("Clear History", role: .destructive, action: onClearCommandHistory)
+                        .buttonStyle(RuneCompactButtonStyle())
+                        .accessibilityIdentifier("terminal-command-history-clear")
+                }
+            }
+        }
+    }
+
+    /// When the command ran; where it ran is in the row's tooltip.
+    static func historyDetail(for entry: TerminalCommandHistory.Entry, now: Date = Date()) -> String {
+        historyDateFormatter.localizedString(for: entry.date, relativeTo: now)
+    }
+
+    private static let historyDateFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
 
     private func copySuggestedCommand(_ command: String) {
         guard let session else {

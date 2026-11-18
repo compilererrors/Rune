@@ -3,14 +3,31 @@ import Foundation
 
 enum ResourceLogANSIFormatter {
     static func attributedString(from text: String, font: NSFont, foreground: NSColor = .labelColor, backgrounds: [NSColor] = []) -> NSAttributedString {
+        formatted(text, font: font, foreground: foreground, backgrounds: backgrounds).text
+    }
+
+    /// Formats `text` and reports the colour and weight still in effect at
+    /// its end, as the SGR sequences that set them. Put them before text
+    /// formatted on its own after it (`continuing`), so a colour left open
+    /// on one chunk of a log carries into the next.
+    static func formatted(
+        _ text: String,
+        continuing openSGR: String = "",
+        font: NSFont,
+        foreground: NSColor = .labelColor,
+        backgrounds: [NSColor] = []
+    ) -> (text: NSAttributedString, openSGR: String) {
+        let text = openSGR.isEmpty ? text : openSGR + text
         let output = NSMutableAttributedString()
         var attributes = baseAttributes(font: font)
+        var open = OpenStyle()
         var index = text.startIndex
 
         while index < text.endIndex {
             if text[index] == "\u{1B}" {
                 if let parsed = parseSGRSequence(in: text, from: index) {
                     attributes = applying(parsed.codes, to: attributes, font: font)
+                    open.apply(parsed.codes)
                     index = parsed.endIndex
                     continue
                 }
@@ -39,7 +56,31 @@ enum ResourceLogANSIFormatter {
             colors.append((range, backgrounds.isEmpty ? color : RuneThemeContrast.readable(color, over: backgrounds)))
         }
         for (range, color) in colors { output.addAttribute(.foregroundColor, value: color, range: range) }
-        return output
+        return (output, open.sequences)
+    }
+
+    /// The colour and weight set by SGR codes and not yet reset, following
+    /// the codes `applying` understands.
+    private struct OpenStyle {
+        var colorCode: Int?
+        var isBold = false
+
+        mutating func apply(_ codes: [Int]) {
+            for code in codes {
+                switch code {
+                case 0: self = OpenStyle()
+                case 1: isBold = true
+                case 22: isBold = false
+                case 30...37, 90...97: colorCode = code
+                case 39: colorCode = nil
+                default: continue
+                }
+            }
+        }
+
+        var sequences: String {
+            (isBold ? "\u{1B}[1m" : "") + (colorCode.map { "\u{1B}[\($0)m" } ?? "")
+        }
     }
 
     static func plainText(from text: String) -> String {

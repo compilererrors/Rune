@@ -82,6 +82,15 @@ public enum RuneSettingsKeys {
     public static let appearanceThemeDefault = "native"
     public static let appearanceRecentThemes = "rune.settings.appearance.recentThemes"
     public static let appearanceRecentThemeLimit = 12
+    /// When false, Rune records no shell commands, clears the kept ones and saves nothing to disk.
+    public static let terminalCommandHistoryEnabled = "rune.settings.terminal.commandHistoryEnabled"
+    /// How many shell commands the Commands tab keeps; 0 keeps none.
+    public static let terminalCommandHistoryLimit = "rune.settings.terminal.commandHistoryLimit"
+    public static let terminalCommandHistoryLimitDefault = 50
+    public static let terminalCommandHistoryLimitMaximum = 1_000
+    public static let terminalCommandHistory = "rune.terminal.commandHistory"
+    public static let terminalCommonCommandsExpanded = "rune.terminal.commands.commonExpanded"
+    public static let terminalCommandHistoryExpanded = "rune.terminal.commands.historyExpanded"
     public static let terminalScrollbackLineLimit = "rune.settings.terminal.scrollbackLineLimit"
     public static let terminalScrollbackLineLimitDefault = 60_000
     public static let terminalScrollbackLineLimitMinimum = 1_000
@@ -106,6 +115,10 @@ public enum RuneSettingsKeys {
     public static let writeSafetyRequirePostActionVerification = "rune.settings.writeSafety.requirePostActionVerification"
     public static let writeSafetyRequireProductionSecondConfirmation = "rune.settings.writeSafety.requireProductionSecondConfirmation"
     public static let writeSafetyShowDestructiveCommandsInCommandPalette = "rune.settings.writeSafety.showDestructiveCommandsInCommandPalette"
+
+    public static func clampedTerminalCommandHistoryLimit(_ value: Int) -> Int {
+        min(terminalCommandHistoryLimitMaximum, max(0, value))
+    }
 
     public static func clampedTerminalFontSize(_ value: Double) -> Double {
         min(terminalFontSizeMaximum, max(terminalFontSizeMinimum, value))
@@ -183,6 +196,10 @@ public enum RuneSettingsKeys {
             layoutDetailPaneVisible: true,
             layoutPodNameColumnWidth: 280.0,
             terminalFontSize: terminalFontSizeDefault,
+            terminalCommandHistoryEnabled: true,
+            terminalCommandHistoryLimit: terminalCommandHistoryLimitDefault,
+            terminalCommonCommandsExpanded: true,
+            terminalCommandHistoryExpanded: true,
             hideManagedFieldsByDefault: true,
             simpleMode: false,
             showHoverTooltips: true,
@@ -442,6 +459,21 @@ public extension UserDefaults {
     var runeExportUsesPrivacySafeFilenames: Bool {
         get { (object(forKey: RuneSettingsKeys.exportUsesPrivacySafeFilenames) as? Bool) ?? false }
         set { set(newValue, forKey: RuneSettingsKeys.exportUsesPrivacySafeFilenames) }
+    }
+
+    var runeTerminalCommandHistoryEnabled: Bool {
+        get { (object(forKey: RuneSettingsKeys.terminalCommandHistoryEnabled) as? Bool) ?? true }
+        set {
+            set(newValue, forKey: RuneSettingsKeys.terminalCommandHistoryEnabled)
+            if !newValue { removeObject(forKey: RuneSettingsKeys.terminalCommandHistory) }
+        }
+    }
+
+    /// The command history limit in effect: 0 while history is turned off.
+    var runeEffectiveTerminalCommandHistoryLimit: Int {
+        guard runeTerminalCommandHistoryEnabled else { return 0 }
+        let stored = object(forKey: RuneSettingsKeys.terminalCommandHistoryLimit) as? Int
+        return RuneSettingsKeys.clampedTerminalCommandHistoryLimit(stored ?? RuneSettingsKeys.terminalCommandHistoryLimitDefault)
     }
 
     var runeAppearanceRecentThemes: [String] {

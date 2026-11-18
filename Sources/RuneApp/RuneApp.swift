@@ -203,6 +203,7 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
 
 @main
 struct RuneApplication: App {
+
     @NSApplicationDelegateAdaptor(RuneAppDelegate.self) private var appDelegate
     @StateObject private var viewModel: RuneAppViewModel
 
@@ -211,7 +212,7 @@ struct RuneApplication: App {
         RuneLaunchEnvironment.applyProcessOverrides()
         _viewModel = StateObject(
             wrappedValue: RuneAppViewModel(
-                terminalBackend: RuneDebugFakePodShell.fromEnvironment(),
+                terminalBackend: RuneDebugShell.fromEnvironment(),
                 contextPreferences: FileBackedContextPreferencesStore.applicationSupportStore(),
                 lastAppStateStore: JSONLastAppStateStore(),
                 terminalWorkspaceStateStore: JSONTerminalWorkspaceStateStore()

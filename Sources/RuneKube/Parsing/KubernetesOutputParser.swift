@@ -254,7 +254,8 @@ public struct KubernetesOutputParser {
             ephemeralContainerNamesLine: nonEmpty(ephemeralContainerNamesLine),
             labels: item.metadata.labels ?? [:],
             containerImagesLine: nonEmpty(containerImagesLine),
-            ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences)
+            ownerReferencesLine: ownerReferencesLine(from: item.metadata.ownerReferences),
+            defaultContainerName: nonEmpty(item.metadata.annotations?.defaultContainer)
         )
     }
 
@@ -374,7 +375,10 @@ public struct KubernetesOutputParser {
             ephemeralContainerNamesLine: nonEmpty(ephemeralContainerNames),
             labels: labels,
             containerImagesLine: nonEmpty(containerImages),
-            ownerReferencesLine: nonEmpty(ownerReferences)
+            ownerReferencesLine: nonEmpty(ownerReferences),
+            defaultContainerName: nonEmpty(
+                (metadata["annotations"] as? [String: Any])?[Self.defaultContainerAnnotation] as? String
+            )
         )
     }
 
@@ -1048,7 +1052,19 @@ public struct KubernetesOutputParser {
         let deletionTimestamp: String?
         let labels: [String: String]?
         let ownerReferences: [KubeOwnerReference]?
+        let annotations: KubePodRowAnnotations?
     }
+
+    /// The one annotation the pod list reads; the rest are not kept.
+    private struct KubePodRowAnnotations: Decodable {
+        let defaultContainer: String?
+
+        enum CodingKeys: String, CodingKey {
+            case defaultContainer = "kubectl.kubernetes.io/default-container"
+        }
+    }
+
+    private static let defaultContainerAnnotation = "kubectl.kubernetes.io/default-container"
 
     private struct KubeOwnerReference: Decodable {
         let kind: String?

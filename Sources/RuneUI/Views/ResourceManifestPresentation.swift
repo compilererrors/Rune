@@ -193,7 +193,7 @@ struct ManifestYAMLActionMenus: View {
 
 /// The YAML inspector's rare actions in one overflow menu: the draft, the
 /// file and the managed-fields view option, so the bar shows only the edit
-/// actions inline (progressive disclosure, Design/README.md "Declutter").
+/// actions inline (progressive disclosure).
 struct ManifestYAMLMoreMenu: View {
     let draftTitle: String
     let fileTitle: String

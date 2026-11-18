@@ -960,6 +960,84 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
         )
     }
 
+    /// A text size step rescales the document instead of laying a long log
+    /// out again; search must still land on the match.
+    @MainActor
+    func testLogSearchNavigationCentersActiveMatchInALargeLogAfterATextSizeStep() async throws {
+        let defaults = UserDefaults.standard
+        let previousSize = defaults.object(forKey: RuneSettingsKeys.terminalFontSize)
+        defer { if let previousSize { defaults.set(previousSize, forKey: RuneSettingsKeys.terminalFontSize) } else { defaults.removeObject(forKey: RuneSettingsKeys.terminalFontSize) } }
+        defaults.set(12.0, forKey: RuneSettingsKeys.terminalFontSize)
+        let text = (0..<6_000)
+            .map { index in
+                if index == 30 || index == 5_400 {
+                    return "line-\(index) level=error marker=needle"
+                }
+                return "line-\(index) level=info"
+            }
+            .joined(separator: "\n")
+        let result = ResourceLogSearchResult.makeForInspector(text: text, query: "needle")
+        let model = ResourceLogRenderStabilityModel(text: text, renderResult: result)
+        model.navigationResult = result
+        model.navigationSequence = 1
+        let host = NSHostingController(
+            rootView: ResourceLogRenderStabilityHarness(model: model)
+                .frame(width: 720, height: 360)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 360),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        window.makeKeyAndOrderFront(nil)
+        defer { closeTestWindow(window) }
+
+        try await settle(window: window)
+        defaults.set(14.0, forKey: RuneSettingsKeys.terminalFontSize)
+        try await settle(window: window)
+        let textView = try XCTUnwrap(findTextViews(in: host.view).first { $0.string == text })
+        let scrollView = try XCTUnwrap(textView.enclosingScrollView)
+
+        model.selectedMatchIndex = 1
+        model.navigationSequence &+= 1
+        try await settle(window: window)
+
+        XCTAssertEqual(textView.selectedRange(), result.matchRanges[1])
+        assertRangeIsCentered(result.matchRanges[1], in: textView, scrollView: scrollView)
+
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        XCTAssertLessThan(scrollView.contentView.bounds.midY, textView.bounds.midY)
+
+        model.navigationSequence &+= 1
+        try await settle(window: window)
+
+        XCTAssertEqual(textView.selectedRange(), result.matchRanges[1])
+        assertRangeIsCentered(result.matchRanges[1], in: textView, scrollView: scrollView)
+
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        let appendedText = text + "\nline-421 level=info"
+        let appendedResult = ResourceLogSearchResult.makeForInspector(
+            text: appendedText,
+            query: "needle"
+        )
+        model.text = appendedText
+        model.renderResult = appendedResult
+        model.navigationResult = appendedResult
+        try await settle(window: window)
+
+        XCTAssertEqual(
+            scrollView.contentView.bounds.origin.y,
+            0,
+            accuracy: 1,
+            "Publishing append-only search ranges without a new navigation sequence must preserve manual scroll."
+        )
+    }
+
     @MainActor
     func testStreamedWideLogAppendKeepsVirtualizedRendererPolicyBeforeAndAfterIndexing() async throws {
         let initialText = Self.makeMockWidePodLogTranscript(lineCount: 149)

@@ -122,4 +122,16 @@ final class ResourceStructuredLogAnalyzerTests: XCTestCase {
         }
         XCTAssertEqual(cancellationChecks, 16)
     }
+
+    /// Rune's own segment header frames each read with two rule lines; they
+    /// are decoration, not log output, so they never count as repeats.
+    func testRuneSegmentRulesAreNotRepeatedLines() {
+        let rule = String(repeating: "\u{2500}", count: 60)
+        let text = [rule, "2026-01-01T10:00:00Z  Pod  demo/api-0", "Context: sample-cluster", "Sources: api-0", rule,
+                    "", "started demo API", "handled GET /healthz"].joined(separator: "\n")
+        XCTAssertEqual(ResourceStructuredLogAnalyzer.analyze(text: text).duplicateLines, [])
+
+        let repeated = text + "\nhandled GET /healthz"
+        XCTAssertEqual(ResourceStructuredLogAnalyzer.analyze(text: repeated).duplicateLines.first?.count, 2, "real repeats still count")
+    }
 }

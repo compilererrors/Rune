@@ -13,6 +13,9 @@ public struct TerminalScreenEmulator: Sendable {
         var cursorColumn = 0
         var savedCursorRow = 0
         var savedCursorColumn = 0
+        /// The scroll region (DECSTBM), as top and bottom rows; nil is the
+        /// whole screen.
+        var scrollRegion: (top: Int, bottom: Int)?
     }
 
     private var screen = Screen()
@@ -23,6 +26,11 @@ public struct TerminalScreenEmulator: Sendable {
     private let maxScrollbackLines: Int
     private(set) public var columns: Int
     private(set) public var rows: Int
+    /// Whether the shell asked for application cursor keys (DECCKM), as
+    /// full-screen tools do; cursor keys are then sent as SS3 sequences.
+    private(set) public var applicationCursorKeys = false
+    /// Whether a full-screen tool (vim, less, top) has the alternate screen.
+    public var isUsingAlternateScreen: Bool { savedPrimaryScreen != nil }
 
     public init(
         columns: Int = 80,
@@ -80,23 +88,40 @@ public struct TerminalScreenEmulator: Sendable {
     public mutating func resize(columns: Int, rows: Int) {
         self.columns = Self.clampedColumns(columns)
         self.rows = Self.clampedRows(rows)
-        for index in screen.lines.indices where screen.lines[index].count > self.columns {
-            screen.lines[index].removeSubrange(self.columns...)
+        var visible = screen
+        fit(&visible, keepingHistory: savedPrimaryScreen == nil)
+        screen = visible
+        // The primary screen waits behind a full-screen tool; it has to fit
+        // the new size too, or its scroll region and rows outlive the resize.
+        if var primary = savedPrimaryScreen {
+            fit(&primary, keepingHistory: true)
+            savedPrimaryScreen = primary
         }
-        screen.cursorColumn = min(screen.cursorColumn, self.columns - 1)
-        while screen.lines.count > self.rows {
+        ensureCursorLine()
+    }
+
+    /// Fits a screen to the current size. Rows pushed off the top of the
+    /// primary screen become history.
+    private mutating func fit(_ screen: inout Screen, keepingHistory: Bool) {
+        for index in screen.lines.indices where screen.lines[index].count > columns {
+            screen.lines[index].removeSubrange(columns...)
+        }
+        screen.cursorColumn = min(screen.cursorColumn, columns - 1)
+        screen.scrollRegion = nil
+        while screen.lines.count > rows {
             let removed = screen.lines.removeFirst()
-            if savedPrimaryScreen == nil {
+            if keepingHistory {
                 appendScrollback(Self.renderedLine(removed))
             }
             screen.cursorRow = max(0, screen.cursorRow - 1)
         }
-        ensureCursorLine()
+        screen.cursorRow = min(max(0, screen.cursorRow), rows - 1)
     }
 
     public mutating func reset() {
         screen = Screen()
         savedPrimaryScreen = nil
+        applicationCursorKeys = false
         scrollback.removeAll(keepingCapacity: true)
         scrollbackStartIndex = 0
         pendingControlSequence = ""
@@ -116,6 +141,29 @@ public struct TerminalScreenEmulator: Sendable {
             && screen.lines.indices.contains(screen.cursorRow)
             && screen.lines[screen.cursorRow].isEmpty
         return cursorIsOnEmptyLine && !text.isEmpty && !text.hasSuffix("\n") ? text + "\n" : text
+    }
+
+    /// Whether the characters just before the cursor are `text`, followed
+    /// back over the rows it wrapped across. True when a shell has echoed
+    /// what was typed; false at a prompt that hides its input.
+    public func hasTextBeforeCursor(_ text: String) -> Bool {
+        var remaining = Array(text)
+        guard !remaining.isEmpty else { return false }
+        var row = screen.cursorRow
+        var end = screen.cursorColumn
+        while screen.lines.indices.contains(row) {
+            let line = screen.lines[row]
+            guard end <= line.count else { return false }
+            let count = min(end, remaining.count)
+            guard line[(end - count)..<end].elementsEqual(remaining.suffix(count)) else { return false }
+            remaining.removeLast(count)
+            if remaining.isEmpty { return true }
+            // The text continues on the row above only if that row is full.
+            row -= 1
+            guard row >= 0, screen.lines[row].count == columns else { return false }
+            end = columns
+        }
+        return false
     }
 
     private mutating func consumeEscape(in input: [Character], index: inout Int) -> Bool {
@@ -197,6 +245,7 @@ public struct TerminalScreenEmulator: Sendable {
         case "c":
             screen = Screen()
             savedPrimaryScreen = nil
+            applicationCursorKeys = false
             scrollback.removeAll(keepingCapacity: true)
             scrollbackStartIndex = 0
         default:
@@ -264,10 +313,14 @@ public struct TerminalScreenEmulator: Sendable {
             saveCursor()
         case "u":
             restoreCursor()
-        case "h" where isPrivate && parameters.contains(where: Self.isAlternateScreenMode):
-            enterAlternateScreen()
-        case "l" where isPrivate && parameters.contains(where: Self.isAlternateScreenMode):
-            leaveAlternateScreen()
+        case "r" where !isPrivate:
+            setScrollRegion(top: parameters.first ?? 0, bottom: parameters.dropFirst().first ?? 0)
+        case "h" where isPrivate:
+            if parameters.contains(1) { applicationCursorKeys = true }
+            if parameters.contains(where: Self.isAlternateScreenMode) { enterAlternateScreen() }
+        case "l" where isPrivate:
+            if parameters.contains(1) { applicationCursorKeys = false }
+            if parameters.contains(where: Self.isAlternateScreenMode) { leaveAlternateScreen() }
         default:
             // SGR, mode toggles, device queries and unsupported extensions do not
             // change the plain-text screen model.
@@ -295,6 +348,15 @@ public struct TerminalScreenEmulator: Sendable {
     }
 
     private mutating func lineFeed() {
+        if let region = screen.scrollRegion {
+            if screen.cursorRow == region.bottom {
+                scrollRegionUp(region)
+            } else if screen.cursorRow < rows - 1 {
+                screen.cursorRow += 1
+                ensureCursorLine()
+            }
+            return
+        }
         if screen.cursorRow >= rows - 1 {
             ensureCursorLine()
             let removed = screen.lines.removeFirst()
@@ -310,6 +372,14 @@ public struct TerminalScreenEmulator: Sendable {
     }
 
     private mutating func reverseIndex() {
+        if let region = screen.scrollRegion {
+            if screen.cursorRow == region.top {
+                scrollRegionDown(region)
+            } else if screen.cursorRow > 0 {
+                screen.cursorRow -= 1
+            }
+            return
+        }
         if screen.cursorRow > 0 {
             screen.cursorRow -= 1
         } else {
@@ -403,6 +473,15 @@ public struct TerminalScreenEmulator: Sendable {
 
     private mutating func insertLines(_ count: Int) {
         ensureCursorLine()
+        if let region = screen.scrollRegion {
+            guard (region.top...region.bottom).contains(screen.cursorRow) else { return }
+            padLines(through: region.bottom)
+            for _ in 0..<min(count, region.bottom - screen.cursorRow + 1) {
+                screen.lines.remove(at: region.bottom)
+                screen.lines.insert([], at: screen.cursorRow)
+            }
+            return
+        }
         for _ in 0..<min(count, rows) {
             screen.lines.insert([], at: screen.cursorRow)
             if screen.lines.count > rows {
@@ -413,6 +492,15 @@ public struct TerminalScreenEmulator: Sendable {
 
     private mutating func deleteLines(_ count: Int) {
         ensureCursorLine()
+        if let region = screen.scrollRegion {
+            guard (region.top...region.bottom).contains(screen.cursorRow) else { return }
+            padLines(through: region.bottom)
+            for _ in 0..<min(count, region.bottom - screen.cursorRow + 1) {
+                screen.lines.remove(at: screen.cursorRow)
+                screen.lines.insert([], at: region.bottom)
+            }
+            return
+        }
         for _ in 0..<min(count, rows) where screen.lines.indices.contains(screen.cursorRow) {
             screen.lines.remove(at: screen.cursorRow)
             screen.lines.append([])
@@ -420,6 +508,10 @@ public struct TerminalScreenEmulator: Sendable {
     }
 
     private mutating func scrollUp(_ count: Int) {
+        if let region = screen.scrollRegion {
+            for _ in 0..<min(count, rows) { scrollRegionUp(region) }
+            return
+        }
         for _ in 0..<min(count, rows) {
             ensureCursorLine()
             let removed = screen.lines.removeFirst()
@@ -431,11 +523,55 @@ public struct TerminalScreenEmulator: Sendable {
     }
 
     private mutating func scrollDown(_ count: Int) {
+        if let region = screen.scrollRegion {
+            for _ in 0..<min(count, rows) { scrollRegionDown(region) }
+            return
+        }
         for _ in 0..<min(count, rows) {
             screen.lines.insert([], at: 0)
             if screen.lines.count > rows {
                 screen.lines.removeLast()
             }
+        }
+    }
+
+    /// DECSTBM: 1-based top and bottom rows; 0 or a whole-screen region
+    /// clears it. The cursor goes home, as on a VT100.
+    private mutating func setScrollRegion(top: Int, bottom: Int) {
+        let topRow = max(top, 1) - 1
+        let bottomRow = (bottom <= 0 ? rows : min(bottom, rows)) - 1
+        if topRow < bottomRow, topRow > 0 || bottomRow < rows - 1 {
+            screen.scrollRegion = (topRow, bottomRow)
+        } else {
+            screen.scrollRegion = nil
+        }
+        screen.cursorRow = 0
+        screen.cursorColumn = 0
+        ensureCursorLine()
+    }
+
+    /// Scrolls the region up a line. A line leaving a region that starts at
+    /// the top of the primary screen is history, as when the whole screen
+    /// scrolls (output above a status line, such as apt's progress bar);
+    /// a line leaving a region lower down is not.
+    private mutating func scrollRegionUp(_ region: (top: Int, bottom: Int)) {
+        padLines(through: region.bottom)
+        let removed = screen.lines.remove(at: region.top)
+        if region.top == 0, savedPrimaryScreen == nil {
+            appendScrollback(Self.renderedLine(removed))
+        }
+        screen.lines.insert([], at: region.bottom)
+    }
+
+    private mutating func scrollRegionDown(_ region: (top: Int, bottom: Int)) {
+        padLines(through: region.bottom)
+        screen.lines.remove(at: region.bottom)
+        screen.lines.insert([], at: region.top)
+    }
+
+    private mutating func padLines(through row: Int) {
+        while screen.lines.count <= min(row, rows - 1) {
+            screen.lines.append([])
         }
     }
 

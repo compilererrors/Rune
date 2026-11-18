@@ -439,7 +439,8 @@ enum ResourceStructuredLogAnalyzer {
                 try cancellationCheck()
             }
             let fingerprint = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !fingerprint.isEmpty else { continue }
+            // Rune frames each read with rule lines; they are not log output.
+            guard !fingerprint.isEmpty, !fingerprint.allSatisfy({ $0 == "\u{2500}" }) else { continue }
             var entry = counts[fingerprint, default: (0, line)]
             entry.count += 1
             counts[fingerprint] = entry

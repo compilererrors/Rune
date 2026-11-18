@@ -982,6 +982,17 @@ final class KubernetesClientTests: XCTestCase {
         XCTAssertEqual(contexts.map(\.name), ["later", "shared"])
     }
 
+    func testOutputParserReadsThePodDefaultContainerAnnotation() throws {
+        let raw = """
+        {"items":[{"metadata":{"name":"api-0","namespace":"default","annotations":{"kubectl.kubernetes.io/default-container":"app","example.test/other":"ignored"}},"spec":{"containers":[{"name":"proxy"},{"name":"app"}]},"status":{"phase":"Running"}},{"metadata":{"name":"api-1","namespace":"default"},"spec":{"containers":[{"name":"proxy"},{"name":"app"}]},"status":{"phase":"Running"}},{"metadata":{"name":"api-2","namespace":"default","annotations":{"kubectl.kubernetes.io/default-container":"gone"}},"spec":{"containers":[{"name":"proxy"},{"name":"app"}]},"status":{"phase":"Running"}}]}
+        """
+
+        let pods = try KubernetesOutputParser().parsePodsListJSON(namespace: "default", from: raw)
+
+        XCTAssertEqual(pods.map(\.defaultContainerName), ["app", nil, "gone"])
+        XCTAssertEqual(pods.map(\.defaultExecContainerName), ["app", "proxy", "proxy"], "an annotation naming no container falls back to the first")
+    }
+
     func testOutputParserParsesKubernetesPodJSON() throws {
         let raw = """
         {"items":[{"metadata":{"name":"api-0","namespace":"default","creationTimestamp":"2026-04-26T10:00:00Z","labels":{"app":"api","tier":"web"},"ownerReferences":[{"kind":"ReplicaSet","name":"api-7c9d8f6b5c"}]},"spec":{"containers":[{"name":"app","image":"example.test/api:v1"},{"name":"sidecar","image":"example.test/sidecar:v2"}],"initContainers":[{"name":"setup","image":"example.test/setup:v1"}],"ephemeralContainers":[{"name":"debugger","image":"example.test/debugger:v1"}]},"status":{"phase":"Running","containerStatuses":[{"restartCount":2}],"initContainerStatuses":[{"restartCount":1}],"ephemeralContainerStatuses":[{"restartCount":3}]}}]}

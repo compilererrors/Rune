@@ -44,6 +44,9 @@ struct TerminalPodLogTabState: Equatable {
     var tabs: [TerminalPodLogTab] = []
     var activeTabID: String?
     var selectedPodID = ""
+    /// Closed tabs, newest last, for Cmd-Shift-T.
+    private(set) var recentlyClosed: [TerminalPodLogTab] = []
+    static let recentlyClosedLimit = 10
 
     var isEmpty: Bool {
         tabs.isEmpty
@@ -168,6 +171,9 @@ struct TerminalPodLogTabState: Equatable {
     mutating func close(id: String, availablePods: [PodSummary], fallbackPod: PodSummary?) -> PodSummary? {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return nil }
         let closingActiveTab = activeTabID == id
+        recentlyClosed.removeAll { $0.podID == tabs[index].podID }
+        recentlyClosed.append(tabs[index])
+        if recentlyClosed.count > Self.recentlyClosedLimit { recentlyClosed.removeFirst() }
         tabs.remove(at: index)
         guard closingActiveTab else { return nil }
 
@@ -179,6 +185,25 @@ struct TerminalPodLogTabState: Equatable {
 
         let nextIndex = min(index, tabs.count - 1)
         return select(id: tabs[nextIndex].id, availablePods: availablePods)
+    }
+
+    /// Reopens the most recently closed tab whose pod still exists, and
+    /// selects it; nil when there is none. A tab whose pod is not listed
+    /// stays closed but is kept: the pod list may only be reloading.
+    mutating func reopenLastClosed(availablePods: [PodSummary]) -> PodSummary? {
+        for index in recentlyClosed.indices.reversed() {
+            guard let pod = availablePods.first(where: { $0.id == recentlyClosed[index].podID }) else { continue }
+            recentlyClosed.remove(at: index)
+            add(preferredPod: pod)
+            return pod
+        }
+        return nil
+    }
+
+    /// Selects the tab next to the active one, wrapping at the ends.
+    mutating func selectAdjacent(offset: Int, availablePods: [PodSummary]) -> PodSummary? {
+        guard let id = TerminalTabCycle.adjacentID(in: tabs.map(\.id), active: activeTabID, offset: offset) else { return nil }
+        return select(id: id, availablePods: availablePods)
     }
 
     mutating func updateActive(to pod: PodSummary) {

@@ -26,6 +26,47 @@ final class RuneSelectedKPIRunnerTests: XCTestCase {
         XCTAssertTrue(source.contains("SWIFTPM_MODULECACHE_OVERRIDE"))
     }
 
+    /// The fast tier gates every release build on the flows people feel;
+    /// the full tier adds everything else.
+    func testRunnerHasFastAndFullTiers() throws {
+        let source = try String(contentsOf: repoRoot.appendingPathComponent("scripts/run-selected-kpis.sh"), encoding: .utf8)
+        XCTAssertTrue(source.contains("KPI_TIER=\"${KPI_TIER:-full}\""))
+        XCTAssertTrue(source.contains("kpi_tier=$KPI_TIER"))
+
+        let fast = try filters(named: "fast_kpi_filters", in: source)
+        let fullOnly = try filters(named: "full_only_kpi_filters", in: source)
+        XCTAssertTrue(Set(fast).isDisjoint(with: fullOnly), "a KPI belongs to one tier")
+        for kpi in [
+            "RuneTerminalTypingSafeguardTests/testKeystrokesStayFastKPI",
+            "RuneTerminalWorkloadTests/testTerminalOutputEndToEndKPI",
+            "RuneTerminalWorkloadTests/testShellTabSwitchKPI",
+            "RuneTerminalWorkloadTests/testWindowLiveResizeKPI",
+            "RuneDocumentFlowKPITests/testLogFollowAppendKPI",
+            "RuneDocumentFlowKPITests/testYAMLEditorTypingInALargeManifestKPI",
+            "RuneScrollSmoothnessBenchmarkTests/testScrollingLargeTablesAndDocumentsStaysInsideFrameBudgetKPI",
+            "RunePerformanceBenchmarksTests/testColdStartLaunchShellInitialMountKPI"
+        ] {
+            XCTAssertTrue(fast.contains(kpi), "\(kpi) is in the fast tier")
+        }
+        for kpi in [
+            "RuneTerminalWorkloadTests/testIdleCPUAndWakeupsKPI",
+            "RuneTerminalWorkloadTests/testMemoryWithManyTabsAndLongLogsKPI",
+            "RuneYAMLValidatorTests/testValidationOfALargeDocumentStaysFastKPI",
+            "RunePerformanceBenchmarksTests/testCommandPaletteGlobalSearchAndAliasBenchmarkKPI"
+        ] {
+            XCTAssertTrue(fullOnly.contains(kpi), "\(kpi) is in the full tier")
+        }
+    }
+
+    private func filters(named name: String, in source: String) throws -> [String] {
+        let start = try XCTUnwrap(source.range(of: "\(name)=(\n"))
+        let end = try XCTUnwrap(source.range(of: "\n)", range: start.upperBound..<source.endIndex))
+        return source[start.upperBound..<end.lowerBound]
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
+            .filter { !$0.isEmpty }
+    }
+
     func testRunnerRecordsUsefulMetadataWithoutPersonalOrClusterIdentity() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("scripts/run-selected-kpis.sh"),
@@ -54,11 +95,13 @@ final class RuneSelectedKPIRunnerTests: XCTestCase {
         XCTAssertTrue(source.contains("test-reports/selected-kpis-"))
     }
 
+    /// The baseline is a local release checklist, not part of the repository.
     func testBaselineUsesSectionsAndPointsAtTheTrackedRunner() throws {
-        let source = try String(
-            contentsOf: repoRoot.appendingPathComponent("scripts/SELECTED_KPI_BASELINE.md"),
-            encoding: .utf8
-        )
+        let baseline = repoRoot.appendingPathComponent("scripts/SELECTED_KPI_BASELINE.md")
+        guard FileManager.default.fileExists(atPath: baseline.path) else {
+            throw XCTSkip("The KPI baseline is kept locally.")
+        }
+        let source = try String(contentsOf: baseline, encoding: .utf8)
 
         XCTAssertTrue(source.contains("scripts/run-selected-kpis.sh"))
         XCTAssertTrue(source.contains("## Acceptance baseline"))

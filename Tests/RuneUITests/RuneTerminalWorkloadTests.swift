@@ -76,12 +76,162 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         for detailWidth in stride(from: 420, through: 660, by: 5) {
             defaults.set(Double(detailWidth), forKey: RuneSettingsKeys.layoutDetailWidth)
             let harness = try await makeHarness(sessionCount: 2, transcriptLines: 50, settleSeconds: 0.6, windowSize: NSSize(width: 1728, height: 1000))
-            let cpuStart = Self.processCPUSeconds()
-            try await Task.sleep(nanoseconds: 400_000_000)
-            if (Self.processCPUSeconds() - cpuStart) / 0.4 > 0.3 { busyWidths.append(detailWidth) }
+            // A layout loop pins the CPU for as long as the window is up;
+            // other work in the test process is over in a moment. A width
+            // counts only if it is still busy in a second window.
+            var isBusy = true
+            for _ in 0..<2 where isBusy {
+                let cpuStart = Self.processCPUSeconds()
+                try await Task.sleep(nanoseconds: 400_000_000)
+                isBusy = (Self.processCPUSeconds() - cpuStart) / 0.4 > 0.3
+            }
+            if isBusy { busyWidths.append(detailWidth) }
             harness.window.orderOut(nil)
         }
         XCTAssertEqual(busyWidths, [], "the log header keeps re-laying out at these inspector widths")
+    }
+
+    // MARK: User-flow KPIs
+
+    /// Shell output from the pod to the screen: 1,500 chunks through the
+    /// emulator, the throttled flush and the transcript view.
+    func testTerminalOutputEndToEndKPI() async throws {
+        let harness = try await makeHarness(sessionCount: 1, transcriptLines: 50)
+        defer { harness.window.orderOut(nil) }
+        let transcript = try XCTUnwrap(shellTranscriptTextView(in: harness.window))
+        var samples: [Double] = []
+        for round in 0..<3 {
+            let marker = "end-of-round-\(round)"
+            let started = ContinuousClock.now
+            for chunk in 0..<500 {
+                harness.viewModel.enqueueTerminalSessionOutput(id: "shell-0", text: "round \(round) chunk \(chunk): build step finished in \(chunk % 13) ms\r\n")
+            }
+            harness.viewModel.enqueueTerminalSessionOutput(id: "shell-0", text: marker + "\r\n$ ")
+            let deadline = Date().addingTimeInterval(15)
+            while !transcript.string.contains(marker), Date() < deadline {
+                try await Task.sleep(nanoseconds: 2_000_000)
+            }
+            harness.window.displayIfNeeded()
+            XCTAssertTrue(transcript.string.contains(marker), "round \(round) reached the screen")
+            samples.append(RuneBenchmarkRecord.seconds(started.duration(to: .now)))
+        }
+        RuneBenchmarkRecord.emit("terminal_output_end_to_end", samplesSeconds: samples, iterations: 501)
+        let median = samples.sorted()[samples.count / 2]
+        print("KPI terminal output end to end ms per 501 chunks:", samples.map { Int($0 * 1000) })
+        XCTAssertLessThan(median, 0.3, "501 chunks reached the screen in \(median) s")
+    }
+
+    /// Idle: the Terminal section with tabs and logs open uses next to no CPU
+    /// and does not keep waking up.
+    func testIdleCPUAndWakeupsKPI() async throws {
+        let harness = try await makeHarness(sessionCount: 3, transcriptLines: 2_000)
+        defer { harness.window.orderOut(nil) }
+        try await settle(seconds: 1.0)
+        var shares: [Double] = []
+        var wakeupsPerSecond: [Double] = []
+        for _ in 0..<3 {
+            let cpuStart = Self.processCPUSeconds()
+            let wakeupsStart = Self.wakeups()
+            let started = ContinuousClock.now
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            let wall = RuneBenchmarkRecord.seconds(started.duration(to: .now))
+            shares.append((Self.processCPUSeconds() - cpuStart) / wall)
+            wakeupsPerSecond.append(Double(Self.wakeups() - wakeupsStart) / wall)
+        }
+        RuneBenchmarkRecord.emit("idle_cpu_seconds_per_second", samplesSeconds: shares)
+        let cpu = shares.sorted()[1]
+        let wakeups = wakeupsPerSecond.sorted()[1]
+        print("KPI idle CPU share:", String(format: "%.3f", cpu), "wakeups/s:", Int(wakeups))
+        XCTAssertLessThan(cpu, 0.05, "idle CPU \(Int(cpu * 100))%")
+        XCTAssertLessThan(wakeups, 100, "idle wakeups \(Int(wakeups))/s")
+    }
+
+    /// Switching between ten shell tabs with long transcripts.
+    func testShellTabSwitchKPI() async throws {
+        let harness = try await makeHarness(sessionCount: 10, transcriptLines: 2_000)
+        defer { harness.window.orderOut(nil) }
+        for index in 0..<10 {
+            harness.viewModel.enqueueTerminalSessionOutput(id: "shell-\(index)", text: "tab-marker-\(index)\r\n$ ")
+        }
+        try await settle(seconds: 0.8)
+        let transcript = { self.shellTranscriptTextView(in: harness.window) }
+        var samples: [Double] = []
+        for step in 0..<20 {
+            let index = (step * 3) % 10
+            let started = ContinuousClock.now
+            harness.viewModel.selectTerminalSession(id: "shell-\(index)")
+            let deadline = Date().addingTimeInterval(5)
+            while transcript()?.string.contains("tab-marker-\(index)\n") != true, Date() < deadline {
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+            harness.window.contentView?.layoutSubtreeIfNeeded()
+            harness.window.displayIfNeeded()
+            samples.append(RuneBenchmarkRecord.seconds(started.duration(to: .now)))
+        }
+        RuneBenchmarkRecord.emit("shell_tab_switch", samplesSeconds: samples)
+        let median = samples.sorted()[samples.count / 2] * 1000
+        print("KPI shell tab switch ms:", samples.map { Int($0 * 1000) })
+        // About 45 ms in release, most of it SwiftUI updating the window for
+        // the new selection. Laying out the whole transcript again, as
+        // TextKit 2 did, took 110–140 ms.
+        XCTAssertLessThan(median, 65, "switching tabs takes \(Int(median)) ms")
+    }
+
+    /// Resizing the whole window with the Terminal section and logs shown.
+    func testWindowLiveResizeKPI() async throws {
+        let harness = try await makeHarness(sessionCount: 3, transcriptLines: 2_000, windowSize: NSSize(width: 1500, height: 900))
+        defer { harness.window.orderOut(nil) }
+        var samples: [Double] = []
+        for step in 0..<40 {
+            let width = 1500 - CGFloat(step < 20 ? step : 40 - step) * 12
+            let started = ContinuousClock.now
+            harness.window.setContentSize(NSSize(width: width, height: 900))
+            harness.window.contentView?.layoutSubtreeIfNeeded()
+            harness.window.displayIfNeeded()
+            samples.append(RuneBenchmarkRecord.seconds(started.duration(to: .now)))
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+        RuneBenchmarkRecord.emit("window_live_resize_step", samplesSeconds: samples)
+        let median = samples.sorted()[samples.count / 2] * 1000
+        print("KPI window resize step ms median:", Int(median), "max:", Int((samples.max() ?? 0) * 1000))
+        XCTAssertLessThan(median, 50, "a window resize step takes \(Int(median)) ms")
+    }
+
+    /// Memory for ten shell tabs with 5,000-line transcripts and a long log.
+    func testMemoryWithManyTabsAndLongLogsKPI() async throws {
+        let before = Self.physicalFootprintMegabytes()
+        let harness = try await makeHarness(sessionCount: 10, transcriptLines: 5_000)
+        defer { harness.window.orderOut(nil) }
+        harness.viewModel.state.setPodLogs((0..<20_000).map { "2026-01-01T10:00:00Z level=info message=\"request \($0)\"" }.joined(separator: "\n"))
+        for index in 0..<10 { harness.viewModel.selectTerminalSession(id: "shell-\(index)"); try await settle(seconds: 0.1) }
+        try await settle(seconds: 1.0)
+        let growth = Self.physicalFootprintMegabytes() - before
+        print("KPI memory growth MB:", Int(growth))
+        XCTAssertLessThan(growth, 250, "ten long tabs and a 20,000-line log grew memory by \(Int(growth)) MB")
+    }
+
+    /// Interrupt and timer wakeups of this process, as Activity Monitor's
+    /// Idle Wake Ups column counts them.
+    private static func wakeups() -> Int {
+        var info = task_power_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_power_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_POWER_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Int(info.task_interrupt_wakeups + info.task_platform_idle_wakeups) : 0
+    }
+
+    private static func physicalFootprintMegabytes() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : 0
     }
 
     // MARK: Cmd-W
@@ -120,6 +270,93 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         try pressCommandW(in: harness.window)
         try await settle(seconds: 0.3)
         XCTAssertEqual(harness.viewModel.state.terminalSessions.count, 3, "Cmd-W in the logs is about the log tabs")
+    }
+
+    // MARK: Terminal shortcuts
+
+    func testCommandKClearsTheShellOnlyWhenTheShellHasFocus() async throws {
+        let harness = try await makeHarness(sessionCount: 2, transcriptLines: 20)
+        defer { harness.window.orderOut(nil) }
+        harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
+        try press("k", 40, .command, in: harness.window)
+        try await settle(seconds: 0.3)
+        XCTAssertEqual(harness.viewModel.state.terminalSession?.transcript, "", "Cmd-K clears the shell")
+        XCTAssertFalse(harness.viewModel.state.isCommandPalettePresented, "and does not open the palette")
+
+        harness.window.makeFirstResponder(nil)
+        harness.viewModel.selectTerminalSession(id: "shell-1")
+        try press("k", 40, .command, in: harness.window)
+        try await settle(seconds: 0.3)
+        XCTAssertFalse(harness.viewModel.state.terminalSession?.transcript.isEmpty ?? true, "without shell focus Cmd-K is the palette's")
+    }
+
+    func testCommandPlusMinusAndZeroSizeTheTerminalText() async throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: RuneSettingsKeys.terminalFontSize)
+        defer { if let previous { defaults.set(previous, forKey: RuneSettingsKeys.terminalFontSize) } else { defaults.removeObject(forKey: RuneSettingsKeys.terminalFontSize) } }
+        defaults.set(12.0, forKey: RuneSettingsKeys.terminalFontSize)
+        let harness = try await makeHarness(sessionCount: 1, transcriptLines: 20)
+        defer { harness.window.orderOut(nil) }
+        harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
+
+        try press("=", 24, .command, in: harness.window)
+        try press("=", 24, .command, in: harness.window)
+        XCTAssertEqual(defaults.double(forKey: RuneSettingsKeys.terminalFontSize), 14)
+        try press("-", 27, .command, in: harness.window)
+        XCTAssertEqual(defaults.double(forKey: RuneSettingsKeys.terminalFontSize), 13)
+        try press("0", 29, .command, in: harness.window)
+        XCTAssertEqual(defaults.double(forKey: RuneSettingsKeys.terminalFontSize), RuneSettingsKeys.terminalFontSizeDefault)
+    }
+
+    func testControlTabCyclesTheShellTabs() async throws {
+        let harness = try await makeHarness(sessionCount: 3, transcriptLines: 20)
+        defer { harness.window.orderOut(nil) }
+        harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
+        harness.viewModel.selectTerminalSession(id: "shell-2")
+        try press("\t", 48, .control, in: harness.window)
+        XCTAssertEqual(harness.viewModel.state.activeTerminalSessionID, "shell-0", "wraps to the first tab")
+        try press("\t", 48, [.control, .shift], in: harness.window)
+        XCTAssertEqual(harness.viewModel.state.activeTerminalSessionID, "shell-2")
+    }
+
+    func testCommandShiftTReopensTheShellTabJustClosed() async throws {
+        let harness = try await makeHarness(sessionCount: 3, transcriptLines: 20)
+        defer { harness.window.orderOut(nil) }
+        harness.window.makeFirstResponder(try XCTUnwrap(shellTranscriptTextView(in: harness.window)))
+        harness.viewModel.selectTerminalSession(id: "shell-1")
+        let closedPod = try XCTUnwrap(harness.viewModel.state.terminalSession?.podName)
+        try pressCommandW(in: harness.window)
+        try await settle(seconds: 0.3)
+        XCTAssertEqual(harness.viewModel.state.terminalSessions.count, 2)
+
+        try press("T", 17, [.command, .shift], in: harness.window)
+        try await settle(seconds: 0.6)
+        XCTAssertEqual(harness.viewModel.state.terminalSessions.count, 3, "Cmd-Shift-T brought the tab back")
+        XCTAssertEqual(harness.viewModel.state.terminalSession?.podName, closedPod, "for the same pod, and selected it")
+    }
+
+    func testCommandTInTheLogsOpensALogTabNotAShell() async throws {
+        let harness = try await makeHarness(sessionCount: 2, transcriptLines: 20)
+        defer { harness.window.orderOut(nil) }
+        let splitView = try XCTUnwrap(findSplitView(in: harness.window.contentView!))
+        let inspector = splitView.arrangedSubviews[2].convert(splitView.arrangedSubviews[2].bounds, to: nil)
+        try appClick(at: NSPoint(x: inspector.midX, y: inspector.minY + 40), in: harness.window)
+        try await settle(seconds: 0.3)
+        let podBefore = harness.viewModel.state.selectedPod?.id
+
+        try press("t", 17, .command, in: harness.window)
+        try await settle(seconds: 0.4)
+        XCTAssertEqual(harness.viewModel.state.terminalSessions.count, 2, "no shell tab")
+        XCTAssertNotEqual(harness.viewModel.state.selectedPod?.id, podBefore, "a log tab for another pod")
+    }
+
+    private func press(_ characters: String, _ keyCode: UInt16, _ flags: NSEvent.ModifierFlags, in window: NSWindow) throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+            isARepeat: false, keyCode: keyCode
+        ))
+        NSApp.sendEvent(event)
     }
 
     private func pressCommandW(in window: NSWindow) throws {
@@ -209,6 +446,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         // Once the drag settles the shell learns its final size, once.
         try await Task.sleep(nanoseconds: 400_000_000)
         XCTAssertLessThanOrEqual(harness.backend.resizes - resizesBefore, 1, "the settled size is reported once")
+        RuneBenchmarkRecord.emit("inspector_drag_step", samplesSeconds: stepMs.map { $0 / 1000 })
         stepMs.sort()
         return (drag.0, drag.1, newControls, stepMs[stepMs.count / 2], stepMs.last ?? 0)
     }
@@ -410,6 +648,13 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         window.setContentSize(windowSize)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        // Take the app down with the test. A window that is only ordered out
+        // keeps its whole view tree, which goes on answering every settings
+        // change and slows the tests that run after this one.
+        addTeardownBlock { @MainActor in
+            window.contentViewController = nil
+            window.close()
+        }
         try await settle(seconds: settleSeconds)
         return Harness(window: window, viewModel: viewModel, backend: backend)
     }

@@ -130,7 +130,9 @@ extension RuneRootView {
                                     portForwardSessions: viewModel.state.portForwardSessions,
                                     onFillCommand: { command in
                                         viewModel.applySuggestedTerminalCommand(command, sendImmediately: false)
-                                    }
+                                    },
+                                    commandHistory: viewModel.terminalCommandHistory.entries,
+                                    onClearCommandHistory: { viewModel.clearTerminalCommandHistory() }
                                 )
 
                             case .logs:
@@ -355,19 +357,88 @@ extension RuneRootView {
         viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
     }
 
-    /// Cmd-W in the Terminal section: the tab to close, if any (see
-    /// `TerminalCloseTabPolicy`); nil leaves Cmd-W to close the window.
-    func terminalCloseTabTarget(in window: NSWindow?) -> TerminalCloseTabPolicy.Target? {
-        guard viewModel.state.selectedSection == .terminal else { return nil }
-        let sessions = TerminalShellPodSelectionPolicy.sessions(
+    /// A Terminal keyboard command (see `TerminalKeyCommand`), acted on in
+    /// the strip you are in. False leaves the key to the window and menus:
+    /// Cmd-W closes the window with one tab left, Cmd-K opens the palette
+    /// outside the shell, and Cmd-T in the shell is the tab bar's own.
+    func handleTerminalKeyCommand(_ command: TerminalKeyCommand, in window: NSWindow?) -> Bool {
+        // Text size applies to every monospaced view, in any section.
+        if command == .biggerText || command == .smallerText || command == .defaultTextSize {
+            TerminalKeyCommand.stepSharedTextSize(command)
+            return true
+        }
+        guard viewModel.state.selectedSection == .terminal else { return false }
+        let inLogs = terminalLogsHaveFocus(in: window)
+        switch command {
+        case .closeTab:
+            guard let target = terminalCloseTabTarget(in: window) else { return false }
+            closeTerminalTab(target)
+            return true
+        case .newTab:
+            guard inLogs else { return false }
+            addTerminalLogTab()
+            return true
+        case .reopenClosedTab:
+            if inLogs {
+                guard let pod = terminalLogTabState.reopenLastClosed(availablePods: viewModel.state.pods) else { return false }
+                viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+                return true
+            }
+            // With nothing to reopen, a tab being composed stays as it is.
+            guard viewModel.reopenLastClosedTerminalSession() else { return false }
+            isComposingTerminalShellTab = false
+            return true
+        case .nextTab, .previousTab:
+            let offset = command == .nextTab ? 1 : -1
+            if inLogs {
+                guard let pod = terminalLogTabState.selectAdjacent(offset: offset, availablePods: viewModel.state.pods) else { return false }
+                viewModel.focusTerminalPodInspector(pod, reloadLogs: shouldReloadTerminalPodLogs(for: pod))
+                return true
+            }
+            guard let id = TerminalTabCycle.adjacentID(
+                in: scopedTerminalSessions.map(\.id),
+                active: viewModel.state.activeTerminalSessionID,
+                offset: offset
+            ) else { return false }
+            isComposingTerminalShellTab = false
+            viewModel.selectTerminalSession(id: id)
+            return true
+        case .clear:
+            guard (window?.firstResponder as? RuneTerminalInputSurface) != nil else { return false }
+            viewModel.clearTerminalSessionTranscript()
+            return true
+        case .biggerText, .smallerText, .defaultTextSize:
+            return false
+        }
+    }
+
+    private var scopedTerminalSessions: [PodTerminalSession] {
+        TerminalShellPodSelectionPolicy.sessions(
             in: viewModel.state.terminalSessions,
             contextName: viewModel.state.selectedContext?.name,
             namespace: viewModel.state.selectedNamespace
         )
+    }
+
+    /// Whether keys are about the log tabs: the inspector shows Logs and the
+    /// focus is there (see `TerminalCloseTabPolicy.logsHaveFocus`).
+    private func terminalLogsHaveFocus(in window: NSWindow?) -> Bool {
+        viewModel.isDetailPaneVisible
+            && terminalInspectorTab == .logs
+            && TerminalCloseTabPolicy.logsHaveFocus(
+                responderIsInInspector: responderIsInInspector(of: window),
+                paneFocusIsInspector: keyboardPaneFocus == .detail
+            )
+    }
+
+    /// Cmd-W in the Terminal section: the tab to close, if any (see
+    /// `TerminalCloseTabPolicy`); nil leaves Cmd-W to close the window.
+    func terminalCloseTabTarget(in window: NSWindow?) -> TerminalCloseTabPolicy.Target? {
+        guard viewModel.state.selectedSection == .terminal else { return nil }
         let strips = TerminalCloseTabPolicy.Strips(
             logTabIDs: terminalLogTabState.tabs.map(\.id),
             activeLogTabID: terminalLogTabState.activeTabID,
-            shellSessionIDs: sessions.map(\.id),
+            shellSessionIDs: scopedTerminalSessions.map(\.id),
             activeShellSessionID: viewModel.state.activeTerminalSessionID,
             isComposingShellDraft: isComposingTerminalShellTab
         )

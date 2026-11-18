@@ -74,6 +74,7 @@ enum RuneRootPaneWidthKind: Hashable {
     case detail
 }
 
+#if DEBUG
 enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
     case overview
     case authDoctor
@@ -128,6 +129,7 @@ enum RuneRootLiveDebugScenarioStep: String, CaseIterable {
         }
     }
 }
+#endif
 
 struct RuneRootLayoutProbeFrame: Equatable {
     let generation: Int
@@ -160,6 +162,10 @@ struct RuneRootPaneWidthReporter: View {
 
 enum RuneRootLayoutDebug {
     static let coordinateSpaceName = "RuneRootLayoutSpace"
+
+    // Layout logging and the scripted scenario are for debug builds and
+    // tests only; a release build compiles them out.
+    #if DEBUG
     static let isEnabled = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT"] == "1"
     static let liveScenarioEnabled = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_LIVE_SCENARIO"] == "1"
     static let liveScenarioExitWhenDone = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_LIVE_SCENARIO_EXIT"] == "1"
@@ -243,7 +249,17 @@ enum RuneRootLayoutDebug {
             }
         }
     }
+    #else
+    static let isEnabled = false
+    static let liveScenarioEnabled = false
+    static let initialDetailWidth: CGFloat? = nil
 
+    static func log(
+        _ snapshot: RuneRootLayoutSnapshot,
+        shellVariant: RuneRootShellVariant,
+        inlineEditorImplementation: ManifestInlineEditorImplementation
+    ) {}
+    #endif
 }
 
 struct RuneRootLayoutFramePreferenceKey: PreferenceKey {

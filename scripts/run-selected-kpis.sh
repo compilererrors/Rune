@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-release}"
 RUNS="${RUNS:-1}"
+# fast: the user-facing flows, before every release build. full: everything, nightly.
+KPI_TIER="${KPI_TIER:-full}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/test-reports/selected-kpis-$TIMESTAMP}"
 METADATA_FILE="$RESULTS_DIR/environment.txt"
@@ -13,6 +15,11 @@ SELECTED_KPI_MODULE_CACHE_DIR="${RUNE_SELECTED_KPI_MODULE_CACHE_DIR:-$REPO_ROOT/
 
 if [[ "$CONFIGURATION" != "debug" && "$CONFIGURATION" != "release" ]]; then
   echo "CONFIGURATION must be debug or release." >&2
+  exit 2
+fi
+
+if [[ "$KPI_TIER" != "fast" && "$KPI_TIER" != "full" ]]; then
+  echo "KPI_TIER must be fast or full." >&2
   exit 2
 fi
 
@@ -40,6 +47,7 @@ fi
   echo "generated_at_utc=$TIMESTAMP"
   echo "configuration=$CONFIGURATION"
   echo "runs=$RUNS"
+  echo "kpi_tier=$KPI_TIER"
   echo "git_revision=$git_revision"
   echo "git_worktree=$git_worktree"
   echo "architecture=$(uname -m)"
@@ -51,7 +59,30 @@ fi
   echo "cpu_model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unavailable)"
 } > "$METADATA_FILE"
 
-kpi_filters=(
+# Typing, terminal output, tab switching, resizing, scrolling, logs and
+# YAML editing: what people feel in every session.
+fast_kpi_filters=(
+  "RuneTerminalTypingSafeguardTests/testKeystrokesStayFastKPI"
+  "TerminalFeaturePerformanceKPITests/testTerminalKeystrokeHandlingKPI"
+  "TerminalFeaturePerformanceKPITests/testTerminalEmulatorFullScreenOutputKPI"
+  "RuneTerminalWorkloadTests/testTerminalOutputEndToEndKPI"
+  "RuneTerminalWorkloadTests/testShellTabSwitchKPI"
+  "RuneTerminalWorkloadTests/testDraggingTheInspectorDividerOnlyLaysOut"
+  "RuneTerminalWorkloadTests/testWindowLiveResizeKPI"
+  "RuneDocumentFlowKPITests/testLogFollowAppendKPI"
+  "RuneDocumentFlowKPITests/testYAMLEditorTypingInALargeManifestKPI"
+  "TextSizeChangeCostTests/testStepsOnALongLogStayInstant"
+  "RuneScrollSmoothnessBenchmarkTests/testScrollingLargeTablesAndDocumentsStaysInsideFrameBudgetKPI"
+  "RuneResourceTableScaleBenchmarkTests/testLargePodTableMountFilterAndLiveResizeBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testColdStartLaunchShellInitialMountKPI"
+  "RunePerformanceBenchmarksTests/testFakeRESTRapidViewSwitchBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testLargeLogInspectorInitialMountBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testLogSearchBenchmarkKPI"
+)
+
+# Auth, cloud import, REST metrics, idle cost, memory and the remaining
+# load and search paths.
+full_only_kpi_filters=(
   "CloudOAuthPerformanceTests/testAuthorizationRoundTripBenchmarkKPI"
   "CloudOAuthPerformanceTests/testSheetChurnBenchmarkKPI"
   "CloudOAuthAuthorizationCoordinatorTests/testSheetChurnUsesFreshGenerationsAndRejectsCrossSheetCallbacksKPI"
@@ -71,14 +102,30 @@ kpi_filters=(
   "NativeCloudImportParityTests/testHeadlessAKSAndGKEImportReviewBindingReleaseKPI"
   "RunePerformanceBenchmarksTests/testResourceListColumnLayoutBenchmarkKPI"
   "RunePerformanceBenchmarksTests/testAppKitResourceColumnResizePreviewBenchmarkKPI"
-  "RuneResourceTableScaleBenchmarkTests/testLargePodTableMountFilterAndLiveResizeBenchmarkKPI"
-  "RuneScrollSmoothnessBenchmarkTests/testScrollingLargeTablesAndDocumentsStaysInsideFrameBudgetKPI"
   "AWSEKSNativeAuthTests/testKPISignsOneThousandTokensWithinFiveSeconds"
   "GCPServiceAccountNativeAuthTests/testKPICachedTokenResolvesOneThousandTimesWithinTwoSeconds"
   "AKSServicePrincipalAuthTests/testKubeloginParserBenchmarkKPI"
   "OIDCNativeAuthTests/testJWTParsingBenchmarkKPI"
   "ExecCredentialQualityGateTests/testConcurrentExecResolutionIsSingleFlightAndCachedWithinKPI"
+  "TextSizeChangeCostTests/testStepsOnATranscriptTextViewStayInstant"
+  "TextSizeChangeCostTests/testStepsOnALargeTranscriptSurfaceStayInstant"
+  "RuneTerminalWorkloadTests/testIdleCPUAndWakeupsKPI"
+  "RuneTerminalWorkloadTests/testMemoryWithManyTabsAndLongLogsKPI"
+  "RunePerformanceBenchmarksTests/testFakeRESTPodAndLogLoadBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testContextSwitchNamespaceCarryResolutionBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testViewModelRapidResourceMenuSwitchBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testLargeTerminalTranscriptInitialMountBenchmarkKPI"
+  "RuneYAMLValidatorTests/testValidationOfALargeDocumentStaysFastKPI"
+  "RunePerformanceBenchmarksTests/testTerminalSessionAppendBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testTerminalTranscriptAppendWhileSearchOpenBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testIncrementalLogSearchWithReusedIndexBenchmarkKPI"
+  "RunePerformanceBenchmarksTests/testCommandPaletteGlobalSearchAndAliasBenchmarkKPI"
 )
+
+kpi_filters=("${fast_kpi_filters[@]}")
+if [[ "$KPI_TIER" == "full" ]]; then
+  kpi_filters+=("${full_only_kpi_filters[@]}")
+fi
 
 printf "run\tfilter\tstatus\telapsed_seconds\n" > "$RESULTS_FILE"
 overall_status=0
@@ -110,7 +157,7 @@ done
 
 passed="$(awk -F '\t' 'NR > 1 && $3 == "pass" { count += 1 } END { print count + 0 }' "$RESULTS_FILE")"
 failed="$(awk -F '\t' 'NR > 1 && $3 == "fail" { count += 1 } END { print count + 0 }' "$RESULTS_FILE")"
-echo "Selected KPI result: $passed passed, $failed failed."
+echo "Selected KPI result ($KPI_TIER tier): $passed passed, $failed failed."
 echo "Environment: $METADATA_FILE"
 echo "Results: $RESULTS_FILE"
 exit "$overall_status"

@@ -18,6 +18,8 @@ enum RuneRootShellVariant: String, CaseIterable, Sendable {
             return override
         }
 
+        // A developer override, read only in debug builds.
+        #if DEBUG
         guard let envValue = ProcessInfo.processInfo.environment["RUNE_LAYOUT_SHELL"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
@@ -28,6 +30,9 @@ enum RuneRootShellVariant: String, CaseIterable, Sendable {
         }
 
         return RuneRootShellVariant(rawValue: envValue) ?? .appKitSplitView
+        #else
+        return .appKitSplitView
+        #endif
     }
 }
 
@@ -61,6 +66,8 @@ enum ManifestInlineEditorImplementation: String, CaseIterable, Sendable {
             return override
         }
 
+        // A developer override, read only in debug builds.
+        #if DEBUG
         guard let envValue = ProcessInfo.processInfo.environment["RUNE_MANIFEST_INLINE_EDITOR"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
@@ -69,5 +76,8 @@ enum ManifestInlineEditorImplementation: String, CaseIterable, Sendable {
         }
 
         return ManifestInlineEditorImplementation(rawValue: envValue) ?? .appKitTextView
+        #else
+        return .appKitTextView
+        #endif
     }
 }

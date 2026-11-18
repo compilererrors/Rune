@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// What a surface holds, so each kind reads the same everywhere and the
-/// kinds read differently from each other (see Design/README.md, "Surfaces"):
+/// kinds read differently from each other (the design notes, "Surfaces"):
 /// - `pane`: the sidebar, content and inspector backgrounds (palette tones).
 /// - `raised`: control cards and status strips, lifted slightly off the pane.
 /// - `document`: code and text documents (YAML, Describe, Logs), a deeper

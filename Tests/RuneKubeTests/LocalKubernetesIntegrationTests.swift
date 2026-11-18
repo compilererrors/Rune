@@ -1067,6 +1067,66 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertTrue(podLogs.contains("/healthz") || podLogs.contains("GET /"))
     }
 
+    /// An interactive pod shell gets a real terminal, so the keys people use
+    /// to edit and recall commands work: Up recalls the last command, Left
+    /// moves the cursor so a character lands mid-line.
+    func testDockerComposeInteractiveShellHandlesArrowKeysAndHistory() async throws {
+        let fixture = try dockerComposeFakeK8sFixture()
+        let client = KubernetesClient(commandTimeout: 10)
+        let sessionID = "rune-it-shell-\(Self.shortTestID())"
+        let output = TerminalOutputRecorder()
+        try await client.startPodTerminalSession(
+            id: sessionID,
+            from: fixture.sources,
+            context: KubeContext(name: "fake-orbit-mesh"),
+            namespace: "alpha-zone",
+            podName: "alpha-log-matrix",
+            container: "main",
+            shellCommand: ["sh"],
+            onOutput: { output.append($0) },
+            onTermination: { code in output.append("\n[terminated \(code)]\n") }
+        )
+        addTeardownBlock { await client.stopPodTerminalSession(id: sessionID) }
+        try await output.waitUntil("a prompt") { $0.contains("# ") || $0.contains("$ ") }
+
+        try await client.writeToPodTerminalSession(id: sessionID, text: "echo rune-$((6*7))\r")
+        try await output.waitUntil("the first run") { $0.components(separatedBy: "rune-42").count - 1 == 1 }
+
+        try await client.writeToPodTerminalSession(id: sessionID, text: "\u{1B}[A")
+        try await client.writeToPodTerminalSession(id: sessionID, text: "\r")
+        try await output.waitUntil("Up then Return to run it again") { $0.components(separatedBy: "rune-42").count - 1 == 2 }
+
+        try await client.writeToPodTerminalSession(id: sessionID, text: "echo rune-ac")
+        try await client.writeToPodTerminalSession(id: sessionID, text: "\u{1B}[D")
+        try await client.writeToPodTerminalSession(id: sessionID, text: "b\r")
+        try await output.waitUntil("Left to insert mid-line") { $0.contains("rune-abc") }
+    }
+
+    /// A shell the API server refuses (here: no container named in a pod
+    /// with two) ends with a failure and says why, never as a clean exit.
+    func testDockerComposeRefusedShellReportsWhyInsteadOfExitingCleanly() async throws {
+        let fixture = try dockerComposeFakeK8sFixture()
+        let client = KubernetesClient(commandTimeout: 10)
+        let sessionID = "rune-it-refused-\(Self.shortTestID())"
+        let output = TerminalOutputRecorder()
+        try await client.startPodTerminalSession(
+            id: sessionID,
+            from: fixture.sources,
+            context: KubeContext(name: "fake-orbit-mesh"),
+            namespace: "alpha-zone",
+            podName: "alpha-log-matrix",
+            container: nil,
+            shellCommand: ["sh"],
+            onOutput: { output.append($0) },
+            onTermination: { code in output.append("\n[terminated \(code)]\n") }
+        )
+        addTeardownBlock { await client.stopPodTerminalSession(id: sessionID) }
+        try await output.waitUntil("the session to end") { $0.contains("[terminated") }
+        XCTAssertFalse(output.current.contains("[terminated 0]"), "a refused shell is not a clean exit: \(output.current)")
+        XCTAssertTrue(output.current.contains("Could not open a shell") || output.current.contains("container"),
+                      "and it says why: \(output.current)")
+    }
+
     func testDockerComposeFakeK8sReadWriteOperationsAreReversible() async throws {
         let fixture = try dockerComposeFakeK8sFixture()
         let client = KubernetesClient(commandTimeout: 10)
@@ -2062,5 +2122,25 @@ private final class LocalKubernetesAPIServer: @unchecked Sendable {
         """
         {"items":[{"metadata":{"name":"sh.helm.release.v1.orbit.v3","namespace":"default","labels":{"owner":"helm","name":"orbit","status":"deployed","version":"3"}},"data":{"release":"\(helmReleasePayload)"}}]}
         """
+    }
+}
+
+/// Collects a terminal session's output for assertions.
+private final class TerminalOutputRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    func append(_ chunk: String) { lock.withLock { text += chunk } }
+    var current: String { lock.withLock { text } }
+
+    func waitUntil(_ what: String, timeout: TimeInterval = 15, _ condition: (String) -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(current) {
+            if Date() > deadline {
+                XCTFail("Timed out waiting for \(what). Output so far: \(current.suffix(400).debugDescription)")
+                return
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
     }
 }

@@ -377,6 +377,8 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
     public let containerImagesLine: String?
     /// Comma-separated owner references as `Kind/name`, when Kubernetes metadata includes them.
     public let ownerReferencesLine: String?
+    /// The pod's `kubectl.kubernetes.io/default-container` annotation; optional for backward-compatible decoded snapshots.
+    public let defaultContainerName: String?
 
     public init(
         name: String,
@@ -397,7 +399,8 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         ephemeralContainerNamesLine: String? = nil,
         labels: [String: String] = [:],
         containerImagesLine: String? = nil,
-        ownerReferencesLine: String? = nil
+        ownerReferencesLine: String? = nil,
+        defaultContainerName: String? = nil
     ) {
         self.name = name
         self.namespace = namespace
@@ -418,11 +421,21 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
         self.labels = labels
         self.containerImagesLine = containerImagesLine
         self.ownerReferencesLine = ownerReferencesLine
+        self.defaultContainerName = defaultContainerName
     }
 
     public var id: String { "\(namespace)/\(name)" }
 
     public var displayStatus: String { statusReason ?? status }
+
+    /// The container a shell opens in when none is chosen, as kubectl
+    /// picks it: the one the pod's default-container annotation names, else
+    /// the first.
+    public var defaultExecContainerName: String? {
+        let names = containerNames
+        if let defaultContainerName, names.contains(defaultContainerName) { return defaultContainerName }
+        return names.first
+    }
 
     public var cpuDisplay: String { cpuUsage ?? "—" }
     public var memoryDisplay: String { memoryUsage ?? "—" }
@@ -477,7 +490,8 @@ public struct PodSummary: Identifiable, Hashable, Codable, Sendable {
             ephemeralContainerNamesLine: detail.ephemeralContainerNamesLine ?? ephemeralContainerNamesLine,
             labels: detail.labels.isEmpty ? labels : detail.labels,
             containerImagesLine: detail.containerImagesLine ?? containerImagesLine,
-            ownerReferencesLine: detail.ownerReferencesLine ?? ownerReferencesLine
+            ownerReferencesLine: detail.ownerReferencesLine ?? ownerReferencesLine,
+            defaultContainerName: detail.defaultContainerName ?? defaultContainerName
         )
     }
 }

@@ -3,7 +3,7 @@ import SwiftUI
 import XCTest
 @testable import RuneUI
 
-/// Grouping and focus (Design/README.md): one header block per inspector,
+/// Grouping and focus: one header block per inspector,
 /// facts as one quiet grid, actions attached to the surface they act on, and
 /// no card inside a card.
 final class RuneGroupingAndFocusTests: XCTestCase {

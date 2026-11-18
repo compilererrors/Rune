@@ -442,10 +442,10 @@ extension RuneRootView {
             keyWindowNumber: NSApp.keyWindow?.windowNumber
         ) else { return event }
 
-        // Cmd-W closes the Terminal tab you are in before the window does.
-        if RuneCommandW.matches(event),
-           let target = terminalCloseTabTarget(in: event.window ?? NSApp.keyWindow) {
-            closeTerminalTab(target)
+        // Terminal tab and text shortcuts act on the strip you are in,
+        // before the window or the menus see them.
+        if let command = TerminalKeyCommand(event),
+           handleTerminalKeyCommand(command, in: event.window ?? NSApp.keyWindow) {
             return nil
         }
 
@@ -591,12 +591,5 @@ extension RuneRootView {
         guard let localKeyEventMonitor else { return }
         NSEvent.removeMonitor(localKeyEventMonitor)
         self.localKeyEventMonitor = nil
-    }
-}
-
-enum RuneCommandW {
-    static func matches(_ event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
-        return event.type == .keyDown && modifiers == .command && event.charactersIgnoringModifiers?.lowercased() == "w"
     }
 }
