@@ -12,13 +12,15 @@ struct KubernetesRESTSessionKey: Hashable, Sendable {
     let certificateAuthorityFingerprint: Data?
     let tlsServerName: String?
     let clientCertificateFingerprint: Data?
+    let proxy: KubernetesClusterProxy?
 
     init(
         serverURL: URL,
         insecureSkipTLSVerify: Bool,
         certificateAuthorityData: Data?,
         tlsServerName: String?,
-        clientCertificateData: Data?
+        clientCertificateData: Data?,
+        proxy: KubernetesClusterProxy? = nil
     ) {
         let scheme = serverURL.scheme?.lowercased() ?? "https"
         let host = serverURL.host?.lowercased() ?? ""
@@ -28,6 +30,7 @@ struct KubernetesRESTSessionKey: Hashable, Sendable {
         certificateAuthorityFingerprint = certificateAuthorityData.map { Data(SHA256.hash(data: $0)) }
         self.tlsServerName = tlsServerName
         clientCertificateFingerprint = clientCertificateData.map { Data(SHA256.hash(data: $0)) }
+        self.proxy = proxy
     }
 }
 

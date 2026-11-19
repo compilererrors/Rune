@@ -5,7 +5,7 @@ import RuneUI
 import SwiftUI
 
 private enum RuneWindowLifecycle {
-    static let openMainWindowCommandTitle = "New Rune Window"
+    static let openMainWindowCommandTitle = "Show Rune Window"
     static let initialWindowGraceAttempts = 40
     static let maximumOpenAttempts = 60
 }
@@ -14,11 +14,57 @@ private struct RuneMainWindowCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        // Rune has one main window. Every window of the group would share the
+        // one view model and mirror the others, so this brings the window
+        // forward and opens it only when there is none.
         CommandGroup(replacing: .newItem) {
             Button(RuneWindowLifecycle.openMainWindowCommandTitle) {
-                openWindow(id: RuneApplicationIdentifiers.mainWindowScene)
+                if !RuneMainWindow.presentIfPresent() {
+                    openWindow(id: RuneApplicationIdentifiers.mainWindowScene)
+                }
             }
             .keyboardShortcut("n", modifiers: .command)
+        }
+    }
+}
+
+@MainActor
+private enum RuneMainWindow {
+    static let title = "Rune"
+
+    static var policyWindows: [RuneWindowPresentationPolicy.Window] {
+        NSApp.windows.map(RuneWindowPresentationPolicy.Window.init)
+    }
+
+    /// Presents the main window as on launch; false when there is none yet.
+    @discardableResult
+    static func presentIfPresent() -> Bool {
+        let action = RuneWindowPresentationPolicy.launch(windows: policyWindows, title: title)
+        if case .openMainWindow = action { return false }
+        perform(action)
+        return true
+    }
+
+    static func perform(_ action: RuneWindowPresentationPolicy.Action) {
+        let windows = NSApp.windows
+        switch action {
+        case .none, .openMainWindow:
+            return
+        case .deminiaturize(let index):
+            // Deminiaturizing is the whole restore; ordering the window out
+            // or moving it while it animates back leaves it unreachable.
+            NSApp.activate()
+            windows[index].deminiaturize(nil)
+        case .makeKey(let index):
+            NSApp.activate()
+            windows[index].makeKeyAndOrderFront(nil)
+        case .moveToActiveSpace(let index):
+            let window = windows[index]
+            let behavior = window.collectionBehavior
+            window.collectionBehavior.insert(.moveToActiveSpace)
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+            window.collectionBehavior = behavior
         }
     }
 }
@@ -38,6 +84,12 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
             name: NSApplication.didFinishRestoringWindowsNotification,
             object: nil
         )
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // A tab's "+" opens another window of the group, which would mirror
+        // the main window.
+        NSWindow.allowsAutomaticWindowTabbing = false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -153,42 +205,19 @@ private final class RuneAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private let mainWindowTitle = "Rune"
+    private let mainWindowTitle = RuneMainWindow.title
 
     private var policyWindows: [RuneWindowPresentationPolicy.Window] {
-        NSApp.windows.map(RuneWindowPresentationPolicy.Window.init)
+        RuneMainWindow.policyWindows
     }
 
-    /// Presents the main window as on launch; false when there is none yet.
     @discardableResult
     private func presentMainWindowIfPresent() -> Bool {
-        let action = RuneWindowPresentationPolicy.launch(windows: policyWindows, title: mainWindowTitle)
-        if case .openMainWindow = action { return false }
-        perform(action)
-        return true
+        RuneMainWindow.presentIfPresent()
     }
 
     private func perform(_ action: RuneWindowPresentationPolicy.Action) {
-        let windows = NSApp.windows
-        switch action {
-        case .none, .openMainWindow:
-            return
-        case .deminiaturize(let index):
-            // Deminiaturizing is the whole restore; ordering the window out
-            // or moving it while it animates back leaves it unreachable.
-            NSApp.activate()
-            windows[index].deminiaturize(nil)
-        case .makeKey(let index):
-            NSApp.activate()
-            windows[index].makeKeyAndOrderFront(nil)
-        case .moveToActiveSpace(let index):
-            let window = windows[index]
-            let behavior = window.collectionBehavior
-            window.collectionBehavior.insert(.moveToActiveSpace)
-            NSApp.activate()
-            window.makeKeyAndOrderFront(nil)
-            window.collectionBehavior = behavior
-        }
+        RuneMainWindow.perform(action)
     }
 
     private func menuItem(titled title: String, in menu: NSMenu?) -> NSMenuItem? {

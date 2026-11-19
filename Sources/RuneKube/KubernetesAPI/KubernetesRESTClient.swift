@@ -1987,7 +1987,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
             insecureSkipTLSVerify: resolved.insecureSkipTLSVerify,
             certificateAuthorityData: resolved.certificateAuthorityData,
             tlsServerName: resolved.tlsServerName,
-            clientCertificateData: clientCertificateData
+            clientCertificateData: clientCertificateData,
+            proxy: resolved.proxy
         )
     }
 
@@ -2015,6 +2016,9 @@ final class KubernetesRESTClient: @unchecked Sendable {
     private func makeSession(for resolved: ResolvedRESTContext) -> RESTURLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
+        if let proxy = resolved.proxy {
+            configuration.proxyConfigurations = [proxy.proxyConfiguration]
+        }
         let delegate = RESTURLSessionDelegate(
             insecureSkipTLSVerify: resolved.insecureSkipTLSVerify,
             certificateAuthorityData: resolved.certificateAuthorityData,
@@ -2126,6 +2130,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
 
         let certificateAuthorityData = try namedCluster.cluster.resolvedCertificateAuthorityData()
+        let proxy = try KubernetesClusterProxy.parse(namedCluster.cluster.proxyURL)
         let credentials = try await resolveCredentials(
             user: namedUser?.user,
             cluster: namedCluster.cluster,
@@ -2145,7 +2150,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
             certificateAuthorityData: certificateAuthorityData,
             tlsServerName: namedCluster.cluster.tlsServerName,
             clientTLSIdentity: credentials.clientTLSIdentity,
-            credentialInvalidationKey: credentials.credentialInvalidationKey
+            credentialInvalidationKey: credentials.credentialInvalidationKey,
+            proxy: proxy
         )
     }
 
@@ -4213,6 +4219,7 @@ private struct ResolvedRESTContext {
     let tlsServerName: String?
     let clientTLSIdentity: ClientTLSIdentity?
     let credentialInvalidationKey: RESTCredentialInvalidationKey?
+    let proxy: KubernetesClusterProxy?
 
     var requiresLegacySPDYPortForward: Bool {
         serverURL.scheme == "http"
@@ -4679,7 +4686,10 @@ private final class RESTURLSessionDelegate: NSObject, URLSessionDelegate, URLSes
             return
         }
 
+        // The cluster's CA and insecure-skip-tls-verify are for the API
+        // server, not for an https proxy in front of it.
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              !challenge.protectionSpace.isProxy(),
               let trust = challenge.protectionSpace.serverTrust else {
             completionHandler(.performDefaultHandling, nil)
             return
@@ -5367,6 +5377,12 @@ private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unc
                 )
             }
             parameters = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
+        }
+
+        if let proxy = resolved.proxy {
+            let privacyContext = NWParameters.PrivacyContext(description: "Kubernetes cluster proxy")
+            privacyContext.proxyConfigurations = [proxy.proxyConfiguration]
+            parameters.setPrivacyContext(privacyContext)
         }
 
         return NWConnection(host: NWEndpoint.Host(host), port: port, using: parameters)

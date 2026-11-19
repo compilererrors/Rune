@@ -978,6 +978,61 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
         XCTAssertTrue(eventTargets.allSatisfy { podKeys.contains($0) })
     }
 
+    /// The kubeconfig proxy-url carries every connection: the REST session
+    /// with the cluster's CA and server name, and the SPDY port-forward.
+    func testDockerComposeConnectionsGoThroughTheKubeconfigProxy() async throws {
+        let fixture = try dockerComposeFakeK8sFixture()
+        let proxy = try await TestTunnelProxy.start(kind: .httpConnect)
+        defer { proxy.stop() }
+        let proxyOnlyHost = "cluster.rune-proxy.test"
+
+        let original = try String(contentsOf: fixture.kubeconfig, encoding: .utf8)
+        var lines: [String] = []
+        for line in original.components(separatedBy: "\n") {
+            guard line.trimmingCharacters(in: .whitespaces) == "server: https://127.0.0.1:16443" else {
+                lines.append(line)
+                continue
+            }
+            let indent = String(line.prefix { $0 == " " })
+            lines.append("\(indent)server: https://\(proxyOnlyHost):16443")
+            // The K3s certificate names localhost, not the made-up host.
+            lines.append("\(indent)tls-server-name: localhost")
+            lines.append("\(indent)proxy-url: http://127.0.0.1:\(proxy.port)")
+        }
+        let kubeconfig = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-proxy-docker-kubeconfig-\(UUID().uuidString).yaml")
+        try lines.joined(separator: "\n").write(to: kubeconfig, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+        let sources = [KubeConfigSource(url: kubeconfig)]
+
+        let client = KubernetesClient(commandTimeout: 10)
+        let context = KubeContext(name: "fake-orbit-mesh")
+        let namespaces = try await client.listNamespaces(from: sources, context: context)
+        XCTAssertTrue(namespaces.contains("alpha-zone"))
+
+        let localPort = try await availableLocalPort()
+        let recorder = PortForwardSessionRecorder()
+        let session = try await client.startPortForward(
+            from: sources,
+            context: context,
+            namespace: "alpha-zone",
+            targetKind: .service,
+            targetName: "orbit-lens",
+            localPort: localPort,
+            remotePort: 8080,
+            address: "127.0.0.1",
+            onEvent: { recorder.append($0) }
+        )
+        defer { Task { await client.stopPortForward(sessionID: session.id) } }
+        _ = try await recorder.waitForStatus(.active, timeout: 10)
+        let body = try await httpGET("http://127.0.0.1:\(localPort)/healthz")
+        XCTAssertTrue(body.contains("orbit-lens ok"), body)
+
+        let targets = proxy.tunnelTargets()
+        XCTAssertGreaterThanOrEqual(targets.count, 2, "Expected the REST session and the port-forward to use the proxy: \(targets)")
+        XCTAssertEqual(Set(targets), ["\(proxyOnlyHost):16443"])
+    }
+
     func testDockerComposeFakeK8sResourceGraphAndEventsAreLocalAndResolvable() async throws {
         let fixture = try dockerComposeFakeK8sFixture()
         let client = KubernetesClient(commandTimeout: 10)

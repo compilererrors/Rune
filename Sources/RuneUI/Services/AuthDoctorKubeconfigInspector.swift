@@ -174,8 +174,8 @@ public struct AuthDoctorKubeconfigInspector: Sendable {
             checks.append(RuneHealthCheck(
                 id: "proxy-profile",
                 title: "Proxy profile",
-                status: .warning,
-                message: "Proxy configuration was detected. Rune's Kubernetes REST transport does not currently apply kubeconfig proxy-url, so proxy routing is not verified."
+                status: .passed,
+                message: "Proxy configuration was detected. Rune connects to the cluster through its kubeconfig proxy-url (http, https or socks5), as kubectl does."
             ))
         }
 

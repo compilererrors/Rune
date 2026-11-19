@@ -225,7 +225,7 @@ final class AuthDoctorKubeconfigInspectorTests: XCTestCase {
         XCTAssertFalse(checks.contains { $0.id == "exec-auth-v1-interactive-mode" })
     }
 
-    func testProxyURLIsDetectedButNeverReportedAsVerified() throws {
+    func testProxyURLIsReportedAsAppliedToConnections() throws {
         let fixture = try KubeconfigFixture(
             """
             apiVersion: v1
@@ -252,9 +252,9 @@ final class AuthDoctorKubeconfigInspectorTests: XCTestCase {
             .inspect(sources: [fixture.source])
             .first { $0.id == "proxy-profile" })
 
-        XCTAssertEqual(check.status, .warning)
-        XCTAssertTrue(check.message.contains("not verified"))
-        XCTAssertFalse(check.message.contains("verify that proxy routing works"))
+        XCTAssertEqual(check.status, .passed)
+        XCTAssertTrue(check.message.contains("through its kubeconfig proxy-url"))
+        XCTAssertFalse(check.message.contains("not verified"))
     }
 
     func testProxyAfterCustomCAIsRetainedWithoutCurrentContext() throws {
