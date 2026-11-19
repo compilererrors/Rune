@@ -38,7 +38,7 @@ final class TextSizeChangeCostTests: XCTestCase {
 
     func testStepsOnALongLogStayInstant() async throws {
         let defaults = UserDefaults.standard
-        let previous = defaults.object(forKey: RuneSettingsKeys.terminalFontSize)
+        let previous = defaults.persistedTestValue(forKey: RuneSettingsKeys.terminalFontSize)
         defer { if let previous { defaults.set(previous, forKey: RuneSettingsKeys.terminalFontSize) } else { defaults.removeObject(forKey: RuneSettingsKeys.terminalFontSize) } }
         defaults.set(12.0, forKey: RuneSettingsKeys.terminalFontSize)
 

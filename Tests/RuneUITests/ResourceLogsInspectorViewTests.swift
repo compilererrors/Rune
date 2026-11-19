@@ -965,7 +965,7 @@ final class ResourceLogsInspectorViewTests: XCTestCase {
     @MainActor
     func testLogSearchNavigationCentersActiveMatchInALargeLogAfterATextSizeStep() async throws {
         let defaults = UserDefaults.standard
-        let previousSize = defaults.object(forKey: RuneSettingsKeys.terminalFontSize)
+        let previousSize = defaults.persistedTestValue(forKey: RuneSettingsKeys.terminalFontSize)
         defer { if let previousSize { defaults.set(previousSize, forKey: RuneSettingsKeys.terminalFontSize) } else { defaults.removeObject(forKey: RuneSettingsKeys.terminalFontSize) } }
         defaults.set(12.0, forKey: RuneSettingsKeys.terminalFontSize)
         let text = (0..<6_000)

@@ -11,7 +11,7 @@ final class RuneDemoClusterShellAndLogsTests: XCTestCase {
     private var previousDemoSetting: Any?
 
     override func setUp() async throws {
-        previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
     }
 

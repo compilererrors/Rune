@@ -79,7 +79,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testViewModelRestoresSafeSelectionsAndAllLogsWhenEnabled() {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -129,7 +129,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testInvalidStoredChoiceIDsFallBackWithoutEnablingTransientTailState() {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -158,7 +158,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testDisabledSettingSkipsRestoreAndClearsOldSnapshot() {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = false
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -190,7 +190,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testTurningSettingOffClearsBothStoresAndCancelsPendingWrite() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -223,7 +223,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testSelectionChangesPersistWithoutWaitingForAppTermination() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -265,7 +265,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testImmediateFlushKeepsLatestLogChoiceAndScopesContainerToSelectedPod() throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -314,7 +314,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testRBACRestoreRequiresExactResourceKindWhenNamesCollide() {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -363,7 +363,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testColdStartRestoresExistingContextAndValidatedNamespace() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -459,7 +459,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testColdStartNeverAppliesStaleNamespaceToFallbackContext() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -508,7 +508,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testColdStartDoesNotRestoreClusterScopeFromDifferentKubeConfigSource() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -556,7 +556,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testTransientContextFailurePreservesLastGoodSnapshot() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -639,8 +639,8 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testColdStartHydratesHelmListBeforeRestoringRelease() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSaveLastAppState = true
         UserDefaults.standard.runeSimpleMode = false
         defer {
@@ -722,7 +722,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
     @MainActor
     func testColdStartRestoresResourceOnlyAfterItsScopeHydrates() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)

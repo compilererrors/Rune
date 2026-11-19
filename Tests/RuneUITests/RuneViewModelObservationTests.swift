@@ -7,7 +7,7 @@ import XCTest
 final class RuneViewModelObservationTests: XCTestCase {
     func testWriteDialogsPublishBeforeOpeningConfirmingAndCancelling() {
         let key = RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation
-        let previous = UserDefaults.standard.object(forKey: key)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: key)
         UserDefaults.standard.set(true, forKey: key)
         defer {
             if let previous { UserDefaults.standard.set(previous, forKey: key) }

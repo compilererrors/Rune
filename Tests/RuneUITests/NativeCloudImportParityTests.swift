@@ -88,7 +88,7 @@ final class NativeCloudImportParityTests: XCTestCase {
     }
 
     private func exerciseImport(provider: CloudKubeConfigProvider) async throws -> TimeInterval {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {

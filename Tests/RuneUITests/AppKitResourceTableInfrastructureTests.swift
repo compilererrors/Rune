@@ -1857,7 +1857,7 @@ final class AppKitResourceTableInfrastructureTests: XCTestCase {
         let keys = columnIDs.map {
             "rune.settings.layout.resourceColumnWidths.genericResources.configMap.\($0)"
         }
-        let savedValues = Dictionary(uniqueKeysWithValues: keys.map { ($0, UserDefaults.standard.object(forKey: $0)) })
+        let savedValues = Dictionary(uniqueKeysWithValues: keys.map { ($0, UserDefaults.standard.persistedTestValue(forKey: $0)) })
         discardResourceColumnWidthStateForTesting(storageKeys: keys)
         defer {
             discardResourceColumnWidthStateForTesting(storageKeys: keys)

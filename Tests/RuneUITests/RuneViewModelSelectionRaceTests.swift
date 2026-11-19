@@ -387,7 +387,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testHelmAndOperatorSelectionsStayMutuallyExclusiveAcrossListRefreshes() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = false
         defer {
             if let previousSimpleMode {
@@ -448,7 +448,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testHelmFamilyPickerActivatesOnlyTheChosenSelectionFamily() {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = false
         defer {
             if let previousSimpleMode {
@@ -600,7 +600,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testSimpleModeOperatorFamilyInvalidatesPendingHelmReleaseList() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -1098,7 +1098,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testAsyncOperatorRefreshPreservesTheLatestValidUserPage() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -1196,7 +1196,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testOlderOperatorRefreshCannotClearRapidSelectionAfterAThenBThenC() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -1254,7 +1254,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testOperatorRefreshFailurePreservesExistingListAndSelection() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -1302,7 +1302,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testSpecializedListResultsFromChangedKubeConfigFingerprintAreDiscarded() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -1435,7 +1435,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testScheduledRefreshImmediatelyInvalidatesSpecializedListsItWillReplace() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -1549,7 +1549,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testDiscardedSnapshotDoesNotRunHelmFollowUpOrReportLive() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -1685,7 +1685,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testCancelledHelmFollowUpFinishesAlreadyAppliedSnapshotAsLive() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -1751,7 +1751,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testSupersededOperatorFollowUpCannotMarkReplacementSnapshotLive() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = false
         defer {
             if let previousSimpleMode {
@@ -1830,7 +1830,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
 
     @MainActor
     func testEmptySourceSyncClearsAndInvalidatesSpecializedResourceLists() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {

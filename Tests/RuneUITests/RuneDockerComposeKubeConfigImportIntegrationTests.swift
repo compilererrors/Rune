@@ -26,8 +26,8 @@ final class RuneDockerComposeKubeConfigImportIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeEnableDemoCluster = false
         UserDefaults.standard.runeSimpleMode = true
         defer {

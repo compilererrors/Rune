@@ -4043,7 +4043,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
     func testTabNavigationSkipsClusterThroughRealAppKitWindowEvents() async throws {
         let settingKey = RuneSettingsKeys.skipClusterOnTabNavigationFromSections
-        let previousSetting = UserDefaults.standard.object(forKey: settingKey)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: settingKey)
         UserDefaults.standard.set(false, forKey: settingKey)
         defer {
             if let previousSetting {
@@ -4148,7 +4148,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
     func testKeyboardNavigationIsScopedToItsOwningAppKitWindow() async throws {
         let settingKey = RuneSettingsKeys.skipClusterOnTabNavigationFromSections
-        let previousSetting = UserDefaults.standard.object(forKey: settingKey)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: settingKey)
         UserDefaults.standard.set(true, forKey: settingKey)
         defer {
             if let previousSetting {

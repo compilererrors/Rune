@@ -2066,7 +2066,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testMockedAddClusterCloudImportLoadsCoreFakeClusterDataInSimpleMode() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -2208,7 +2208,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testMockedAddClusterCloudImportLoadsFakeClusterForEveryRunnableProvider() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -2898,7 +2898,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testAddClusterCloudImportFailureUnlocksRetryAndClearsStaleError() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -2984,7 +2984,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testAddClusterRefreshContextsLoadsExternallyWrittenKubeconfigAgainstFakeCluster() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -3032,7 +3032,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testSamePathKubeconfigContentChangeClearsCompletedAuthDoctorScope() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreUserDefaultsValue(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -3087,8 +3087,8 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testSameContextNameSourceRotationNeverPublishesOldNamespaceScope() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
-        let previousPersistence = UserDefaults.standard.object(forKey: RuneSettingsKeys.persistNamespaceListCache)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
+        let previousPersistence = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.persistNamespaceListCache)
         UserDefaults.standard.runeSimpleMode = true
         UserDefaults.standard.runePersistNamespaceListCache = true
         defer {
@@ -3590,7 +3590,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testRootSynchronizesHelmBrowserFamilyWhenOpeningLegacySavedWorkspaces() async throws {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             restoreUserDefaultsValue(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
@@ -3871,7 +3871,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testLoadDemoClusterPopulatesFullInMemorySnapshot() {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             if let previousDemoSetting {
@@ -4044,7 +4044,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testLoadDemoClusterWinsOverPendingBootstrap() async throws {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             if let previousDemoSetting {
@@ -4075,7 +4075,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testResetDemoClusterRestoresInMemorySnapshot() {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             if let previousDemoSetting {
@@ -4107,7 +4107,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testDemoClusterDetailsAndLogsStayInMemoryWhenSwitchingSelections() async throws {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             if let previousDemoSetting {
@@ -4152,7 +4152,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testResourceInspectorRefreshRetainsDocumentsDuringSameScopeReload() async throws {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             restoreUserDefaultsValue(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
@@ -4288,7 +4288,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testSelectedHelmInspectorRefreshReloadsReleaseAndOperatorDocuments() async throws {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             restoreUserDefaultsValue(previousDemoSetting, forKey: RuneSettingsKeys.enableDemoCluster)
@@ -4402,7 +4402,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testTerminalPodInspectorCanLoadLogsAndYAMLWithoutLeavingTerminal() async throws {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             if let previousDemoSetting {
@@ -5667,7 +5667,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testContextMenuOptionsUseFavoriteFirstOrdering() {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer {
             if let previousDemoSetting {
@@ -5752,7 +5752,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testVisibleContextSearchUsesDisplayMetadataAliasTagsAndGroup() {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer {
             if let previousDemoSetting {
@@ -5803,7 +5803,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteContextItemsUseDisplayMetadata() {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer {
             if let previousDemoSetting {
@@ -5844,7 +5844,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteSearchKeepsUnicodeCaseFoldingAndInvalidatesContextMetadataCache() {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer {
             if let previousDemoSetting {
@@ -6138,7 +6138,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteDoesNotExposeClusterWriteOrDestructiveCommands() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
         UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = false
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
@@ -6184,7 +6184,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteDestructiveDeleteRequiresExplicitOptInAndOnlyOpensConfirmation() throws {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
         UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
@@ -6214,7 +6214,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteDeleteQueryWorkflowOnlyArmsConfirmationAndDismissesPalette() throws {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
         UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
@@ -6242,8 +6242,8 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteDestructiveDeleteUsesProductionSecondConfirmation() throws {
-        let previousPalette = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
-        let previousProduction = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousPalette = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previousProduction = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
         defer {
@@ -6278,7 +6278,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteDeleteActionCannotBypassDisabledSettingWhenConstructedDirectly() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
         UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = false
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
@@ -6309,7 +6309,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteDestructiveDeleteRequiresSelectedResourceEvenWhenOptedIn() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
         UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
@@ -6337,7 +6337,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteDestructiveCommandsStayHiddenAcrossSelectedResourceKindsWhenOptedOut() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
         UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = false
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
@@ -6387,7 +6387,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteDestructiveDeleteHonorsReadOnlyModeBeforeConfirmation() throws {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
         UserDefaults.standard.runeWriteSafetyShowDestructiveCommandsInCommandPalette = true
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyShowDestructiveCommandsInCommandPalette)
@@ -6413,7 +6413,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testDemoContextIsVisibleWhenDemoClusterIsEnabled() {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer {
             if let previousDemoSetting {
@@ -7046,7 +7046,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testApplyYAMLRejectsChangesThatTargetAnotherResource() {
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
         UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
         defer {
             restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
@@ -7123,7 +7123,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testApplyYAMLAcceptsMatchingExplicitTargetIdentity() {
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
         UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
         defer {
             restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
@@ -7369,7 +7369,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testApplyYAMLImmediatelyRechecksTheCurrentDraftForLocalErrors() {
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
         UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
         defer {
             restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
@@ -7428,7 +7428,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testReapplyResourceYAMLBaselineUsesInSessionSnapshotForNonSecrets() {
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
         UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
         defer {
             restoreUserDefaultsValue(previousDryRun, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
@@ -7791,7 +7791,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testPendingApplyMessageIncludesServerDryRunStatus() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
         UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = true
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
@@ -7842,7 +7842,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testDisabledApplyDryRunSettingSkipsApplyDryRunPreview() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
         UserDefaults.standard.runeWriteSafetyRequireApplyDryRun = false
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun)
@@ -8855,7 +8855,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testManualProductionContextMarkPersistsAndTriggersProductionConfirmationForSyntheticContext() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
@@ -9805,7 +9805,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testProductionDestructiveWriteRequiresSecondConfirmation() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
@@ -9836,7 +9836,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testProductionRolloutRollbackRequiresSecondConfirmation() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
@@ -9859,8 +9859,8 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testProductionHelmRollbackRequiresSecondConfirmationBeforeRunningHelm() {
-        let previousProduction = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        let previousProduction = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
         UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
         defer {
@@ -9902,7 +9902,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testDisabledProductionSecondConfirmationSettingUsesSingleConfirmationLabel() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = false
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
@@ -9920,7 +9920,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testDisabledCopyableCommandSettingHidesPendingWriteCommandPreview() {
-        let previous = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
         UserDefaults.standard.runeWriteSafetyRequireCopyableCommand = false
         defer {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
@@ -10008,8 +10008,8 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testRolloutRollbackConfirmationShowsPlanAndDryRunStatusWhenSafetySettingsAreEnabled() {
-        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
         UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
         UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
         defer {
@@ -10054,8 +10054,8 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testDisabledRollbackPlanAndDryRunSettingsUseLowerFrictionRollbackConfirmation() {
-        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
         UserDefaults.standard.runeWriteSafetyShowRollbackPlan = false
         UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = false
         defer {
@@ -10081,8 +10081,8 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testControllerRollbackConfirmationShowsPlanAndBlocksAutomaticExecution() async throws {
-        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
         UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
         UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
         defer {
@@ -10131,8 +10131,8 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testHelmRollbackRunsDryRunThenRollbackAfterConfirmation() async throws {
-        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        let previousPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
         UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
         UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
         defer {
@@ -10193,7 +10193,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testHelmRollbackExecutionUsesArmedScopeAfterActiveScopeChanges() async throws {
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
         let previousProductionConfirmation = UserDefaults.standard.object(
             forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation
         )
@@ -10252,8 +10252,8 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testHelmRollbackUsesEditableOptionsForPreviewAndExecution() async throws {
-        let previousPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        let previousPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
         UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
         UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
         defer {

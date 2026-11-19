@@ -668,9 +668,9 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         let sidebarKey = RuneSettingsKeys.layoutSidebarWidth
         let detailKey = RuneSettingsKeys.layoutDetailWidth
         let saveStateKey = RuneSettingsKeys.saveLastAppState
-        let originalSidebar = defaults.object(forKey: sidebarKey)
-        let originalDetail = defaults.object(forKey: detailKey)
-        let originalSaveState = defaults.object(forKey: saveStateKey)
+        let originalSidebar = defaults.persistedTestValue(forKey: sidebarKey)
+        let originalDetail = defaults.persistedTestValue(forKey: detailKey)
+        let originalSaveState = defaults.persistedTestValue(forKey: saveStateKey)
         defaults.set(280.0, forKey: sidebarKey)
         defaults.set(440.0, forKey: detailKey)
         defaults.set(false, forKey: saveStateKey)
@@ -2340,8 +2340,8 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         let defaults = UserDefaults.standard
         let sidebarKey = RuneSettingsKeys.layoutSidebarWidth
         let detailKey = RuneSettingsKeys.layoutDetailWidth
-        let originalSidebar = defaults.object(forKey: sidebarKey)
-        let originalDetail = defaults.object(forKey: detailKey)
+        let originalSidebar = defaults.persistedTestValue(forKey: sidebarKey)
+        let originalDetail = defaults.persistedTestValue(forKey: detailKey)
 
         defaults.set(sidebarWidth, forKey: sidebarKey)
         defaults.set(detailWidth, forKey: detailKey)

@@ -299,7 +299,7 @@ final class PendingWriteOperationLifecycleTests: XCTestCase {
         operation: () async throws -> Void
     ) async rethrows {
         let key = RuneSettingsKeys.writeSafetyRequireHelmDryRun
-        let previous = UserDefaults.standard.object(forKey: key)
+        let previous = UserDefaults.standard.persistedTestValue(forKey: key)
         UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = enabled
         defer {
             if let previous {

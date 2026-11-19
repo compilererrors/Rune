@@ -73,7 +73,7 @@ final class RuneLocalizationTests: XCTestCase {
         RuneSettingsKeys.registerDefaults()
 
         let defaults = UserDefaults.standard
-        let previous = defaults.object(forKey: RuneSettingsKeys.interfaceLanguage)
+        let previous = defaults.persistedTestValue(forKey: RuneSettingsKeys.interfaceLanguage)
         defer {
             if let previous {
                 defaults.set(previous, forKey: RuneSettingsKeys.interfaceLanguage)

@@ -13,7 +13,7 @@ final class TerminalFeaturePerformanceKPITests: XCTestCase {
         // The history key by name, so the same KPI also builds against older code.
         let historyKey = "rune.terminal.commandHistory"
         let defaults = UserDefaults.standard
-        let savedHistory = defaults.object(forKey: historyKey)
+        let savedHistory = defaults.persistedTestValue(forKey: historyKey)
         defer { if let savedHistory { defaults.set(savedHistory, forKey: historyKey) } else { defaults.removeObject(forKey: historyKey) } }
 
         let state = RuneAppState()

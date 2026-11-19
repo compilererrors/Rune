@@ -9,7 +9,7 @@ import XCTest
 @MainActor
 final class EKSNativeAuthViewModelTests: XCTestCase {
     func testConnectSelectedEKSNativeAuthBindsSelectedDescriptorAndVerifiesContext() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -110,7 +110,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
     }
 
     func testExplicitEKSRequestDoesNotDependOnGlobalSelectedContext() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -378,7 +378,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
     }
 
     func testConnectSelectedAKSNativeAuthBindsOnlySecretToKubeloginDescriptor() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
         let server = try await RuneFakeK8sRESTServer.start()
@@ -413,7 +413,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
     }
 
     func testInjectedGKEChooserBindsSelectedContextWithoutPersistingJSONInStatus() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
         let server = try await RuneFakeK8sRESTServer.start()

@@ -9,7 +9,7 @@ import XCTest
 final class TerminalWorkspaceSourceScopeTests: XCTestCase {
     @MainActor
     func testTerminalWorkspaceSnapshotIsRejectedWhenKubeConfigSourceScopeChanges() throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -89,7 +89,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
 
     @MainActor
     func testTerminalWorkspaceScopeSurvivesCredentialRotationForSameCluster() throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -158,7 +158,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
 
     @MainActor
     func testDuplicateImportChangingServerRetiresTerminalSessionBeforeNewScopeCanPersistIt() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -276,7 +276,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
 
     @MainActor
     func testUnscopedLegacyLastAppSnapshotCannotRestoreClusterBoundState() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)

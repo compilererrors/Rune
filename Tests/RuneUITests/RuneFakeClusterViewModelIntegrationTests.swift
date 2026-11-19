@@ -11,7 +11,7 @@ import XCTest
 @MainActor
 final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     func testDemoContextIsVisibleWithoutHijackingFakeClusterStartup() async throws {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -33,7 +33,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     func testSelectingDemoContextFromFakeClusterUsesInMemorySnapshotAndCanReturnToFakeCluster() async throws {
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = true
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -94,7 +94,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     func testK9sServiceAccountAndEndpointCommandsLoadRealResourceLists() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -138,7 +138,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     func testSimpleModeOverviewStillLoadsCoreClusterSnapshot() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -197,7 +197,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     func testSimpleModeWorkloadsStillLoadsPodsAndDeployments() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer { restoreSetting(previousSimpleMode, forKey: RuneSettingsKeys.simpleMode) }
 
@@ -847,9 +847,9 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     func testRollbackDryRunFailureBlocksRealRollbackAndAuditsFailureAgainstFakeCluster() async throws {
-        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
-        let previousRollbackPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousRolloutDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousRollbackPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousProductionConfirmation = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
         UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = false
@@ -930,11 +930,11 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         let previousProductionConfirmation = UserDefaults.standard.object(
             forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation
         )
-        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousRolloutDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
         let previousPostActionVerification = UserDefaults.standard.object(
             forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification
         )
-        let previousCopyableCommand = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
+        let previousCopyableCommand = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireCopyableCommand)
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
         UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = false
         UserDefaults.standard.runeWriteSafetyRequirePostActionVerification = false
@@ -1027,10 +1027,10 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     func testRollbackSuccessAuditsPostActionReadinessVerificationAgainstFakeCluster() async throws {
-        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
-        let previousRollbackPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousPostActionVerification = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
-        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousRolloutDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousRollbackPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousPostActionVerification = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
+        let previousProductionConfirmation = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
         UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
         UserDefaults.standard.runeWriteSafetyRequirePostActionVerification = true
@@ -1090,10 +1090,10 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     func testRollbackPostActionVerificationTimesOutWhenDeploymentDoesNotBecomeReadyAgainstFakeCluster() async throws {
-        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
-        let previousRollbackPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousPostActionVerification = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
-        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousRolloutDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousRollbackPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousPostActionVerification = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequirePostActionVerification)
+        let previousProductionConfirmation = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
         UserDefaults.standard.runeWriteSafetyShowRollbackPlan = true
         UserDefaults.standard.runeWriteSafetyRequirePostActionVerification = true
@@ -1299,7 +1299,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     }
 
     func testAuthDoctorDoesNotReportHelmRollbackAsAuthFailure() async throws {
-        let previousHelmDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        let previousHelmDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
         UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
         defer {
             restoreSetting(previousHelmDryRun, forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)

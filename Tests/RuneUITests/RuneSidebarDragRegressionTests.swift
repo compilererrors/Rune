@@ -9,7 +9,7 @@ final class RuneSidebarDragRegressionTests: XCTestCase {
     func testSplitDividersFollowDragWhileRootRerenders() async throws {
         let defaults = UserDefaults.standard
         let keys = [RuneSettingsKeys.layoutSidebarWidth, RuneSettingsKeys.layoutDetailWidth, RuneSettingsKeys.saveLastAppState]
-        let originals = keys.map { defaults.object(forKey: $0) }
+        let originals = keys.map { defaults.persistedTestValue(forKey: $0) }
         defaults.set(280.0, forKey: keys[0])
         defaults.set(440.0, forKey: keys[1])
         defaults.set(true, forKey: keys[2])
@@ -98,7 +98,7 @@ final class RuneSidebarDragRegressionTests: XCTestCase {
     func testInspectorTextKeepsLeadingEdgeWhileInspectorResizes() async throws {
         let defaults = UserDefaults.standard
         let keys = [RuneSettingsKeys.layoutSidebarWidth, RuneSettingsKeys.layoutDetailWidth, RuneSettingsKeys.saveLastAppState]
-        let originals = keys.map { defaults.object(forKey: $0) }
+        let originals = keys.map { defaults.persistedTestValue(forKey: $0) }
         defaults.set(260.0, forKey: keys[0])
         defaults.set(520.0, forKey: keys[1])
         defaults.set(true, forKey: keys[2])

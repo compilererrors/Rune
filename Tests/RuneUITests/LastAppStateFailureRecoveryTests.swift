@@ -11,7 +11,7 @@ import XCTest
 final class LastAppStateFailureRecoveryTests: XCTestCase {
     @MainActor
     func testImmediateFlushAfterTransientContextFailurePreservesPreviousSnapshot() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -71,7 +71,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
 
     @MainActor
     func testPodListFailurePreservesStoredResourceSelectionDuringImmediateFlush() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         UserDefaults.standard.runeSaveLastAppState = true
         defer {
             restoreDefault(previousSetting, key: RuneSettingsKeys.saveLastAppState)
@@ -139,8 +139,8 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
 
     @MainActor
     func testColdHelmSectionWithoutSavedResourceStillHydratesReleaseList() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSaveLastAppState = true
         UserDefaults.standard.runeSimpleMode = false
         defer {
@@ -221,8 +221,8 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
 
     @MainActor
     func testScopedHelmRestoreRetriesAfterFailureRestoresExactReleaseAndUnlocksImmediatePersistence() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSaveLastAppState = true
         UserDefaults.standard.runeSimpleMode = true
         defer {
@@ -322,8 +322,8 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
 
     @MainActor
     func testAdvancedModeColdHelmRestoreHydratesReleaseAndOperatorFamilies() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSaveLastAppState = true
         UserDefaults.standard.runeSimpleMode = false
         defer {
@@ -402,8 +402,8 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
 
     @MainActor
     func testAdvancedColdRestoreKeepsPendingUntilExactSecondOperatorResourceIsSelected() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSaveLastAppState = true
         UserDefaults.standard.runeSimpleMode = false
         defer {
@@ -507,8 +507,8 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
 
     @MainActor
     func testAdvancedOperatorRetrySucceedsWhileReleaseFamilyStillFailsAndUnlocksPersistence() async throws {
-        let previousSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.saveLastAppState)
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSaveLastAppState = true
         UserDefaults.standard.runeSimpleMode = false
         defer {

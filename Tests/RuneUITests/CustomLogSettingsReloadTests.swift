@@ -16,7 +16,7 @@ final class CustomLogSettingsReloadTests: XCTestCase {
             RuneSettingsKeys.logsCustomPresetOneTimeValue,
             RuneSettingsKeys.logsCustomPresetOneTimeUnit
         ]
-        let savedValues = keys.map { (key: $0, value: defaults.object(forKey: $0)) }
+        let savedValues = keys.map { (key: $0, value: defaults.persistedTestValue(forKey: $0)) }
         defer {
             for savedValue in savedValues {
                 if let value = savedValue.value {

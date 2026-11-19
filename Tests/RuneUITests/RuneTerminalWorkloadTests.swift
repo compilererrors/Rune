@@ -288,7 +288,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
 
     func testCommandPlusMinusAndZeroSizeTheTerminalText() async throws {
         let defaults = UserDefaults.standard
-        let previous = defaults.object(forKey: RuneSettingsKeys.terminalFontSize)
+        let previous = defaults.persistedTestValue(forKey: RuneSettingsKeys.terminalFontSize)
         defer { if let previous { defaults.set(previous, forKey: RuneSettingsKeys.terminalFontSize) } else { defaults.removeObject(forKey: RuneSettingsKeys.terminalFontSize) } }
         defaults.set(12.0, forKey: RuneSettingsKeys.terminalFontSize)
         let harness = try await makeHarness(sessionCount: 1, transcriptLines: 20)
@@ -576,7 +576,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         windowSize: NSSize = NSSize(width: 1500, height: 900)
     ) async throws -> Harness {
         let defaults = UserDefaults.standard
-        let previousSave = defaults.object(forKey: RuneSettingsKeys.saveLastAppState)
+        let previousSave = defaults.persistedTestValue(forKey: RuneSettingsKeys.saveLastAppState)
         defaults.set(persists, forKey: RuneSettingsKeys.saveLastAppState)
         addTeardownBlock {
             if let previousSave { defaults.set(previousSave, forKey: RuneSettingsKeys.saveLastAppState) } else { defaults.removeObject(forKey: RuneSettingsKeys.saveLastAppState) }

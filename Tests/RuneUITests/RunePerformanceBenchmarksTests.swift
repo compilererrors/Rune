@@ -1006,7 +1006,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     @MainActor
     func testProductionConfirmationStateTransitionBenchmarkKPI() {
-        let previousProduction = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousProduction = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation = true
         defer {
             if let previousProduction {
@@ -5548,7 +5548,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     @MainActor
     func testMockedAddClusterFakeRESTCoreLoadBenchmarkKPI() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -5633,7 +5633,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     @MainActor
     func testMockedNativeEKSImportReviewBindingAndCoreLoadBenchmarkKPI() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -5923,7 +5923,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     @MainActor
     func testAddClusterFailureRetryWorkflowBenchmarkKPI() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {
@@ -6025,7 +6025,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     @MainActor
     func testAddClusterRefreshContextsFakeRESTWorkflowBenchmarkKPI() async throws {
-        let previousSimpleMode = UserDefaults.standard.object(forKey: RuneSettingsKeys.simpleMode)
+        let previousSimpleMode = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.simpleMode)
         UserDefaults.standard.runeSimpleMode = true
         defer {
             if let previousSimpleMode {

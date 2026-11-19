@@ -12,7 +12,7 @@ import XCTest
 final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
     func testDockerComposeViewModelCoversPrimarySectionsInspectorsAndTerminalPodLogs() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -161,7 +161,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeViewModelCoversResourceKindTabsWithoutDemoFallback() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -207,7 +207,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeTerminalRightPanelLogWorkflowDoesNotFollowShellPodFallback() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -293,7 +293,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
     func testDockerComposeConfiguredLogExportsUseLogsLoadedFromFakeCluster() async throws {
         let configuredExporter = RecordingConfiguredExporter()
         let harness = try makeHarness(configuredExporter: configuredExporter)
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -354,7 +354,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeLogsCoverMultiContainerPreviousLogsAndOperatorResources() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -521,7 +521,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposePodStatusMatchesKubectlForSidecarInitAndCrashLoopPods() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -735,7 +735,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
     /// first (as kubectl does), says so, and runs commands.
     func testDockerComposeShellInAMultiContainerPodOpensInTheFirstContainer() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -857,7 +857,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
     /// open on it, as `kubectl exec` and `kubectl logs` do, not on the first.
     func testDockerComposeShellAndLogsFollowThePodDefaultContainerAnnotation() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -959,11 +959,11 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
             RuneSettingsKeys.terminalCommandHistoryEnabled,
             RuneSettingsKeys.terminalCommandHistoryLimit,
         ]
-        let previousHistorySettings = historyKeys.map { defaults.object(forKey: $0) }
+        let previousHistorySettings = historyKeys.map { defaults.persistedTestValue(forKey: $0) }
         defaults.removeObject(forKey: RuneSettingsKeys.terminalCommandHistory)
         defaults.set(true, forKey: RuneSettingsKeys.terminalCommandHistoryEnabled)
         defaults.set(50, forKey: RuneSettingsKeys.terminalCommandHistoryLimit)
-        let previousDemoSetting = defaults.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = defaults.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         defaults.runeEnableDemoCluster = false
         defer {
             restoreDemoSetting(previousDemoSetting)
@@ -1047,7 +1047,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeViewModelExecAndPortForwardUseLocalCluster() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -1123,7 +1123,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeManualYAMLDryRunDoesNotMutateAndApplyRevalidatesBeforeWrite() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         let previousApplyDryRun = UserDefaults.standard.object(
             forKey: RuneSettingsKeys.writeSafetyRequireApplyDryRun
         )
@@ -1276,7 +1276,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeManualYAMLDryRunSurfacesTypedKubernetesErrorWithoutMutation() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -1393,11 +1393,11 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeRollbackSafetyFlowAgainstFakeCluster() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
-        let previousRolloutDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
-        let previousHelmDryRun = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
-        let previousRollbackPlan = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
-        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousRolloutDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireRolloutDryRun)
+        let previousHelmDryRun = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireHelmDryRun)
+        let previousRollbackPlan = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyShowRollbackPlan)
+        let previousProductionConfirmation = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         UserDefaults.standard.runeEnableDemoCluster = false
         UserDefaults.standard.runeWriteSafetyRequireRolloutDryRun = true
         UserDefaults.standard.runeWriteSafetyRequireHelmDryRun = true
@@ -1586,7 +1586,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeOverviewSignalsAreDistinctClickableAndBounded() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -1656,7 +1656,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
     func testDockerComposeAuthDoctorAndSupportBundleAreNonDestructive() async throws {
         let exporter = RecordingFileExporter()
         let harness = try makeHarness(exporter: exporter)
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
         UserDefaults.standard.runeEnableDemoCluster = false
         defer { restoreDemoSetting(previousDemoSetting) }
 
@@ -1740,8 +1740,8 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
 
     func testDockerComposeProductionDeleteRequiresSecondConfirmationBeforeMutatingCluster() async throws {
         let harness = try makeHarness()
-        let previousDemoSetting = UserDefaults.standard.object(forKey: RuneSettingsKeys.enableDemoCluster)
-        let previousProductionConfirmation = UserDefaults.standard.object(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
+        let previousDemoSetting = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.enableDemoCluster)
+        let previousProductionConfirmation = UserDefaults.standard.persistedTestValue(forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         let context = KubeContext(name: "fake-orbit-mesh")
         var markedProductionInTest = false
         UserDefaults.standard.runeEnableDemoCluster = false
