@@ -413,11 +413,10 @@ final class ExecCredentialQualityGateTests: XCTestCase {
         XCTAssertEqual(diagnostic?.state, .expired)
     }
 
-    func testHTTP401InvalidatesExecCredentialWithoutBlindReplay() async throws {
-        let server = try await UnauthorizedThenSuccessServer.start()
-        defer { server.stop() }
+    private func writeUnauthorizedFixture(
+        server: UnauthorizedThenSuccessServer
+    ) throws -> (Fixture, counter: URL) {
         let fixture = try makeFixture()
-        defer { fixture.remove() }
         let counter = fixture.directory.appendingPathComponent("unauthorized-invocation-count")
         let plugin = try writePlugin(
             in: fixture.directory,
@@ -434,37 +433,69 @@ final class ExecCredentialQualityGateTests: XCTestCase {
             ),
             serverURL: "http://127.0.0.1:\(server.port)"
         )
+        return (fixture, counter)
+    }
 
-        let client = KubernetesRESTClient()
-        let environment = ["KUBECONFIG": fixture.kubeconfig.path]
-        do {
-            _ = try await client.listNamespaces(
-                environment: environment,
-                contextName: Fixture.contextName,
-                timeout: 2
-            )
-            XCTFail("Expected the first explicit request to receive HTTP 401")
-        } catch {
-            let message = String(describing: error)
-            XCTAssertTrue(message.contains("HTTP 401"), message)
-        }
+    func testHTTP401IsAnsweredOnceWithARenewedExecCredential() async throws {
+        let server = try await UnauthorizedThenSuccessServer.start(unauthorizedResponses: 1)
+        defer { server.stop() }
+        let (fixture, counter) = try writeUnauthorizedFixture(server: server)
+        defer { fixture.remove() }
 
-        XCTAssertEqual(server.requestCount, 1, "A 401 must not cause an automatic replay")
-        XCTAssertEqual(try String(contentsOf: counter, encoding: .utf8), "1")
-
-        let namespaces = try await client.listNamespaces(
-            environment: environment,
+        let namespaces = try await KubernetesRESTClient().listNamespaces(
+            environment: ["KUBECONFIG": fixture.kubeconfig.path],
             contextName: Fixture.contextName,
             timeout: 2
         )
 
         XCTAssertEqual(namespaces, ["synthetic-namespace"])
-        XCTAssertEqual(server.requestCount, 2, "Two user calls must produce exactly two HTTP requests")
-        XCTAssertEqual(
-            try String(contentsOf: counter, encoding: .utf8),
-            "2",
-            "The request after HTTP 401 must resolve a fresh ExecCredential"
+        XCTAssertEqual(server.requestCount, 2, "One 401, then one request with the renewed credential")
+        XCTAssertEqual(try String(contentsOf: counter, encoding: .utf8), "2", "The retry must use a fresh ExecCredential")
+    }
+
+    func testACredentialTheServerKeepsRejectingIsRetriedAtMostOnceAMinute() async throws {
+        let server = try await UnauthorizedThenSuccessServer.start(unauthorizedResponses: .max)
+        defer { server.stop() }
+        let (fixture, counter) = try writeUnauthorizedFixture(server: server)
+        defer { fixture.remove() }
+        let client = KubernetesRESTClient()
+        let environment = ["KUBECONFIG": fixture.kubeconfig.path]
+
+        for _ in 0..<3 {
+            do {
+                _ = try await client.listNamespaces(environment: environment, contextName: Fixture.contextName, timeout: 2)
+                XCTFail("Every request is rejected")
+            } catch {
+                XCTAssertTrue(String(describing: error).contains("HTTP 401"), String(describing: error))
+            }
+        }
+
+        // The first call retried once; the next two, inside the minute, did not.
+        XCTAssertEqual(server.requestCount, 4)
+        XCTAssertEqual(try String(contentsOf: counter, encoding: .utf8), "4")
+    }
+
+    func testHTTP401WithAStaticTokenIsNotSentAgain() async throws {
+        let server = try await UnauthorizedThenSuccessServer.start(unauthorizedResponses: .max)
+        defer { server.stop() }
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        try fixture.writeKubeconfig(
+            userYAML: "token: synthetic-static-token",
+            serverURL: "http://127.0.0.1:\(server.port)"
         )
+
+        do {
+            _ = try await KubernetesRESTClient().listNamespaces(
+                environment: ["KUBECONFIG": fixture.kubeconfig.path],
+                contextName: Fixture.contextName,
+                timeout: 2
+            )
+            XCTFail("Expected HTTP 401")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("HTTP 401"), String(describing: error))
+        }
+        XCTAssertEqual(server.requestCount, 1, "A token Rune cannot renew would only be rejected again")
     }
 
     private func resolvedNamespace(for kubeconfig: URL) async throws -> String? {
@@ -649,9 +680,9 @@ private final class UnauthorizedThenSuccessServer: @unchecked Sendable {
         state.requestCount
     }
 
-    static func start() async throws -> UnauthorizedThenSuccessServer {
+    static func start(unauthorizedResponses: Int = 1) async throws -> UnauthorizedThenSuccessServer {
         let listener = try NWListener(using: .tcp, on: 0)
-        let state = RequestState()
+        let state = RequestState(unauthorizedResponses: unauthorizedResponses)
         listener.newConnectionHandler = { connection in
             connection.start(queue: DispatchQueue(label: "rune.exec-quality.connection"))
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, _, _ in
@@ -704,6 +735,11 @@ private final class UnauthorizedThenSuccessServer: @unchecked Sendable {
     private final class RequestState: @unchecked Sendable {
         private let lock = NSLock()
         private var count = 0
+        private let unauthorizedResponses: Int
+
+        init(unauthorizedResponses: Int) {
+            self.unauthorizedResponses = unauthorizedResponses
+        }
 
         var requestCount: Int {
             lock.lock()
@@ -716,7 +752,7 @@ private final class UnauthorizedThenSuccessServer: @unchecked Sendable {
             count += 1
             let current = count
             lock.unlock()
-            if current == 1 {
+            if current <= unauthorizedResponses {
                 return (
                     401,
                     #"{"kind":"Status","status":"Failure","message":"synthetic unauthorized"}"#

@@ -1480,26 +1480,12 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     ) async throws -> UnifiedDeploymentLogs {
         let env = try kubeconfigEnvironment(from: sources)
 
-        let selectorMap: [String: String]
-        if let cachedSelector = deployment.selector, !cachedSelector.isEmpty {
-            selectorMap = cachedSelector
-        } else {
-            selectorMap = try await requiredDeploymentSelectorViaREST(
-                environment: env,
-                context: context,
-                namespace: namespace,
-                deploymentName: deployment.name
-            )
-        }
-
-        guard !selectorMap.isEmpty else {
-            throw RuneError.parseError(message: "Deployment \(deployment.name) is missing a matchLabels selector and cannot be used for unified logs")
-        }
-
-        let selector = selectorMap
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: ",")
+        let selector = try await deploymentLabelSelector(
+            deployment,
+            environment: env,
+            context: context,
+            namespace: namespace
+        )
 
         let pods = try await requiredPodsBySelectorViaREST(
             environment: env,
@@ -1544,26 +1530,12 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         deployment: DeploymentSummary
     ) async throws -> [PodSummary] {
         let env = try kubeconfigEnvironment(from: sources)
-        let selectorMap: [String: String]
-        if let cachedSelector = deployment.selector, !cachedSelector.isEmpty {
-            selectorMap = cachedSelector
-        } else {
-            selectorMap = try await requiredDeploymentSelectorViaREST(
-                environment: env,
-                context: context,
-                namespace: namespace,
-                deploymentName: deployment.name
-            )
-        }
-
-        guard !selectorMap.isEmpty else {
-            throw RuneError.parseError(message: "Deployment \(deployment.name) is missing a matchLabels selector.")
-        }
-
-        let selector = selectorMap
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: ",")
+        let selector = try await deploymentLabelSelector(
+            deployment,
+            environment: env,
+            context: context,
+            namespace: namespace
+        )
 
         return try await requiredPodsBySelectorViaREST(
             environment: env,
@@ -2543,24 +2515,42 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         }
     }
 
-    private func requiredDeploymentSelectorViaREST(
+    /// The deployment's whole selector, `matchExpressions` included. A
+    /// listed deployment carries it; one known only by its `matchLabels`
+    /// (made by hand, or kept from before the whole selector was read) uses
+    /// those; otherwise it is read from the server.
+    private func deploymentLabelSelector(
+        _ deployment: DeploymentSummary,
         environment: [String: String],
         context: KubeContext,
-        namespace: String,
-        deploymentName: String
-    ) async throws -> [String: String] {
+        namespace: String
+    ) async throws -> String {
+        if let listed = deployment.labelSelector, !listed.isEmpty {
+            return listed
+        }
+        if let labels = deployment.selector, !labels.isEmpty {
+            return labels
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: ",")
+        }
         let raw = try await restClient.deploymentSelector(
             environment: environment,
             contextName: context.name,
             namespace: namespace,
-            deploymentName: deploymentName,
+            deploymentName: deployment.name,
             timeout: unifiedLogsSelectorTimeout
         )
+        let selector: String?
         do {
-            return try parser.parseDeploymentSelector(from: raw)
+            selector = try parser.parseDeploymentLabelSelector(from: raw)
         } catch {
             throw RuneError.parseError(message: "deployment selector could not be parsed")
         }
+        guard let selector else {
+            throw RuneError.parseError(message: "Deployment \(deployment.name) has no label selector Rune can use.")
+        }
+        return selector
     }
 
     private func requiredPodsBySelectorViaREST(

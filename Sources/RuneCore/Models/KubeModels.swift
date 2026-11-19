@@ -537,20 +537,26 @@ public struct DeploymentSummary: Identifiable, Hashable, Codable, Sendable {
     public let namespace: String
     public let readyReplicas: Int
     public let desiredReplicas: Int
+    /// `spec.selector.matchLabels` only.
     public let selector: [String: String]?
+    /// The whole selector, `matchExpressions` included, in the form a
+    /// `labelSelector` query takes (`app=web,tier in (a,b),!canary`).
+    public let labelSelector: String?
 
     public init(
         name: String,
         namespace: String,
         readyReplicas: Int,
         desiredReplicas: Int,
-        selector: [String: String]? = nil
+        selector: [String: String]? = nil,
+        labelSelector: String? = nil
     ) {
         self.name = name
         self.namespace = namespace
         self.readyReplicas = readyReplicas
         self.desiredReplicas = desiredReplicas
         self.selector = selector
+        self.labelSelector = labelSelector
     }
 
     public var id: String { "\(namespace)/\(name)" }

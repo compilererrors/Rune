@@ -1153,7 +1153,7 @@ private struct RuneFakeK8sRouter {
             ],
             "spec": [
                 "replicas": deployment.replicas,
-                "selector": ["matchLabels": deployment.selector],
+                "selector": deploymentSelectorObject(deployment),
                 "template": [
                     "metadata": ["labels": deployment.selector],
                     "spec": ["containers": [["name": deployment.name, "image": "ghcr.io/rune/\(deployment.name):fake"]]]
@@ -1229,17 +1229,11 @@ private struct RuneFakeK8sRouter {
     }
 
     private func filteredReplicaSets(_ objects: [[String: Any]], query: [String: String]) -> [[String: Any]] {
-        guard let selector = query["labelSelector"], !selector.isEmpty else { return objects }
-        let requirements = selector.split(separator: ",").compactMap { pair -> (String, String)? in
-            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
-            guard parts.count == 2 else { return nil }
-            return (parts[0], parts[1])
-        }
-        guard !requirements.isEmpty else { return objects }
+        guard let raw = query["labelSelector"], !raw.isEmpty else { return objects }
+        let selector = RuneFakeK8sLabelSelector(raw)
         return objects.filter { object in
             let metadata = object["metadata"] as? [String: Any]
-            let labels = metadata?["labels"] as? [String: String] ?? [:]
-            return requirements.allSatisfy { labels[$0.0] == $0.1 }
+            return selector.matches(metadata?["labels"] as? [String: String] ?? [:])
         }
     }
 
@@ -1585,22 +1579,24 @@ private struct RuneFakeK8sRouter {
     }
 
     private func filteredPods(_ pods: [[String: Any]], query: [String: String]) -> [[String: Any]] {
-        guard let selector = query["labelSelector"], !selector.isEmpty else { return pods }
-        let requirements = selector.split(separator: ",").compactMap { raw -> (String, String)? in
-            let pair = raw.split(separator: "=", maxSplits: 1).map(String.init)
-            guard pair.count == 2 else { return nil }
-            return (pair[0], pair[1])
-        }
-        guard !requirements.isEmpty else { return pods }
+        guard let raw = query["labelSelector"], !raw.isEmpty else { return pods }
+        let selector = RuneFakeK8sLabelSelector(raw)
         return pods.filter { object in
-            guard
-                let metadata = object["metadata"] as? [String: Any],
-                let labels = metadata["labels"] as? [String: String]
-            else {
-                return false
-            }
-            return requirements.allSatisfy { labels[$0.0] == $0.1 }
+            let metadata = object["metadata"] as? [String: Any]
+            return selector.matches(metadata?["labels"] as? [String: String] ?? [:])
         }
+    }
+
+    private func deploymentSelectorObject(_ deployment: RuneFakeK8sDeployment) -> [String: Any] {
+        var selector: [String: Any] = ["matchLabels": deployment.selector]
+        if !deployment.matchExpressions.isEmpty {
+            selector["matchExpressions"] = deployment.matchExpressions.map { requirement -> [String: Any] in
+                var object: [String: Any] = ["key": requirement.key, "operator": requirement.operator]
+                if !requirement.values.isEmpty { object["values"] = requirement.values }
+                return object
+            }
+        }
+        return selector
     }
 
     /// With `timestamps`, each line starts with the time the kubelet read

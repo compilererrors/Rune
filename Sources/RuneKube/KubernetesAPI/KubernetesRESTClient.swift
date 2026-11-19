@@ -27,6 +27,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
     private let sessionPool = KubernetesRESTSessionPool<RESTURLSession>(urlSession: { $0.session })
     private let requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder?
     private let nativeCredentialProvider: any KubernetesNativeCredentialProviding
+    private let authenticationRetryLimiter = RESTAuthenticationRetryLimiter()
 
     init(
         requestMetricsRecorder: KubernetesRESTRequestMetricsRecorder? = nil,
@@ -1499,6 +1500,10 @@ final class KubernetesRESTClient: @unchecked Sendable {
         return path
     }
 
+    /// A 401 with an exec or native credential is answered once with a
+    /// renewed credential, as long as renewal gives a different one. kubectl
+    /// only renews for the next request; a 401 is sent before the server does
+    /// anything with the request, so sending it again is safe for writes too.
     private func rawRequest(
         environment: [String: String],
         contextName: String,
@@ -1508,12 +1513,67 @@ final class KubernetesRESTClient: @unchecked Sendable {
         body: String?,
         timeout: TimeInterval
     ) async throws -> RESTResponse {
+        let rejected: RESTRenewableCredentialRejected
+        do {
+            return try await rawRequestAttempt(
+                environment: environment,
+                contextName: contextName,
+                method: method,
+                apiPath: apiPath,
+                headers: headers,
+                body: body,
+                timeout: timeout,
+                requiredDifferentCredential: nil
+            )
+        } catch let error as RESTRenewableCredentialRejected {
+            rejected = error
+        }
+        let source = rejected.rejected.source
+        guard authenticationRetryLimiter.mayRetry(source) else { throw rejected.underlying }
+        do {
+            let response = try await rawRequestAttempt(
+                environment: environment,
+                contextName: contextName,
+                method: method,
+                apiPath: apiPath,
+                headers: headers,
+                body: body,
+                timeout: timeout,
+                requiredDifferentCredential: rejected.rejected
+            )
+            authenticationRetryLimiter.recordSuccess(source)
+            return response
+        } catch let again as RESTRenewableCredentialRejected {
+            authenticationRetryLimiter.recordFailedRetry(source)
+            throw again.underlying
+        } catch is RESTSameCredentialAfterRenewal {
+            throw rejected.underlying
+        }
+    }
+
+    /// Thrown before sending when renewal gave back the credential that was
+    /// just rejected.
+    private struct RESTSameCredentialAfterRenewal: Error {}
+
+    private func rawRequestAttempt(
+        environment: [String: String],
+        contextName: String,
+        method: String,
+        apiPath: String,
+        headers: [String: String],
+        body: String?,
+        timeout: TimeInterval,
+        requiredDifferentCredential: RESTCredentialInvalidationKey?
+    ) async throws -> RESTResponse {
         let metricsRequestGeneration = await requestMetricsRecorder?.reserveScopeGeneration()
         let resolved = try await resolvedContext(
             environment: environment,
             contextName: contextName,
             metricsRequestGeneration: metricsRequestGeneration
         )
+        if let requiredDifferentCredential, resolved.credentialInvalidationKey == requiredDifferentCredential {
+            throw RESTSameCredentialAfterRenewal()
+        }
         let metricsScope = resolved.metricsScope
         VerboseKubeTrace.append(
             "k8s.request",
@@ -1743,7 +1803,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                     statusCode: http.statusCode,
                     responseBody: responseBody
                 )
-                throw RuneError.commandFailed(
+                let failure = RuneError.commandFailed(
                     command: "kubernetes REST \(method) \(apiPath)",
                     message: KubernetesRESTErrorMessageFormatter.appendingRetryAdvice(
                         to: message,
@@ -1751,6 +1811,10 @@ final class KubernetesRESTClient: @unchecked Sendable {
                         decision: retryDecision
                     )
                 )
+                if http.statusCode == 401, let key = resolved.credentialInvalidationKey {
+                    throw RESTRenewableCredentialRejected(rejected: key, underlying: failure)
+                }
+                throw failure
             }
 
             await recordRequestMetric(
@@ -4239,9 +4303,60 @@ private struct NormalizedKubeConfigSnapshot {
     let cacheIdentity: String
 }
 
-private enum RESTCredentialInvalidationKey: Sendable {
+private enum RESTCredentialInvalidationKey: Hashable, Sendable {
     case exec(String, generation: UUID)
     case native(String, revision: UUID)
+
+    /// The credential source, the same across renewals.
+    var source: String {
+        switch self {
+        case let .exec(cacheKey, _): "exec:\(cacheKey)"
+        case let .native(bindingID, _): "native:\(bindingID)"
+        }
+    }
+}
+
+/// A 401 for a credential Rune can renew; the request may be sent once more.
+private struct RESTRenewableCredentialRejected: Error {
+    let rejected: RESTCredentialInvalidationKey
+    let underlying: Error
+}
+
+/// When a retry after a 401 was itself rejected, per credential source.
+/// A cluster that keeps rejecting a credential gets one retry a minute, so a
+/// failing exec plugin or token refresh is not run twice for every request.
+private final class RESTAuthenticationRetryLimiter: @unchecked Sendable {
+    static let cooldown: TimeInterval = 60
+    private let lock = NSLock()
+    private var failedRetryAt: [String: Date] = [:]
+    private let now: @Sendable () -> Date
+
+    init(now: @escaping @Sendable () -> Date = Date.init) {
+        self.now = now
+    }
+
+    func mayRetry(_ source: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let last = failedRetryAt[source] else { return true }
+        return now().timeIntervalSince(last) >= Self.cooldown
+    }
+
+    func recordFailedRetry(_ source: String) {
+        lock.lock()
+        failedRetryAt[source] = now()
+        if failedRetryAt.count > 256 {
+            let cutoff = now().addingTimeInterval(-Self.cooldown)
+            failedRetryAt = failedRetryAt.filter { $0.value >= cutoff }
+        }
+        lock.unlock()
+    }
+
+    func recordSuccess(_ source: String) {
+        lock.lock()
+        failedRetryAt[source] = nil
+        lock.unlock()
+    }
 }
 
 private enum RESTAuthentication: Sendable {

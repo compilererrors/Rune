@@ -877,6 +877,89 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         )
     }
 
+    func testDeploymentLogsAndPodsHonourMatchExpressions() async throws {
+        func pod(_ name: String, track: String?) -> RuneFakeK8sPod {
+            var labels = ["app": "synthetic-web"]
+            labels["track"] = track
+            return RuneFakeK8sPod(
+                name: name,
+                deploymentName: "synthetic-web",
+                phase: "Running",
+                restarts: 0,
+                cpu: "1m",
+                memory: "1Mi",
+                podIP: nil,
+                nodeName: "synthetic-node",
+                labels: labels,
+                containers: ["web"]
+            )
+        }
+        let deployment = RuneFakeK8sDeployment(
+            name: "synthetic-web",
+            readyReplicas: 2,
+            replicas: 2,
+            selector: ["app": "synthetic-web"],
+            matchExpressions: [
+                RuneFakeK8sSelectorRequirement(key: "track", operator: "In", values: ["stable", "blue"]),
+                RuneFakeK8sSelectorRequirement(key: "paused", operator: "DoesNotExist")
+            ]
+        )
+        let fixture = RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: RuneFakeK8sFixture.defaultContextName,
+                defaultNamespace: "synthetic-zone",
+                namespaces: [
+                    RuneFakeK8sNamespace(
+                        name: "synthetic-zone",
+                        pods: [
+                            pod("synthetic-web-stable", track: "stable"),
+                            pod("synthetic-web-blue", track: "blue"),
+                            pod("synthetic-web-canary", track: "canary"),
+                            pod("synthetic-web-untracked", track: nil)
+                        ],
+                        deployments: [deployment],
+                        services: []
+                    )
+                ],
+                nodes: []
+            )
+        ])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+        let sources = [KubeConfigSource(url: kubeconfig)]
+        let context = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        let client = KubernetesClient(commandTimeout: 2)
+
+        let deployments = try await client.listDeployments(from: sources, context: context, namespace: "synthetic-zone")
+        let listed = try XCTUnwrap(deployments.first)
+        XCTAssertEqual(listed.labelSelector, "app=synthetic-web,track in (blue,stable),!paused")
+
+        let expected: Set<String> = ["synthetic-web-stable", "synthetic-web-blue"]
+        let pods = try await client.podsForDeployment(from: sources, context: context, namespace: "synthetic-zone", deployment: listed)
+        XCTAssertEqual(Set(pods.map(\.name)), expected)
+
+        // A deployment known only by name reads its whole selector from the server.
+        let bare = DeploymentSummary(
+            name: "synthetic-web",
+            namespace: "synthetic-zone",
+            readyReplicas: 2,
+            desiredReplicas: 2
+        )
+        let logs = try await client.unifiedLogsForDeployment(
+            from: sources,
+            context: context,
+            namespace: "synthetic-zone",
+            deployment: bare,
+            filter: .all,
+            previous: false
+        )
+        XCTAssertEqual(Set(logs.podNames), expected)
+        XCTAssertFalse(logs.mergedText.contains("canary"), logs.mergedText)
+        XCTAssertFalse(logs.mergedText.contains("untracked"), logs.mergedText)
+    }
+
     func testUnifiedLogsFetchEveryMatchingPodAcrossPhasesWithoutAnEightPodCap() async throws {
         let podCount = 10
         let pods = (0..<podCount).map { index in

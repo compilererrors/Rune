@@ -212,19 +212,17 @@ final class NativeCredentialRoutingIntegrationTests: XCTestCase {
         XCTAssertEqual(freshNamespaces, ["synthetic-namespace"])
 
         server.releaseFirstResponse()
-        do {
-            _ = try await staleRequest.value
-            XCTFail("Expected the delayed stale request to receive HTTP 401")
-        } catch {
-            XCTAssertTrue(String(describing: error).contains("HTTP 401"), String(describing: error))
-        }
+        // The stale request is answered once with the credential that is
+        // current now; its late 401 must not invalidate that newer revision.
+        let staleNamespaces = try await staleRequest.value
+        XCTAssertEqual(staleNamespaces, ["synthetic-namespace"])
 
         let snapshot = await provider.snapshot()
         XCTAssertEqual(snapshot.invalidationAttemptCount, 1)
         XCTAssertEqual(snapshot.invalidatedBindingIDs, [])
         XCTAssertEqual(
             server.authorizationHeaders,
-            ["Bearer native-token-before", "Bearer native-token-after"]
+            ["Bearer native-token-before", "Bearer native-token-after", "Bearer native-token-after"]
         )
     }
 
@@ -273,7 +271,7 @@ final class NativeCredentialRoutingIntegrationTests: XCTestCase {
         )
     }
 
-    func testHTTP401InvalidatesNativeCredentialWithoutBlindReplayAndNextUserRequestRefreshes() async throws {
+    func testHTTP401InvalidatesNativeCredentialAndIsAnsweredOnceWithTheRefreshedOne() async throws {
         let server = try await NativeAuthTestServer.start(responseMode: .unauthorizedThenSuccess)
         defer { server.stop() }
         let fixture = try NativeAuthFixture.make(serverPort: server.port)
@@ -283,26 +281,6 @@ final class NativeCredentialRoutingIntegrationTests: XCTestCase {
         )
         let client = KubernetesRESTClient(nativeCredentialProvider: provider)
 
-        do {
-            _ = try await client.listNamespaces(
-                environment: fixture.environment,
-                contextName: fixture.contextName,
-                timeout: 2
-            )
-            XCTFail("Expected the first explicit request to receive HTTP 401")
-        } catch {
-            XCTAssertTrue(String(describing: error).contains("HTTP 401"), String(describing: error))
-        }
-
-        XCTAssertEqual(server.requestCount, 1, "A native credential 401 must not trigger an automatic replay")
-        XCTAssertEqual(server.authorizationHeaders, ["Bearer stale-native-token"])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.pluginMarker.path))
-
-        let afterUnauthorized = await provider.snapshot()
-        let firstRequest = try XCTUnwrap(afterUnauthorized.requests.first)
-        XCTAssertEqual(afterUnauthorized.requests.count, 1)
-        XCTAssertEqual(afterUnauthorized.invalidatedBindingIDs, [firstRequest.bindingID])
-
         let namespaces = try await client.listNamespaces(
             environment: fixture.environment,
             contextName: fixture.contextName,
@@ -310,17 +288,18 @@ final class NativeCredentialRoutingIntegrationTests: XCTestCase {
         )
 
         XCTAssertEqual(namespaces, ["synthetic-namespace"])
-        XCTAssertEqual(server.requestCount, 2, "Only the second explicit user call may issue the second HTTP request")
+        XCTAssertEqual(server.requestCount, 2, "One 401, then one request with the refreshed credential")
         XCTAssertEqual(
             server.authorizationHeaders,
             ["Bearer stale-native-token", "Bearer fresh-native-token"]
         )
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.pluginMarker.path))
 
-        let afterSuccess = await provider.snapshot()
-        XCTAssertEqual(afterSuccess.requests.count, 2)
-        XCTAssertEqual(afterSuccess.requests.map(\.bindingID), [firstRequest.bindingID, firstRequest.bindingID])
-        XCTAssertEqual(afterSuccess.invalidatedBindingIDs, [firstRequest.bindingID])
+        let snapshot = await provider.snapshot()
+        let firstRequest = try XCTUnwrap(snapshot.requests.first)
+        XCTAssertEqual(snapshot.requests.count, 2)
+        XCTAssertEqual(snapshot.requests.map(\.bindingID), [firstRequest.bindingID, firstRequest.bindingID])
+        XCTAssertEqual(snapshot.invalidatedBindingIDs, [firstRequest.bindingID])
     }
 
     func testDirectBuildFallsBackToExecWhenNativeProviderReturnsNil() async throws {

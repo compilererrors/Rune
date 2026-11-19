@@ -201,6 +201,20 @@ public struct RuneFakeK8sDeployment: Sendable {
     public let readyReplicas: Int
     public let replicas: Int
     public let selector: [String: String]
+    /// Sent as `spec.selector.matchExpressions` beside `selector`.
+    public var matchExpressions: [RuneFakeK8sSelectorRequirement] = []
+}
+
+public struct RuneFakeK8sSelectorRequirement: Sendable {
+    public let key: String
+    public let `operator`: String
+    public let values: [String]
+
+    public init(key: String, operator: String, values: [String] = []) {
+        self.key = key
+        self.operator = `operator`
+        self.values = values
+    }
 }
 
 public struct RuneFakeK8sStatefulSet: Sendable {

@@ -414,7 +414,8 @@ public struct KubernetesOutputParser {
                     namespace: item.metadata.namespace ?? namespace,
                     readyReplicas: item.status.readyReplicas ?? 0,
                     desiredReplicas: item.spec.replicas ?? 0,
-                    selector: item.spec.selector?.matchLabels
+                    selector: item.spec.selector?.matchLabels,
+                    labelSelector: Self.labelSelectorQuery(item.spec.selector)
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -1020,6 +1021,40 @@ public struct KubernetesOutputParser {
     public func parseDeploymentSelector(from raw: String) throws -> [String: String] {
         let decoded = try JSONDecoder().decode(KubeDeploymentSelectorItem.self, from: Data(raw.utf8))
         return decoded.spec.selector?.matchLabels ?? [:]
+    }
+
+    /// The deployment's whole selector as a `labelSelector` query; nil when
+    /// it is empty or uses an operator Kubernetes does not define.
+    public func parseDeploymentLabelSelector(from raw: String) throws -> String? {
+        let decoded = try JSONDecoder().decode(KubeDeploymentSelectorItem.self, from: Data(raw.utf8))
+        return Self.labelSelectorQuery(decoded.spec.selector)
+    }
+
+    /// `matchLabels` and `matchExpressions` in the label selector syntax the
+    /// API server reads, as `kubectl get pods -l` takes it.
+    private static func labelSelectorQuery(_ selector: KubeLabelSelector?) -> String? {
+        guard let selector else { return nil }
+        var requirements = (selector.matchLabels ?? [:])
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+        for expression in selector.matchExpressions ?? [] {
+            let values = (expression.values ?? []).sorted().joined(separator: ",")
+            switch expression.operator {
+            case "In":
+                guard !values.isEmpty else { return nil }
+                requirements.append("\(expression.key) in (\(values))")
+            case "NotIn":
+                guard !values.isEmpty else { return nil }
+                requirements.append("\(expression.key) notin (\(values))")
+            case "Exists":
+                requirements.append(expression.key)
+            case "DoesNotExist":
+                requirements.append("!\(expression.key)")
+            default:
+                return nil
+            }
+        }
+        return requirements.isEmpty ? nil : requirements.joined(separator: ",")
     }
 
     private struct KubeList<Item: Decodable>: Decodable {
