@@ -747,6 +747,136 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
         }
     }
 
+    private func startTimestampServer() async throws -> (RuneFakeK8sRESTServer, URL, ServiceSummary) {
+        let pods = ["synthetic-clock-a", "synthetic-clock-b"].map { name in
+            RuneFakeK8sPod(
+                name: name,
+                deploymentName: "synthetic-clock",
+                phase: "Running",
+                restarts: 0,
+                cpu: "1m",
+                memory: "1Mi",
+                podIP: nil,
+                nodeName: "synthetic-node",
+                labels: ["app": "synthetic-clock"],
+                containers: ["main", "sidecar"]
+            )
+        }
+        let fixture = RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: RuneFakeK8sFixture.defaultContextName,
+                defaultNamespace: "synthetic-zone",
+                namespaces: [
+                    RuneFakeK8sNamespace(
+                        name: "synthetic-zone",
+                        pods: pods,
+                        deployments: [],
+                        services: [
+                            RuneFakeK8sService(
+                                name: "synthetic-clock",
+                                selector: ["app": "synthetic-clock"],
+                                clusterIP: "10.96.0.2"
+                            )
+                        ]
+                    )
+                ],
+                nodes: []
+            )
+        ])
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        let service = ServiceSummary(
+            name: "synthetic-clock",
+            namespace: "synthetic-zone",
+            type: "ClusterIP",
+            clusterIP: "10.96.0.2",
+            selector: ["app": "synthetic-clock"]
+        )
+        return (server, kubeconfig, service)
+    }
+
+    func testUnifiedLogsAskForKubeletTimestampsAndShowThemOnlyWhenAsked() async throws {
+        let (server, kubeconfig, service) = try await startTimestampServer()
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: kubeconfig)
+        }
+        let client = KubernetesClient(commandTimeout: 2)
+        func unified(showTimestamps: Bool) async throws -> [String] {
+            try await client.unifiedLogsForService(
+                from: [KubeConfigSource(url: kubeconfig)],
+                context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+                namespace: "synthetic-zone",
+                service: service,
+                filter: .all,
+                previous: false,
+                showTimestamps: showTimestamps
+            ).mergedText.components(separatedBy: "\n")
+        }
+
+        let hidden = try await unified(showTimestamps: false)
+        XCTAssertEqual(hidden.count, 4)
+        XCTAssertFalse(hidden.contains { $0.contains(".000000123Z") }, hidden.joined(separator: "\n"))
+        XCTAssertTrue(hidden.allSatisfy { $0.contains("] 2026-04-26T10:00:0") }, hidden.joined(separator: "\n"))
+        let logRequests = server.requestLines().filter { $0.contains("/log") }
+        XCTAssertEqual(logRequests.count, 4)
+        XCTAssertTrue(logRequests.allSatisfy { $0.contains("timestamps=true") }, "\(logRequests)")
+
+        let shown = try await unified(showTimestamps: true)
+        XCTAssertEqual(shown.count, 4)
+        XCTAssertTrue(shown.allSatisfy { $0.range(of: #"\] 2026-04-26T10:00:0\d\.000000123Z 2026"#, options: .regularExpression) != nil }, shown.joined(separator: "\n"))
+        // Ordered by the kubelet's time: both pods' first container, then both second ones.
+        XCTAssertEqual(shown.map { $0.contains(" main ") }, [true, true, false, false], shown.joined(separator: "\n"))
+    }
+
+    func testOnePodsLogsAskForTimestampsOnlyWhenTheyAreShown() async throws {
+        let (server, kubeconfig, _) = try await startTimestampServer()
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(at: kubeconfig)
+        }
+        let client = KubernetesClient(commandTimeout: 2)
+        let plain = try await client.podLogs(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "synthetic-zone",
+            podName: "synthetic-clock-a",
+            container: "main",
+            filter: .all,
+            previous: false,
+            showTimestamps: false
+        )
+        XCTAssertTrue(plain.hasPrefix("2026-04-26T10:00:00Z main"), plain)
+        XCTAssertFalse(server.requestLines().contains { $0.contains("timestamps=") })
+
+        let stamped = try await client.podLogs(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "synthetic-zone",
+            podName: "synthetic-clock-a",
+            container: "main",
+            filter: .all,
+            previous: false,
+            showTimestamps: true
+        )
+        XCTAssertTrue(stamped.hasPrefix("2026-04-26T10:00:00.000000123Z 2026-04-26T10:00:00Z main"), stamped)
+
+        let allContainers = try await client.podLogs(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "synthetic-zone",
+            podName: "synthetic-clock-a",
+            containers: ["sidecar", "main"],
+            filter: .all,
+            previous: false
+        )
+        // Several containers are merged by the kubelet's time, which is then dropped.
+        XCTAssertEqual(
+            allContainers.components(separatedBy: "\n").map { String($0.prefix(14)) },
+            ["[main] 2026-04", "[sidecar] 2026"]
+        )
+    }
+
     func testUnifiedLogsFetchEveryMatchingPodAcrossPhasesWithoutAnEightPodCap() async throws {
         let podCount = 10
         let pods = (0..<podCount).map { index in

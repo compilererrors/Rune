@@ -96,6 +96,68 @@ final class CustomLogSettingsReloadTests: XCTestCase {
 
     }
 
+    func testTurningOnTimestampsReloadsTheSelectedPodsLogsWithThem() async throws {
+        let defaults = UserDefaults.standard
+        let key = RuneSettingsKeys.logsShowTimestamps
+        let savedValue = defaults.persistedTestValue(forKey: key)
+        defer {
+            if let savedValue {
+                defaults.set(savedValue, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        defaults.set(false, forKey: key)
+
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+        let contextDefaultsSuite = TestDefaultsSuite.name("CustomLogSettingsReloadTests.\(UUID().uuidString)")
+        let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: contextDefaultsSuite))
+        defer { contextDefaults.removeTestSuite(named: contextDefaultsSuite) }
+
+        let state = RuneAppState()
+        let pod = PodSummary(
+            name: "orbit-lens-6f58d7d89b-hx9q2",
+            namespace: "alpha-zone",
+            status: "Running",
+            containerNamesLine: "lens"
+        )
+        state.setSources([KubeConfigSource(url: kubeconfig)])
+        state.selectedContext = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        state.selectedNamespace = "alpha-zone"
+        state.selectedWorkloadKind = .pod
+        state.setPods([pod])
+        state.setSelectedPod(pod)
+
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager.inMemory(),
+            contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
+            savedWorkspaceStore: EmptyCustomLogSavedWorkspaceStore(),
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+        viewModel.selectedLogContainer = "lens"
+
+        try await waitUntil {
+            server.requestLines().contains { $0.contains("/pods/\(pod.name)/log?") }
+        }
+        XCTAssertFalse(server.requestLines().contains { $0.contains("timestamps=true") })
+
+        server.resetRequestLines()
+        defaults.set(true, forKey: key)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: defaults)
+
+        try await waitUntil {
+            server.requestLines().contains {
+                $0.contains("/pods/\(pod.name)/log?") && $0.contains("timestamps=true")
+            }
+        }
+        withExtendedLifetime(viewModel) {}
+    }
+
     private func writeKubeconfig(_ contents: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("custom-log-settings-\(UUID().uuidString).yaml")

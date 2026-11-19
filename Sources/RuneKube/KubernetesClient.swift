@@ -1127,6 +1127,30 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         filter: LogTimeFilter,
         previous: Bool
     ) async throws -> String {
+        try await podLogs(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            podName: podName,
+            container: container,
+            filter: filter,
+            previous: previous,
+            showTimestamps: false
+        )
+    }
+
+    /// `showTimestamps` puts the time the kubelet read each line in front of
+    /// it, as `kubectl logs --timestamps` does.
+    public func podLogs(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        podName: String,
+        container: String? = nil,
+        filter: LogTimeFilter,
+        previous: Bool,
+        showTimestamps: Bool
+    ) async throws -> String {
         if let container = Self.normalizedContainerName(container) {
             return try await podLogs(
                 from: sources,
@@ -1137,7 +1161,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 filter: filter,
                 previous: previous,
                 timeoutOverride: nil,
-                profile: .pod
+                profile: .pod,
+                timestamps: showTimestamps
             )
         }
 
@@ -1154,11 +1179,13 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             podName: podName,
             containers: pod.logContainerNames,
             filter: filter,
-            previous: previous
+            previous: previous,
+            showTimestamps: showTimestamps
         )
     }
 
     /// Fetches one or every known container without relying on kubectl-only `allContainers` semantics.
+    /// Lines from several containers are put in the order the kubelet read them.
     public func podLogs(
         from sources: [KubeConfigSource],
         context: KubeContext,
@@ -1166,7 +1193,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         podName: String,
         containers: [String],
         filter: LogTimeFilter,
-        previous: Bool
+        previous: Bool,
+        showTimestamps: Bool = false
     ) async throws -> String {
         let containers = Self.normalizedContainerNames(containers)
         guard containers.count > 1 else {
@@ -1179,7 +1207,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 filter: filter,
                 previous: previous,
                 timeoutOverride: nil,
-                profile: .pod
+                profile: .pod,
+                timestamps: showTimestamps
             )
         }
 
@@ -1193,9 +1222,10 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             previous: previous,
             timeoutOverride: nil,
             profile: .pod,
-            allowsPartialFailure: true
+            allowsPartialFailure: true,
+            showTimestamps: showTimestamps
         )
-        return lines
+        return Self.orderedByKubeletTime(lines)
             .map { line in
                 "[\(line.containerName ?? "container")] \(line.text)"
             }
@@ -1227,8 +1257,11 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         previous: Bool,
         timeoutOverride: TimeInterval?,
         profile: LogQueryProfile,
-        allowsPartialFailure: Bool
+        allowsPartialFailure: Bool,
+        showTimestamps: Bool
     ) async throws -> [TaggedLogLine] {
+        // Lines from several sources are merged by the kubelet's time, so it
+        // is always asked for and dropped again unless it is to be shown.
         let containers = Self.normalizedContainerNames(containers)
         guard containers.count > 1 else {
             let logs = try await podLogs(
@@ -1240,9 +1273,10 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 filter: filter,
                 previous: previous,
                 timeoutOverride: timeoutOverride,
-                profile: profile
+                profile: profile,
+                timestamps: true
             )
-            return taggedLines(from: logs, podName: podName, containerName: nil)
+            return taggedLines(from: logs, podName: podName, containerName: nil, keepTimestamps: showTimestamps)
         }
 
         var collectedLines: [TaggedLogLine] = []
@@ -1259,14 +1293,16 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                     filter: filter,
                     previous: previous,
                     timeoutOverride: timeoutOverride,
-                    profile: profile
+                    profile: profile,
+                    timestamps: true
                 )
                 successfulContainerFetches += 1
                 collectedLines.append(
                     contentsOf: taggedLines(
                         from: logs,
                         podName: podName,
-                        containerName: container
+                        containerName: container,
+                        keepTimestamps: showTimestamps
                     )
                 )
             } catch {
@@ -1301,7 +1337,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         filter: LogTimeFilter,
         previous: Bool,
         timeoutOverride: TimeInterval?,
-        profile: LogQueryProfile = .pod
+        profile: LogQueryProfile = .pod,
+        timestamps: Bool = false
     ) async throws -> String {
         let env = try kubeconfigEnvironment(from: sources)
         let timeoutBudget = timeoutOverride ?? logFetchTimeout(for: filter)
@@ -1314,7 +1351,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             filter: filter,
             previous: previous,
             timeout: timeoutBudget,
-            profile: profile
+            profile: profile,
+            timestamps: timestamps
         ) {
             if !logs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return logs
@@ -1330,6 +1368,27 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         service: ServiceSummary,
         filter: LogTimeFilter,
         previous: Bool
+    ) async throws -> UnifiedServiceLogs {
+        try await unifiedLogsForService(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            service: service,
+            filter: filter,
+            previous: previous,
+            showTimestamps: false
+        )
+    }
+
+    /// Lines from every pod, in the order the kubelet read them.
+    public func unifiedLogsForService(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        service: ServiceSummary,
+        filter: LogTimeFilter,
+        previous: Bool,
+        showTimestamps: Bool
     ) async throws -> UnifiedServiceLogs {
         let env = try kubeconfigEnvironment(from: sources)
 
@@ -1371,7 +1430,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             context: context,
             namespace: namespace,
             filter: filter,
-            previous: previous
+            previous: previous,
+            showTimestamps: showTimestamps
         )
 
         let merged = collectedLines
@@ -1396,6 +1456,27 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         deployment: DeploymentSummary,
         filter: LogTimeFilter,
         previous: Bool
+    ) async throws -> UnifiedDeploymentLogs {
+        try await unifiedLogsForDeployment(
+            from: sources,
+            context: context,
+            namespace: namespace,
+            deployment: deployment,
+            filter: filter,
+            previous: previous,
+            showTimestamps: false
+        )
+    }
+
+    /// Lines from every pod, in the order the kubelet read them.
+    public func unifiedLogsForDeployment(
+        from sources: [KubeConfigSource],
+        context: KubeContext,
+        namespace: String,
+        deployment: DeploymentSummary,
+        filter: LogTimeFilter,
+        previous: Bool,
+        showTimestamps: Bool
     ) async throws -> UnifiedDeploymentLogs {
         let env = try kubeconfigEnvironment(from: sources)
 
@@ -1437,7 +1518,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             context: context,
             namespace: namespace,
             filter: filter,
-            previous: previous
+            previous: previous,
+            showTimestamps: showTimestamps
         )
 
         let merged = collectedLines
@@ -1501,7 +1583,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         context: KubeContext,
         namespace: String,
         filter: LogTimeFilter,
-        previous: Bool
+        previous: Bool,
+        showTimestamps: Bool
     ) async throws -> [TaggedLogLine] {
         guard !pods.isEmpty else { return [] }
 
@@ -1527,7 +1610,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                             previous: previous,
                             timeoutOverride: nil,
                             profile: .unifiedPerPod,
-                            allowsPartialFailure: true
+                            allowsPartialFailure: true,
+                            showTimestamps: showTimestamps
                         )
                         return .success(lines)
                     } catch {
@@ -1569,7 +1653,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                                 previous: previous,
                                 timeoutOverride: nil,
                                 profile: .unifiedPerPod,
-                                allowsPartialFailure: true
+                                allowsPartialFailure: true,
+                                showTimestamps: showTimestamps
                             )
                             return .success(lines)
                         } catch {
@@ -2414,7 +2499,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         filter: LogTimeFilter,
         previous: Bool,
         timeout: TimeInterval,
-        profile: LogQueryProfile = .pod
+        profile: LogQueryProfile = .pod,
+        timestamps: Bool = false
     ) async throws -> String? {
         do {
             return try await restClient.podLogs(
@@ -2426,7 +2512,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                 filter: filter,
                 previous: previous,
                 timeout: timeout,
-                profile: profile
+                profile: profile,
+                timestamps: timestamps
             )
         } catch {
             if previous, isMissingPreviousLogsError(error) {
@@ -2495,25 +2582,45 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         )
     }
 
+    /// `logs` was fetched with `timestamps=true`; the kubelet's time orders
+    /// the line and is dropped from its text unless `keepTimestamps`.
     private func taggedLines(
         from logs: String,
         podName: String,
-        containerName: String? = nil
+        containerName: String? = nil,
+        keepTimestamps: Bool
     ) -> [TaggedLogLine] {
-        logs
-            .split(whereSeparator: \.isNewline)
-            .map { String($0) }
-            .filter { !$0.isEmpty }
-            .enumerated()
-            .map { index, line in
-                TaggedLogLine(
-                    podName: podName,
-                    containerName: containerName,
-                    text: line,
-                    timestamp: KubernetesLogTimestamp.leadingDate(in: line),
-                    sequence: index
-                )
+        var tagged: [TaggedLogLine] = []
+        for line in logs.split(whereSeparator: \.isNewline) where !line.isEmpty {
+            let timestamp = KubernetesLogTimestamp.leadingDate(in: line)
+            let text = keepTimestamps || timestamp == nil
+                ? String(line)
+                : KubernetesLogTimestamp.droppingLeadingTimestamp(line)
+            guard !text.isEmpty else { continue }
+            tagged.append(TaggedLogLine(
+                podName: podName,
+                containerName: containerName,
+                text: text,
+                timestamp: timestamp,
+                sequence: tagged.count
+            ))
+        }
+        return tagged
+    }
+
+    /// One pod's containers in the order the kubelet read their lines, or
+    /// container by container as fetched when a line has no time (a server
+    /// that ignores `timestamps=true`, or a container that failed).
+    private static func orderedByKubeletTime(_ lines: [TaggedLogLine]) -> [TaggedLogLine] {
+        guard lines.allSatisfy({ $0.timestamp != nil }) else { return lines }
+        return lines.enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.timestamp != rhs.element.timestamp {
+                    return lhs.element.timestamp! < rhs.element.timestamp!
+                }
+                return lhs.offset < rhs.offset
             }
+            .map(\.element)
     }
 
     private static func taggedLineSort(lhs: TaggedLogLine, rhs: TaggedLogLine) -> Bool {

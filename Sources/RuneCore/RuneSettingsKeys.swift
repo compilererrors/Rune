@@ -22,6 +22,7 @@ public enum RuneSettingsKeys {
     public static let logsCustomPresetTwoLines = "rune.settings.logs.customPresetTwo.lines"
     public static let logsCustomPresetTwoTimeValue = "rune.settings.logs.customPresetTwo.timeValue"
     public static let logsCustomPresetTwoTimeUnit = "rune.settings.logs.customPresetTwo.timeUnit"
+    public static let logsShowTimestamps = "rune.settings.logs.showTimestamps"
     public static let exportFolderBookmark = "rune.settings.export.folderBookmark"
     public static let exportFolderDisplayName = "rune.settings.export.folderDisplayName"
     public static let exportTextOpenerBundleIdentifier = "rune.settings.export.textOpenerBundleIdentifier"
@@ -168,6 +169,7 @@ public enum RuneSettingsKeys {
             logsCustomPresetTwoLines: String(customTwo.lines),
             logsCustomPresetTwoTimeValue: String(customTwo.timeValue),
             logsCustomPresetTwoTimeUnit: customTwo.timeUnit.rawValue,
+            logsShowTimestamps: false,
             exportFolderDisplayName: "",
             exportTextOpenerBundleIdentifier: "",
             exportArchiveOpenerBundleIdentifier: "",
@@ -357,6 +359,12 @@ public extension UserDefaults {
                 forKey: RuneSettingsKeys.terminalScrollbackLineLimit
             )
         }
+    }
+
+    /// Show the time the kubelet read each log line in front of it.
+    var runeLogsShowTimestamps: Bool {
+        get { bool(forKey: RuneSettingsKeys.logsShowTimestamps) }
+        set { set(newValue, forKey: RuneSettingsKeys.logsShowTimestamps) }
     }
 
     var runeSaveLastAppState: Bool {

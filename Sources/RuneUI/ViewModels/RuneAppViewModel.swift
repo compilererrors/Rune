@@ -1551,6 +1551,7 @@ public final class RuneAppViewModel: ObservableObject {
     private var requiresProductionSecondConfirmation = UserDefaults.standard.runeWriteSafetyRequireProductionSecondConfirmation
     /// The save-last-state setting as last seen; nil before the first settings change.
     private var observedSaveLastAppState: Bool?
+    private var observedLogsShowTimestamps = UserDefaults.standard.runeLogsShowTimestamps
     private var lastSavedAppStateSnapshot: LastAppStateSnapshot?
     private var observedCustomLogPresetOne =
         UserDefaults.standard.runeCustomLogPresetConfig(slot: .one)
@@ -1958,6 +1959,18 @@ public final class RuneAppViewModel: ObservableObject {
         let customTwoChanged = customTwo != observedCustomLogPresetTwo
         observedCustomLogPresetOne = customOne
         observedCustomLogPresetTwo = customTwo
+        let showsLogTimestamps = UserDefaults.standard.runeLogsShowTimestamps
+        if showsLogTimestamps != observedLogsShowTimestamps {
+            observedLogsShowTimestamps = showsLogTimestamps
+            switch state.selectedWorkloadKind {
+            case .pod where state.selectedPod != nil,
+                 .service where state.selectedService != nil,
+                 .deployment where state.selectedDeployment != nil:
+                scheduleLogsReloadForSelection()
+            default:
+                break
+            }
+        }
         if customOneChanged || customTwoChanged {
             // PodLogPreset titles and filters are computed from UserDefaults rather than
             // @Published state, so explicitly refresh the menu and active custom query.
@@ -8301,7 +8314,8 @@ public final class RuneAppViewModel: ObservableObject {
                             podName: pod.name,
                             container: container,
                             filter: filter,
-                            previous: previous
+                            previous: previous,
+                            showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                         )
                     } else {
                         logs = try await self.kubeClient.podLogs(
@@ -8311,7 +8325,8 @@ public final class RuneAppViewModel: ObservableObject {
                             podName: pod.name,
                             containers: pod.logContainerNames,
                             filter: filter,
-                            previous: previous
+                            previous: previous,
+                            showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                         )
                     }
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
@@ -8338,7 +8353,8 @@ public final class RuneAppViewModel: ObservableObject {
                         namespace: namespace,
                         service: service,
                         filter: filter,
-                        previous: previous
+                        previous: previous,
+                        showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
                     let scoped = self.scopedUnifiedLogResult(
@@ -8370,7 +8386,8 @@ public final class RuneAppViewModel: ObservableObject {
                         namespace: namespace,
                         deployment: deployment,
                         filter: filter,
-                        previous: previous
+                        previous: previous,
+                        showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                     )
                     guard self.isCurrentLogsReloadRequest(requestID) else { return }
                     let scoped = self.scopedUnifiedLogResult(
@@ -8837,7 +8854,8 @@ public final class RuneAppViewModel: ObservableObject {
                         namespace: namespace,
                         service: service,
                         filter: .all,
-                        previous: previous
+                        previous: previous,
+                        showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                     )
                     let scoped = limitToSelectedPods
                         ? self.scopedUnifiedLogResult(mergedText: unified.mergedText, podNames: unified.podNames)
@@ -8874,7 +8892,8 @@ public final class RuneAppViewModel: ObservableObject {
                         namespace: namespace,
                         deployment: deployment,
                         filter: .all,
-                        previous: previous
+                        previous: previous,
+                        showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                     )
                     let scoped = limitToSelectedPods
                         ? self.scopedUnifiedLogResult(mergedText: unified.mergedText, podNames: unified.podNames)
@@ -8991,7 +9010,8 @@ public final class RuneAppViewModel: ObservableObject {
                         podName: pod.name,
                         container: container,
                         filter: .all,
-                        previous: previous
+                        previous: previous,
+                        showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                     )
                     successfulFetches += 1
                     records.append(
@@ -14375,7 +14395,8 @@ public final class RuneAppViewModel: ObservableObject {
                             podName: pod.name,
                             container: selectedContainer,
                             filter: self.selectedLogPreset.filter,
-                            previous: self.includePreviousLogs
+                            previous: self.includePreviousLogs,
+                            showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                         )
                     }
                     return try await self.kubeClient.podLogs(
@@ -14385,7 +14406,8 @@ public final class RuneAppViewModel: ObservableObject {
                         podName: pod.name,
                         containers: pod.logContainerNames,
                         filter: self.selectedLogPreset.filter,
-                        previous: self.includePreviousLogs
+                        previous: self.includePreviousLogs,
+                        showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                     )
                 }
                 async let manifests = fetchYAMLAndDescribe(

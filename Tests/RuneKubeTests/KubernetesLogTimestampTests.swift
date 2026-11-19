@@ -89,4 +89,13 @@ final class KubernetesLogTimestampTests: XCTestCase {
         // The formatter needed 3 to 4 seconds for these lines in a release build.
         XCTAssertLessThan(elapsed, .milliseconds(500), "20,000 lines took \(elapsed)")
     }
+
+    func testDroppingTheKubeletTimestampKeepsTheRestOfTheLine() {
+        XCTAssertEqual(
+            KubernetesLogTimestamp.droppingLeadingTimestamp("2026-04-26T10:00:00.000000123Z 2026-04-26T10:00:00Z app ready"),
+            "2026-04-26T10:00:00Z app ready"
+        )
+        XCTAssertEqual(KubernetesLogTimestamp.droppingLeadingTimestamp("2026-04-26T10:00:00.1Z   indented"), "  indented")
+        XCTAssertEqual(KubernetesLogTimestamp.droppingLeadingTimestamp("2026-04-26T10:00:00Z"), "")
+    }
 }

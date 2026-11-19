@@ -675,7 +675,12 @@ private struct RuneFakeK8sRouter {
                     object: status(message: "container \(requestedContainer) is not valid for pod \(pod.name)")
                 )
             }
-            return .text(status: 200, body: logLines(for: pod, namespace: namespace.name, container: requestedContainer))
+            return .text(status: 200, body: logLines(
+                for: pod,
+                namespace: namespace.name,
+                container: requestedContainer,
+                timestamps: query["timestamps"] == "true"
+            ))
         case "services" where pathParts.count == 5:
             return .json(status: 200, object: listObject(
                 apiVersion: "v1",
@@ -1598,11 +1603,19 @@ private struct RuneFakeK8sRouter {
         }
     }
 
-    private func logLines(for pod: RuneFakeK8sPod, namespace: String, container selectedContainer: String? = nil) -> String {
-        let containers = selectedContainer
-            .map { selected in pod.containers.filter { $0 == selected } } ?? pod.containers
-        return containers.enumerated().map { index, container in
-            "2026-04-26T10:00:0\(index)Z \(container) namespace=\(namespace) pod=\(pod.name) synthetic REST fake log"
+    /// With `timestamps`, each line starts with the time the kubelet read
+    /// it (RFC 3339 with nanoseconds) and a space, as a real API server sends.
+    private func logLines(
+        for pod: RuneFakeK8sPod,
+        namespace: String,
+        container selectedContainer: String? = nil,
+        timestamps: Bool = false
+    ) -> String {
+        // Each container's line has its own second, so lines merged from
+        // several containers have a defined order.
+        return pod.containers.enumerated().filter { selectedContainer == nil || $0.element == selectedContainer }.map { index, container in
+            let line = "2026-04-26T10:00:0\(index)Z \(container) namespace=\(namespace) pod=\(pod.name) synthetic REST fake log"
+            return timestamps ? "2026-04-26T10:00:0\(index).000000123Z \(line)" : line
         }.joined(separator: "\n") + "\n"
     }
 

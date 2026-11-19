@@ -459,6 +459,7 @@ public struct RunePreferencesView: View {
     @AppStorage(RuneSettingsKeys.backgroundPrefetchOtherContexts) private var backgroundPrefetchOtherContexts = false
     @AppStorage(RuneSettingsKeys.enableDemoCluster) private var enableDemoCluster = true
     @AppStorage(RuneSettingsKeys.skipClusterOnTabNavigationFromSections) private var skipClusterOnTabNavigationFromSections = false
+    @AppStorage(RuneSettingsKeys.logsShowTimestamps) private var logsShowTimestamps = false
     @AppStorage(RuneSettingsKeys.logsCustomPresetOneMode) private var customOneModeRaw =
         RuneCustomLogPresetConfig.defaultValue(for: .one).mode.rawValue
     @AppStorage(RuneSettingsKeys.logsCustomPresetOneLines) private var customOneLinesRaw =
@@ -1077,6 +1078,14 @@ public struct RunePreferencesView: View {
             title: settingsString(.settingsLogs),
             subtitle: settingsString(.settingsLogsSubtitle)
         ) {
+            settingsSection("Timestamps") {
+                settingsToggleRow(
+                    "Show timestamps",
+                    help: "Start each line with the time Kubernetes recorded it, as kubectl logs --timestamps does. Logs from several pods or containers are always ordered by that time.",
+                    isOn: $logsShowTimestamps
+                )
+            }
+
             settingsSection("Custom log windows") {
                 customLogPresetRow(
                     slot: .one,

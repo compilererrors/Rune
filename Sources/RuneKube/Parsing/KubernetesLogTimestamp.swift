@@ -10,6 +10,14 @@ enum KubernetesLogTimestamp {
     /// The date of `2026-05-05T10:00:00Z`, `…T10:00:00.123456789Z` or
     /// `…T10:00:00+02:00` at the start of the line (after any spaces); nil
     /// when the line starts with anything else.
+    /// The line without the timestamp the kubelet puts in front of it for
+    /// `timestamps=true`, and the space after it.
+    static func droppingLeadingTimestamp(_ line: some StringProtocol) -> String {
+        let trimmed = line.drop { $0 == " " || $0 == "\t" }
+        guard let space = trimmed.firstIndex(of: " ") else { return "" }
+        return String(trimmed[trimmed.index(after: space)...])
+    }
+
     static func leadingDate(in line: some StringProtocol) -> Date? {
         let parsed = line.utf8.withContiguousStorageIfAvailable { parse($0) }
         if let parsed { return parsed }

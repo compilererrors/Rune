@@ -510,7 +510,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         filter: LogTimeFilter,
         previous: Bool,
         timeout: TimeInterval,
-        profile: LogQueryProfile = .pod
+        profile: LogQueryProfile = .pod,
+        timestamps: Bool = false
     ) async throws -> String {
         let query = filter.resolvedLogQuery(profile: profile)
         var items: [URLQueryItem] = []
@@ -528,6 +529,9 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
         if previous {
             items.append(URLQueryItem(name: "previous", value: "true"))
+        }
+        if timestamps {
+            items.append(URLQueryItem(name: "timestamps", value: "true"))
         }
 
         var components = URLComponents()
