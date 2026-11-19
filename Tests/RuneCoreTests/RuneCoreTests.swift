@@ -462,9 +462,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testPerformanceMemorySettingsClampAndPersist() {
-        let suiteName = "RuneCoreTests.performanceMemory.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.performanceMemory.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertEqual(defaults.runeSessionLogCacheEntryLimit, RuneSettingsKeys.sessionLogCacheEntryLimitDefault)
         XCTAssertEqual(defaults.runeResourceYAMLUndoSnapshotLimit, RuneSettingsKeys.resourceYAMLUndoSnapshotLimitDefault)
@@ -485,9 +485,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testLastAppStatePersistenceSettingDefaultsOnAndKeepsLegacyAlias() {
-        let suiteName = "RuneCoreTests.lastAppStatePersistence.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.lastAppStatePersistence.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertTrue(defaults.runeSaveLastAppState)
         XCTAssertTrue(defaults.runePersistTerminalWorkspaceState)
@@ -502,9 +502,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testAppearanceRecentThemesRecordDedupeAndTrim() {
-        let suiteName = "RuneCoreTests.appearanceRecentThemes.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.appearanceRecentThemes.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertEqual(defaults.runeAppearanceRecentThemes, [RuneSettingsKeys.appearanceThemeDefault])
 
@@ -522,9 +522,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testExportDestinationSettingsPersistWithoutDefaultLocalPaths() {
-        let suiteName = "RuneCoreTests.exportDestination.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.exportDestination.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertNil(defaults.runeExportFolderBookmarkData)
         XCTAssertEqual(defaults.runeExportFolderDisplayName, "")
@@ -620,11 +620,11 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testUserDefaultsFallsBackToDefaultRuneKeyBindingShortcut() {
-        let suiteName = "RuneCoreTests-\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests-\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
         let action = RuneKeyBindingAction.describe
 
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertEqual(defaults.runeKeyBindingShortcut(for: action), action.defaultShortcut)
 
@@ -639,9 +639,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testUserDefaultsCommandPaletteShortcutCanPersistShiftPeriodWorkflow() {
-        let suiteName = "RuneCoreTests.commandPaletteShortcut.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.commandPaletteShortcut.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         let custom = RuneKeyboardShortcut(key: ".", requiresShift: true)!
         defaults.setRuneKeyBindingShortcut(custom, for: .commandPalette)
@@ -656,9 +656,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testHoverTooltipSettingDefaultsOnAndPersists() {
-        let suiteName = "RuneCoreTests.tooltips.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.tooltips.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertTrue(defaults.runeShowHoverTooltips)
 
@@ -668,9 +668,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testResourceTableScrollEdgeGlowDefaultsOffAndPersists() {
-        let suiteName = "RuneCoreTests.resourceTableScrollEdgeGlow.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.resourceTableScrollEdgeGlow.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertFalse(defaults.runeShowResourceTableScrollEdgeGlow)
 
@@ -680,9 +680,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testSplitResizeHandlesDefaultOffAndPersist() {
-        let suiteName = "RuneCoreTests.splitResizeHandles.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.splitResizeHandles.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertFalse(defaults.runeShowSplitResizeHandles)
 
@@ -692,9 +692,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testDemoClusterSettingAcceptsCommandLineStyleBooleanStrings() {
-        let suiteName = "RuneCoreTests.demoClusterArgument.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.demoClusterArgument.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertTrue(defaults.runeEnableDemoCluster)
 
@@ -1012,6 +1012,46 @@ final class RuneCoreTests: XCTestCase {
         XCTAssertTrue(retained.contains("line 5"))
     }
 
+    func testTerminalScrollbackRetentionCountsLinesOfAnyText() {
+        // Multi-byte characters next to the line feeds, a trailing line
+        // feed, and CRLF line ends all count as lines.
+        let transcript = "å\n🚀🚀\n日本\nlast é"
+        XCTAssertEqual(
+            TerminalScrollbackRetention.retainingRecentLines(transcript, maxLines: 2),
+            "\(TerminalScrollbackRetention.truncationMarker)\n日本\nlast é"
+        )
+        XCTAssertEqual(TerminalScrollbackRetention.retainingRecentLines(transcript, maxLines: 4), transcript)
+
+        XCTAssertEqual(
+            TerminalScrollbackRetention.retainingRecentLines("a\nb\nc\n", maxLines: 2),
+            "\(TerminalScrollbackRetention.truncationMarker)\nb\nc\n"
+        )
+        XCTAssertEqual(
+            TerminalScrollbackRetention.retainingRecentLines("a\r\nb\r\nc", maxLines: 2),
+            "\(TerminalScrollbackRetention.truncationMarker)\nb\r\nc",
+            "a transcript with CRLF line ends used to count as one line and never be trimmed"
+        )
+        XCTAssertEqual(TerminalScrollbackRetention.retainingRecentLines("", maxLines: 2), "")
+        XCTAssertEqual(TerminalScrollbackRetention.retainingRecentLines("a\nb\nc", maxLines: 0), "a\nb\nc")
+    }
+
+    func testTerminalScrollbackRetentionOfALongTranscriptIsCheap() {
+        // Runs on the main thread for every piece of shell output.
+        let transcript = (0..<60_000)
+            .map { "line \($0) payload=synthetic-terminal-output with a bit more width åäö" }
+            .joined(separator: "\n")
+        let started = ContinuousClock.now
+        for _ in 0..<5 {
+            XCTAssertEqual(
+                TerminalScrollbackRetention.retainingRecentLines(transcript, maxLines: 60_000).utf8.count,
+                transcript.utf8.count
+            )
+        }
+        let perCall = started.duration(to: .now) / 5
+        // Walking it a character at a time took several times this, even optimized.
+        XCTAssertLessThan(perCall, .milliseconds(150), "one pass over 60,000 lines took \(perCall)")
+    }
+
     func testTerminalScrollbackRetentionDoesNotTrimWithinLimit() {
         let transcript = "line 0\nline 1\nline 2"
 
@@ -1070,9 +1110,9 @@ final class RuneCoreTests: XCTestCase {
     }
 
     func testPendingLaunchActionRoundTripsAndConsumesFromUserDefaults() {
-        let suiteName = "RuneCoreTests.pendingLaunchAction.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneCoreTests.pendingLaunchAction.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertNil(defaults.runePendingLaunchAction)
 

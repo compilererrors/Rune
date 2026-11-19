@@ -753,7 +753,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
 
     func testConfigAndWorkloadsRemainTopAligned() async throws {
         for shellVariant in RuneRootShellVariant.allCases {
-            let viewModel = RuneAppViewModel()
+            let viewModel = RuneAppViewModel(bookmarkManager: .inMemory())
             prepareLayoutTestViewModel(viewModel)
 
             if shellVariant == .appKitSplitView {
@@ -907,8 +907,8 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         let scenarios: [(String, RuneAppViewModel, RuneSection, KubeResourceKind)] = [
             ("Pods", makePodViewModel(pod: pod), .workloads, .pod),
             ("ConfigMaps", makeConfigViewModel(resource: configMap), .config, .configMap),
-            ("Events", RuneAppViewModel(state: eventState), .events, .event),
-            ("Helm", RuneAppViewModel(state: helmState), .helm, .pod)
+            ("Events", RuneAppViewModel(state: eventState, bookmarkManager: .inMemory()), .events, .event),
+            ("Helm", RuneAppViewModel(state: helmState, bookmarkManager: .inMemory()), .helm, .pod)
         ]
 
         for (label, viewModel, section, kind) in scenarios {
@@ -968,13 +968,13 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
 
         for windowWidth in [CGFloat(1_440), CGFloat(1_160)] {
             let releaseSnapshot = try await hostMiddlePanelTableSnapshot(
-                viewModel: RuneAppViewModel(state: releaseState),
+                viewModel: RuneAppViewModel(state: releaseState, bookmarkManager: .inMemory()),
                 section: .helm,
                 kind: .pod,
                 windowWidth: windowWidth
             )
             let operatorSnapshot = try await hostMiddlePanelTableSnapshot(
-                viewModel: RuneAppViewModel(state: operatorState),
+                viewModel: RuneAppViewModel(state: operatorState, bookmarkManager: .inMemory()),
                 section: .helm,
                 kind: .pod,
                 windowWidth: windowWidth
@@ -1154,7 +1154,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         statefulSetState.setStatefulSets([statefulSet])
         statefulSetState.setSelectedStatefulSet(statefulSet)
         let statefulSetSnapshot = try await hostMiddlePanelTableSnapshot(
-            viewModel: RuneAppViewModel(state: statefulSetState),
+            viewModel: RuneAppViewModel(state: statefulSetState, bookmarkManager: .inMemory()),
             section: .workloads,
             kind: .statefulSet
         )
@@ -1209,7 +1209,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
 
     func testSectionTransitionsDoNotDriftAfterLayoutSettles() async throws {
         for shellVariant in RuneRootShellVariant.allCases {
-            let viewModel = RuneAppViewModel()
+            let viewModel = RuneAppViewModel(bookmarkManager: .inMemory())
             prepareLayoutTestViewModel(viewModel)
             if shellVariant == .appKitSplitView {
                 var previousSnapshot: AppKitSplitLaunchSnapshot?
@@ -1417,7 +1417,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             state.selectedNamespace = basePod.namespace
             state.isLoading = true
 
-            let viewModel = RuneAppViewModel(state: state)
+            let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
             prepareLayoutTestViewModel(viewModel)
 
             if shellVariant == .appKitSplitView {
@@ -1580,7 +1580,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedNamespace = basePod.namespace
         state.isLoading = true
 
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         prepareLayoutTestViewModel(viewModel)
         let host = NSHostingController(
             rootView: RuneRootView(
@@ -1662,7 +1662,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             state.setEvents([secondaryEvent, event])
             state.setSelectedEvent(event)
 
-            let viewModel = RuneAppViewModel(state: state)
+            let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
             prepareLayoutTestViewModel(viewModel)
             if shellVariant == .appKitSplitView {
                 let baseline = try await hostAppKitSplitSnapshot(
@@ -1847,7 +1847,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
             state.setEvents([selectedEvent])
             state.setSelectedEvent(selectedEvent)
 
-            let viewModel = RuneAppViewModel(state: state)
+            let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
             prepareLayoutTestViewModel(viewModel)
             if shellVariant == .appKitSplitView {
                 let eventsSnapshot = try await hostAppKitSplitSnapshot(
@@ -2246,7 +2246,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedService = service
         state.setResourceYAML(sampleYAML(named: service.name))
         state.setResourceDescribe(sampleDescribe(named: service.name))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         prepareLayoutTestViewModel(viewModel)
         return viewModel
     }
@@ -2260,7 +2260,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedPod = pod
         state.setResourceYAML(sampleYAML(named: pod.name))
         state.setResourceDescribe(sampleDescribe(named: pod.name))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         prepareLayoutTestViewModel(viewModel)
         return viewModel
     }
@@ -2274,7 +2274,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedDeployment = deployment
         state.setResourceYAML(sampleYAML(named: deployment.name))
         state.setResourceDescribe(sampleDescribe(named: deployment.name))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         prepareLayoutTestViewModel(viewModel)
         return viewModel
     }
@@ -2288,7 +2288,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.selectedConfigMap = resource
         state.setResourceYAML(sampleYAML(named: resource.name))
         state.setResourceDescribe(sampleDescribe(named: resource.name))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         prepareLayoutTestViewModel(viewModel)
         return viewModel
     }
@@ -2308,7 +2308,7 @@ final class RuneRootViewLayoutRegressionTests: XCTestCase {
         state.setSelectedRBACResource(resource)
         state.setResourceYAML(sampleYAML(named: resource.name))
         state.setResourceDescribe(sampleDescribe(named: resource.name))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         prepareLayoutTestViewModel(viewModel)
         return viewModel
     }

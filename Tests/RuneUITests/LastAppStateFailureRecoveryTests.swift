@@ -42,7 +42,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: FailureRecoveryEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FailureRecoveryKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
@@ -105,7 +105,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: KubernetesClient(commandTimeout: 2),
-            bookmarkManager: BookmarkManager(store: FailureRecoveryEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FailureRecoveryKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
@@ -177,6 +177,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
             persistedState.isHelmAllNamespaces = false
             let writer = RuneAppViewModel(
                 state: persistedState,
+                bookmarkManager: .inMemory(),
                 contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
                 savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
                 lastAppStateStore: seedStore,
@@ -192,7 +193,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: FailureRecoveryEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FailureRecoveryKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
@@ -274,7 +275,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: FailureRecoveryEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FailureRecoveryKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
@@ -369,7 +370,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: FailureRecoveryEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FailureRecoveryKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
@@ -455,7 +456,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: FailureRecoveryEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FailureRecoveryKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
@@ -552,7 +553,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: FailureRecoveryEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FailureRecoveryKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
@@ -624,6 +625,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         persistedState.setPods([pod])
         let writer = RuneAppViewModel(
             state: persistedState,
+            bookmarkManager: .inMemory(),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
             lastAppStateStore: seedStore,
@@ -653,6 +655,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         persistedState.setSelectedOperatorResource(selectedResource)
         let writer = RuneAppViewModel(
             state: persistedState,
+            bookmarkManager: .inMemory(),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
             lastAppStateStore: seedStore,
@@ -700,6 +703,7 @@ final class LastAppStateFailureRecoveryTests: XCTestCase {
         persistedState.setSelectedHelmRelease(selectedRelease)
         let writer = RuneAppViewModel(
             state: persistedState,
+            bookmarkManager: .inMemory(),
             contextPreferences: FailureRecoveryEmptyContextPreferencesStore(),
             savedWorkspaceStore: FailureRecoveryEmptySavedWorkspaceStore(),
             lastAppStateStore: seedStore,
@@ -796,11 +800,6 @@ private struct FailureRecoveryKubeConfigDiscoverer: KubeConfigDiscovering {
     func discoverCandidateFiles() -> [URL] {
         urls
     }
-}
-
-private struct FailureRecoveryEmptyBookmarkStore: BookmarkStore {
-    func loadRecords() throws -> [BookmarkRecord] { [] }
-    func saveRecords(_ records: [BookmarkRecord]) throws {}
 }
 
 private struct FailureRecoveryEmptyContextPreferencesStore: ContextPreferencesStoring {

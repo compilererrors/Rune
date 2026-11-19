@@ -1717,9 +1717,16 @@ public final class RuneAppState: ObservableObject {
     }
 
     private func boundedSessionLogCache(_ text: String) -> String {
-        guard text.count > maxSessionLogCacheCharacters else { return text }
-        let suffix = text.suffix(maxSessionLogCacheCharacters)
-        return "[older session log cache truncated]\n\(suffix)"
+        // Measured in UTF-8: counting characters walked the whole log on the
+        // main thread on every poll.
+        let utf8 = text.utf8
+        guard utf8.count > maxSessionLogCacheCharacters else { return text }
+        var start = utf8.index(utf8.endIndex, offsetBy: -maxSessionLogCacheCharacters)
+        // Not in the middle of a character.
+        while start < utf8.endIndex, utf8[start] & 0xC0 == 0x80 {
+            start = utf8.index(after: start)
+        }
+        return "[older session log cache truncated]\n\(text[start...])"
     }
 
     private func updateSessionLogCache(key: String, value: String) {

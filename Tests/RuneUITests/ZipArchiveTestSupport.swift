@@ -1,3 +1,4 @@
+import Compression
 import Foundation
 import XCTest
 
@@ -17,10 +18,12 @@ enum ZipArchiveTestSupport {
             }
 
             let method = try data.uint16LE(at: offset + 8)
-            XCTAssertEqual(method, 0, "Rune test archives should use stored entries", file: file, line: line)
+            XCTAssertTrue(method == 0 || method == 8, "Rune archives store or deflate their entries", file: file, line: line)
             let compressedSize = Int(try data.uint32LE(at: offset + 18))
             let uncompressedSize = Int(try data.uint32LE(at: offset + 22))
-            XCTAssertEqual(compressedSize, uncompressedSize, file: file, line: line)
+            if method == 0 {
+                XCTAssertEqual(compressedSize, uncompressedSize, file: file, line: line)
+            }
             let nameLength = Int(try data.uint16LE(at: offset + 26))
             let extraLength = Int(try data.uint16LE(at: offset + 28))
             let nameStart = offset + 30
@@ -32,12 +35,33 @@ enum ZipArchiveTestSupport {
                 throw NSError(domain: "ZipArchiveTestSupport", code: 1, userInfo: [NSLocalizedDescriptionKey: "ZIP entry extends beyond archive data"])
             }
             let name = String(decoding: data[nameStart..<nameEnd], as: UTF8.self)
-            entries[name] = data[dataStart..<dataEnd]
+            let body = data[dataStart..<dataEnd]
+            entries[name] = method == 8
+                ? try inflate(Data(body), uncompressedSize: uncompressedSize)
+                : body
             offset = dataEnd
         }
 
         XCTAssertFalse(entries.isEmpty, "Expected at least one ZIP entry", file: file, line: line)
         return entries
+    }
+
+    private static func inflate(_ deflated: Data, uncompressedSize: Int) throws -> Data {
+        guard uncompressedSize > 0 else { return Data() }
+        var output = Data(count: uncompressedSize)
+        let written = output.withUnsafeMutableBytes { destination -> Int in
+            deflated.withUnsafeBytes { source -> Int in
+                guard let destinationBase = destination.bindMemory(to: UInt8.self).baseAddress,
+                      let sourceBase = source.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+                return compression_decode_buffer(
+                    destinationBase, uncompressedSize, sourceBase, deflated.count, nil, COMPRESSION_ZLIB
+                )
+            }
+        }
+        guard written == uncompressedSize else {
+            throw NSError(domain: "ZipArchiveTestSupport", code: 4, userInfo: [NSLocalizedDescriptionKey: "ZIP entry did not inflate to its recorded size"])
+        }
+        return output
     }
 }
 

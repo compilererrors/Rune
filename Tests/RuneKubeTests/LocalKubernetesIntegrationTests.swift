@@ -459,12 +459,22 @@ final class LocalKubernetesIntegrationTests: XCTestCase {
             throw XCTSkip("openssl is not available for local mTLS identity generation")
         }
 
+        // The identity lives in a temporary keychain. When it is released,
+        // neither the keychain nor the lock file beside it may stay behind.
+        let keychains = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-kube-mtls", isDirectory: true)
+        func leftovers() -> Set<String> {
+            Set((try? FileManager.default.contentsOfDirectory(atPath: keychains.path)) ?? [])
+        }
+        let before = leftovers()
+
         let identityCreated = try KubernetesRESTClient._testCreateClientTLSIdentity(
             certificateData: Data(contentsOf: certificate),
             keyData: Data(contentsOf: key)
         )
 
         XCTAssertTrue(identityCreated)
+        XCTAssertEqual(leftovers().subtracting(before), [], "the released identity left files in the temporary directory")
     }
 
     func testTokenAuthDoesNotAttachExtraClientCertificateByDefault() async throws {

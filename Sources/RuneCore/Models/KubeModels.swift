@@ -1125,6 +1125,11 @@ public struct PortForwardSession: Identifiable, Hashable, Codable, Sendable {
         if host.isEmpty || host == "*" || host == "0.0.0.0" || host == "::" {
             host = "127.0.0.1"
         }
+        // An IPv6 address goes in brackets in a URL; without them there is
+        // no URL to open.
+        if host.contains(":") {
+            host = "[\(host)]"
+        }
 
         var components = URLComponents()
         components.scheme = "http"

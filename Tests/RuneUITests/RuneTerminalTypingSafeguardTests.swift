@@ -173,7 +173,7 @@ final class RuneTerminalTypingSafeguardTests: XCTestCase {
             lastExitCode: nil,
             lastDiagnostic: nil
         ))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.isSidebarVisible = true
         viewModel.isDetailPaneVisible = true
 

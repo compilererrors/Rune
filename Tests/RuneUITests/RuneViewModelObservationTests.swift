@@ -16,7 +16,7 @@ final class RuneViewModelObservationTests: XCTestCase {
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "synthetic-production")
         state.setSelectedPod(PodSummary(name: "synthetic-pod", namespace: "default", status: "Running"))
-        let model = RuneAppViewModel(state: state)
+        let model = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         var snapshots: [(PendingWriteAction?, PendingWriteAction?)] = []
         let subscription = model.objectWillChange.sink {
             snapshots.append((model.pendingWriteAction, model.pendingProductionDestructiveConfirmation))
@@ -42,7 +42,7 @@ final class RuneViewModelObservationTests: XCTestCase {
 
     func testStableStateStillForwardsChangesBeforeMutation() {
         let state = RuneAppState()
-        let model = RuneAppViewModel(state: state)
+        let model = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         var observedNamespaces: [String] = []
         let subscription = model.objectWillChange.sink { observedNamespaces.append(state.selectedNamespace) }
         let original = state.selectedNamespace
@@ -55,7 +55,7 @@ final class RuneViewModelObservationTests: XCTestCase {
 
     func testResourceAndSearchChangesInvalidateAlreadyReadProjection() {
         let state = RuneAppState()
-        let model = RuneAppViewModel(state: state)
+        let model = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let first = PodSummary(name: "synthetic-alpha", namespace: "default", status: "Running")
         let second = PodSummary(name: "synthetic-beta", namespace: "default", status: "Running")
         state.setPods([first])
@@ -70,7 +70,7 @@ final class RuneViewModelObservationTests: XCTestCase {
 
     func testObservationDoesNotKeepViewModelAliveWithSurvivingState() {
         let state = RuneAppState()
-        var model: RuneAppViewModel? = RuneAppViewModel(state: state)
+        var model: RuneAppViewModel? = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         weak var observed = model
         model = nil
         XCTAssertNil(observed)

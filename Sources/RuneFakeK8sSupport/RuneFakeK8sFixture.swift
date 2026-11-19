@@ -7,6 +7,8 @@ public struct RuneFakeK8sFixture: Sendable {
     public let delayedResponseTargets: [String: UInt64]
     public let selfSubjectAccessReviewDenials: Set<RuneFakeK8sRBACRule>
     public var keepAliveConnections: Bool = false
+    /// Resource versions a watch may not start from: answered with 410 Gone.
+    public var expiredWatchResourceVersions: Set<String> = []
 
     public init(
         contexts: [RuneFakeK8sCluster] = RuneFakeK8sFixture.defaultContexts,

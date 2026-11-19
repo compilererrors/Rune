@@ -382,6 +382,16 @@ private struct RuneFakeK8sRouter {
         let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
         if method == "GET", query["watch"] == "1" {
+            // What the API server answers: resourceVersionMatch belongs to
+            // list requests, and an old resource version is gone.
+            if query["resourceVersionMatch"] != nil, query["sendInitialEvents"] == nil {
+                return .json(status: 422, object: status(
+                    message: "ListOptions.meta.k8s.io \"\" is invalid: resourceVersionMatch: Forbidden: resourceVersionMatch is forbidden for watch unless sendInitialEvents is provided"
+                ))
+            }
+            if let version = query["resourceVersion"], fixture.expiredWatchResourceVersions.contains(version) {
+                return .json(status: 410, object: status(message: "too old resource version: \(version)"))
+            }
             return .watch(events: [
                 [
                     "type": "MODIFIED",

@@ -231,9 +231,16 @@ public struct TerminalScreenEmulator: Sendable {
             return false
         }
 
-        if ["(", ")", "*", "+", "-", ".", "/"].contains(introducer) {
-            guard escapeIndex + 2 < input.count else { return false }
-            index = escapeIndex + 3
+        if Self.isEscapeIntermediate(introducer) {
+            // Intermediate bytes, then one final byte: a character set
+            // (`ESC ( B`, `ESC % G`), `ESC # 8`, `ESC SP F`. None changes
+            // the text, but the final byte belongs to the sequence.
+            var cursor = escapeIndex + 2
+            while cursor < input.count, Self.isEscapeIntermediate(input[cursor]) {
+                cursor += 1
+            }
+            guard cursor < input.count else { return false }
+            index = cursor + 1
             return true
         }
 
@@ -263,8 +270,17 @@ public struct TerminalScreenEmulator: Sendable {
     }
 
     private mutating func applyCSI(parameters rawParameters: String, command: Character) {
-        let isPrivate = rawParameters.first == "?"
-        let normalized = rawParameters.drop(while: { $0 == "?" || $0 == ">" || $0 == "!" })
+        // A private marker or an intermediate byte makes a different command
+        // of the same final byte: `CSI > 1 u` and `CSI ? u` are the kitty
+        // keyboard protocol, not restore-cursor; `CSI > T` is not a scroll.
+        // Only the `?` forms below are implemented; the rest change nothing
+        // on a plain-text screen.
+        let marker = rawParameters.first.flatMap { "<=>?".contains($0) ? $0 : nil }
+        let hasIntermediate = rawParameters.unicodeScalars.contains { (0x20...0x2F).contains($0.value) }
+        guard !hasIntermediate, marker == nil || marker == "?" else { return }
+        let isPrivate = marker == "?"
+        if isPrivate, !"hlJK".contains(command) { return }
+        let normalized = isPrivate ? rawParameters.dropFirst() : Substring(rawParameters)
         let parameters = normalized.split(separator: ";", omittingEmptySubsequences: false).map {
             Int($0) ?? 0
         }
@@ -468,11 +484,15 @@ public struct TerminalScreenEmulator: Sendable {
 
     private mutating func eraseCharacters(_ count: Int) {
         ensureCursorLine()
+        // Never past the right edge: a line longer than the screen is wide
+        // would no longer read as wrapped or unwrapped.
+        let end = min(columns, screen.cursorColumn + count)
+        guard screen.cursorColumn < end else { return }
         var line = screen.lines[screen.cursorRow]
-        if line.count < screen.cursorColumn + count {
-            line.append(contentsOf: repeatElement(" ", count: screen.cursorColumn + count - line.count))
+        if line.count < end {
+            line.append(contentsOf: repeatElement(" ", count: end - line.count))
         }
-        for column in screen.cursorColumn..<min(columns, screen.cursorColumn + count) {
+        for column in screen.cursorColumn..<end {
             line[column] = " "
         }
         screen.lines[screen.cursorRow] = line
@@ -630,6 +650,11 @@ public struct TerminalScreenEmulator: Sendable {
             trimmed.removeLast()
         }
         return String(trimmed)
+    }
+
+    private static func isEscapeIntermediate(_ character: Character) -> Bool {
+        guard character.unicodeScalars.count == 1, let scalar = character.unicodeScalars.first else { return false }
+        return (0x20...0x2F).contains(scalar.value)
     }
 
     private static func isAlternateScreenMode(_ value: Int) -> Bool {

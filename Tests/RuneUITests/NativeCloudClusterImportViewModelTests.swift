@@ -180,6 +180,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         let credentials = RecordingNativeCloudCredentialConfigurator()
         let viewModel = RuneAppViewModel(
             state: RuneAppState(),
+            bookmarkManager: .inMemory(),
             nativeCloudClusterImporter: FixedNativeCloudClusterImporter(result: NativeCloudClusterImportResult(
                 provider: .eks,
                 rawKubeConfig: raw,
@@ -216,6 +217,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             nativeCloudClusterImporter: importer,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -254,6 +256,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         ])
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             nativeCloudClusterImporter: importer,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -315,6 +318,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             nativeCloudClusterImporter: importer,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -351,6 +355,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         ])
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             nativeCloudClusterImporter: importer,
             nativeAuthConfigurator: configurator,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
@@ -415,6 +420,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         ])
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             gkeCredentialFilePicker: picker,
             nativeAuthConfigurator: configurator,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
@@ -472,6 +478,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         let exporter = NativeImportRecordingExporter()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             exporter: exporter,
             nativeCloudClusterImporter: SensitiveFailingNativeCloudClusterImporter(
                 message: sensitiveValue
@@ -538,6 +545,7 @@ final class NativeCloudClusterImportViewModelTests: XCTestCase {
         let exporter = NativeImportRecordingExporter()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             exporter: exporter,
             nativeCloudClusterImporter: DeniedEKSNativeCloudClusterImporter(),
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),

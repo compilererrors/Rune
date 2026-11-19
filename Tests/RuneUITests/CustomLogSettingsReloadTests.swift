@@ -39,11 +39,11 @@ final class CustomLogSettingsReloadTests: XCTestCase {
         defer { server.stop() }
         let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
         defer { try? FileManager.default.removeItem(at: kubeconfig) }
-        let contextDefaultsSuite = "CustomLogSettingsReloadTests.\(UUID().uuidString)"
+        let contextDefaultsSuite = TestDefaultsSuite.name("CustomLogSettingsReloadTests.\(UUID().uuidString)")
         let contextDefaults = try XCTUnwrap(
             UserDefaults(suiteName: contextDefaultsSuite)
         )
-        defer { contextDefaults.removePersistentDomain(forName: contextDefaultsSuite) }
+        defer { contextDefaults.removeTestSuite(named: contextDefaultsSuite) }
 
         do {
             let state = RuneAppState()
@@ -63,7 +63,7 @@ final class CustomLogSettingsReloadTests: XCTestCase {
 
             let viewModel = RuneAppViewModel(
                 state: state,
-                bookmarkManager: BookmarkManager(store: EmptyCustomLogBookmarkStore()),
+                bookmarkManager: BookmarkManager.inMemory(),
                 contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
                 savedWorkspaceStore: EmptyCustomLogSavedWorkspaceStore(),
                 overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
@@ -116,11 +116,6 @@ final class CustomLogSettingsReloadTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
     }
-}
-
-private struct EmptyCustomLogBookmarkStore: BookmarkStore {
-    func loadRecords() throws -> [BookmarkRecord] { [] }
-    func saveRecords(_ records: [BookmarkRecord]) throws {}
 }
 
 private struct EmptyCustomLogSavedWorkspaceStore: SavedWorkspaceStoring {

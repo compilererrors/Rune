@@ -275,6 +275,36 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         )
     }
 
+    func testLiveResourceWatchStartsOverWhenItsResourceVersionIsGone() async throws {
+        // The fake server's watch ends at synthetic-3; continuing from there
+        // is answered with 410 Gone, as after sleep or a long outage.
+        var fixture = RuneFakeK8sFixture()
+        fixture.expiredWatchResourceVersions = ["synthetic-3"]
+        let harness = try await makeHarness(fixture: fixture)
+        defer { harness.cleanup() }
+        harness.state.selectedSection = .workloads
+        harness.state.selectedWorkloadKind = .pod
+        try await harness.viewModel.reloadContexts()
+        harness.server.resetRequestLines()
+
+        harness.viewModel.isLiveStatusUpdatesEnabled = true
+        defer { harness.viewModel.isLiveStatusUpdatesEnabled = false }
+
+        func watchLines() -> [String] {
+            harness.server.requestLines().filter { $0.contains("/pods?") && $0.contains("watch=1") }
+        }
+        try await waitUntil {
+            let lines = watchLines()
+            guard let expired = lines.firstIndex(where: { $0.contains("resourceVersion=synthetic-3") }) else { return false }
+            return lines[(expired + 1)...].contains { !$0.contains("resourceVersion=") }
+        }
+
+        XCTAssertFalse(
+            watchLines().contains { $0.contains("resourceVersionMatch") },
+            "a real API server refuses resourceVersionMatch on a watch"
+        )
+    }
+
     func testTerminalNamespaceSwitchReloadsPodsForShellAndPortForwardSelectors() async throws {
         let harness = try await makeHarness()
         defer { harness.cleanup() }
@@ -949,6 +979,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         ))
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
         viewModel.rolloutRevisionInput = "1"
@@ -1581,6 +1612,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: kubeClient,
+            bookmarkManager: .inMemory(),
             store: store,
             exporter: exporter,
             configuredExporter: configuredExporter,

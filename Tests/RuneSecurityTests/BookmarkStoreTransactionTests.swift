@@ -112,6 +112,71 @@ final class BookmarkStoreTransactionTests: XCTestCase {
         XCTAssertEqual(store.saveCallCount, 1)
     }
 
+    func testOneUnresolvableBookmarkDoesNotHideTheOtherKubeConfigs() throws {
+        struct Unresolvable: Error {}
+        let store = RecordingBookmarkStore(records: [
+            BookmarkRecord(path: "/synthetic/first.yaml", bookmarkData: Data("first".utf8)),
+            BookmarkRecord(path: "/synthetic/removed.yaml", bookmarkData: Data("removed".utf8)),
+            BookmarkRecord(path: "/synthetic/third.yaml", bookmarkData: Data("third".utf8))
+        ])
+        let manager = BookmarkManager(
+            store: store,
+            createBookmarkData: { Data($0.path.utf8) },
+            resolveBookmarkData: { data in
+                let name = String(decoding: data, as: UTF8.self)
+                guard name != "removed" else { throw Unresolvable() }
+                return (URL(fileURLWithPath: "/synthetic/\(name).yaml"), false)
+            }
+        )
+
+        let loaded = try manager.loadKubeConfigSourcesReportingUnavailable()
+
+        XCTAssertEqual(loaded.sources.map(\.url.path), ["/synthetic/first.yaml", "/synthetic/third.yaml"])
+        XCTAssertEqual(loaded.unavailableCount, 1)
+        XCTAssertEqual(try manager.loadKubeConfigSources().map(\.url.path), ["/synthetic/first.yaml", "/synthetic/third.yaml"])
+        // The record stays: a volume that is mounted again brings it back.
+        XCTAssertEqual(store.records.map(\.path), ["/synthetic/first.yaml", "/synthetic/removed.yaml", "/synthetic/third.yaml"])
+        XCTAssertEqual(store.saveCallCount, 0)
+    }
+
+    func testAStaleBookmarkThatCannotBeRefreshedIsStillUsed() throws {
+        struct CannotCreate: Error {}
+        let record = BookmarkRecord(path: "/synthetic/moved.yaml", bookmarkData: Data("moved".utf8))
+        let store = RecordingBookmarkStore(records: [record])
+        let manager = BookmarkManager(
+            store: store,
+            createBookmarkData: { _ in throw CannotCreate() },
+            resolveBookmarkData: { _ in (URL(fileURLWithPath: "/synthetic/moved.yaml"), true) }
+        )
+
+        XCTAssertEqual(try manager.loadKubeConfigSources().map(\.url.path), ["/synthetic/moved.yaml"])
+        XCTAssertEqual(store.records, [record])
+    }
+
+    func testADeletedKubeConfigFileDoesNotHideTheOthers() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BookmarkStoreTransactionTests.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let kept = directory.appendingPathComponent("kept.yaml")
+        let deleted = directory.appendingPathComponent("deleted.yaml")
+        try "contexts: []".write(to: kept, atomically: true, encoding: .utf8)
+        try "contexts: []".write(to: deleted, atomically: true, encoding: .utf8)
+
+        let manager = BookmarkManager(store: RecordingBookmarkStore(records: []))
+        do {
+            try manager.addKubeConfigs(urls: [kept, deleted])
+        } catch {
+            throw XCTSkip("This host cannot create security-scoped bookmarks: \(error.localizedDescription)")
+        }
+        try FileManager.default.removeItem(at: deleted)
+
+        let loaded = try manager.loadKubeConfigSourcesReportingUnavailable()
+
+        XCTAssertEqual(loaded.sources.map(\.url.lastPathComponent), ["kept.yaml"])
+        XCTAssertEqual(loaded.unavailableCount, 1)
+    }
+
     func testRollbackRemainsSerializedBeforeAConcurrentAddCanLoad() {
         let existing = BookmarkRecord(path: "/synthetic/existing.yaml", bookmarkData: Data("existing".utf8))
         let store = BlockingMutatingFailureBookmarkStore(records: [existing])

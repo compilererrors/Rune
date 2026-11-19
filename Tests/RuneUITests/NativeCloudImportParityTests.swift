@@ -35,6 +35,7 @@ final class NativeCloudImportParityTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             gkeCredentialFilePicker: picker,
             nativeCloudClusterImporter: importer,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),

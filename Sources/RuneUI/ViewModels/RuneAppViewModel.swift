@@ -5749,22 +5749,56 @@ public final class RuneAppViewModel: ObservableObject {
                 }
                 reconnectAttempt += 1
                 guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
-                try await Task.sleep(nanoseconds: min(UInt64(reconnectAttempt), 5) * 500_000_000)
+                try await Task.sleep(nanoseconds: liveWatchReconnectDelayNanoseconds(attempt: reconnectAttempt))
             } catch {
                 guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
                 reconnectAttempt += 1
+                // Whatever ended the stream, the resource version may be one
+                // the server no longer has (410 Gone, after sleep or a long
+                // outage). Starting over without one lists the current state.
+                resourceVersion = nil
                 state.markResourceListsReconnecting(
                     [scope.family],
                     message: "Live watch reconnecting"
                 )
-                let delay = min(UInt64(reconnectAttempt), 5) * 500_000_000
                 do {
-                    try await Task.sleep(nanoseconds: delay)
+                    try await Task.sleep(nanoseconds: liveWatchReconnectDelayNanoseconds(attempt: reconnectAttempt))
                 } catch {
                     return
                 }
             }
+            if reconnectAttempt > Self.liveWatchQuickReconnectAttempts {
+                refreshWhileLiveWatchIsDown(scope)
+            }
         }
+    }
+
+    /// A few quick attempts, then the polling pace: a watch that stays down
+    /// (no watch permission, a proxy that cuts streams) must not be retried
+    /// every few seconds for as long as the view is open.
+    private static let liveWatchQuickReconnectAttempts = 5
+
+    private func liveWatchReconnectDelayNanoseconds(attempt: Int) -> UInt64 {
+        attempt > Self.liveWatchQuickReconnectAttempts
+            ? liveStatusUpdateNanoseconds
+            : UInt64(max(1, attempt)) * 500_000_000
+    }
+
+    /// Keeps the list current by polling while the watch cannot. Not after a
+    /// refresh that failed: the cluster is then out of reach, and the watch,
+    /// once it connects again, brings the current state by itself.
+    private func refreshWhileLiveWatchIsDown(_ scope: LiveResourceWatchScope) {
+        guard !Task.isCancelled,
+              liveResourceWatchScopeIsCurrent(scope),
+              !liveWatchRefreshInFlight,
+              !state.isLoading,
+              state.snapshotFreshness.status != .failed else { return }
+        liveWatchRefreshInFlight = true
+        scheduleRefreshCurrentView(
+            forceNamespaceMetadataRefresh: false,
+            debounced: false,
+            preservingLiveWatch: true
+        )
     }
 
     private func liveResourceWatchScopeIsCurrent(_ scope: LiveResourceWatchScope) -> Bool {
@@ -12032,7 +12066,7 @@ public final class RuneAppViewModel: ObservableObject {
                         context: scope.context,
                         namespace: scope.namespace,
                         podName: podName,
-                        container: nil,
+                        container: defaultExecContainerName(podName: podName, namespace: scope.namespace),
                         command: command
                     )
                     if pendingWriteScopeMatchesCurrentSelection(scope) {
@@ -12083,6 +12117,17 @@ public final class RuneAppViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// The container a one-off command runs in when the pod has several:
+    /// the one `kubectl exec` picks (the default-container annotation, else
+    /// the first). The API server refuses an exec that names none. Nil for a
+    /// pod with one container, or one Rune has not listed.
+    func defaultExecContainerName(podName: String, namespace: String) -> String? {
+        let isTarget: (PodSummary) -> Bool = { $0.name == podName && $0.namespace == namespace }
+        let pod = state.selectedPod.flatMap { isTarget($0) ? $0 : nil } ?? state.pods.first(where: isTarget)
+        guard let pod, pod.containerNames.count > 1 else { return nil }
+        return pod.defaultExecContainerName
     }
 
     private func validatePendingWriteExecution(_ scope: PendingWriteScopeSnapshot) throws {
@@ -13948,7 +13993,11 @@ public final class RuneAppViewModel: ObservableObject {
             bookmarked = []
         } else {
             do {
-                bookmarked = try bookmarkManager.loadKubeConfigSources()
+                let loaded = try bookmarkManager.loadKubeConfigSourcesReportingUnavailable()
+                bookmarked = loaded.sources
+                if loaded.unavailableCount > 0 {
+                    diagnostics.log("kubeconfig bookmarks unavailable (file removed or volume not mounted): \(loaded.unavailableCount)")
+                }
             } catch {
                 diagnostics.log("bookmark load failed, falling back to direct kubeconfig paths: \(error.localizedDescription)")
                 bookmarked = []
@@ -17918,7 +17967,7 @@ public final class RuneAppViewModel: ObservableObject {
         if token.hasSuffix("m"), let milli = Int(token.dropLast()) {
             return milli
         }
-        if let cores = Double(token) {
+        if let cores = Double(token), cores.isFinite, cores.magnitude < 1.0e12 {
             return Int((cores * 1000.0).rounded())
         }
         return nil
@@ -17943,7 +17992,9 @@ public final class RuneAppViewModel: ObservableObject {
             if token.hasSuffix(suffix) {
                 let number = String(token.dropLast(suffix.count))
                 guard let value = Double(number) else { return nil }
-                return Int64((value * multiplier).rounded())
+                let bytes = (value * multiplier).rounded()
+                guard bytes.isFinite, bytes.magnitude < 9.0e18 else { return nil }
+                return Int64(bytes)
             }
         }
 
@@ -17972,19 +18023,26 @@ public final class RuneAppViewModel: ObservableObject {
             }
             digits.removeAll(keepingCapacity: true)
 
+            let unitSeconds: Int
             switch character {
-            case "s": total += value
-            case "m": total += value * 60
-            case "h": total += value * 3600
-            case "d": total += value * 86_400
-            case "w": total += value * 604_800
-            case "y": total += value * 31_536_000
+            case "s": unitSeconds = 1
+            case "m": unitSeconds = 60
+            case "h": unitSeconds = 3600
+            case "d": unitSeconds = 86_400
+            case "w": unitSeconds = 604_800
+            case "y": unitSeconds = 31_536_000
             default: return nil
             }
+            let seconds = value.multipliedReportingOverflow(by: unitSeconds)
+            let sum = total.addingReportingOverflow(seconds.partialValue)
+            guard !seconds.overflow, !sum.overflow else { return nil }
+            total = sum.partialValue
         }
 
         if !digits.isEmpty, let trailing = Int(digits) {
-            total += trailing
+            let sum = total.addingReportingOverflow(trailing)
+            guard !sum.overflow else { return nil }
+            total = sum.partialValue
         }
 
         return total == 0 ? nil : total

@@ -28,6 +28,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
 
@@ -83,6 +84,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
 
@@ -128,6 +130,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
 
@@ -171,6 +174,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
         var surfacedMessages: [String?] = []
@@ -245,6 +249,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
 
@@ -281,6 +286,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
 
@@ -303,6 +309,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: RuneAppState(),
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
 
@@ -327,6 +334,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
 
@@ -387,6 +395,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             nativeAuthConfigurator: configurator
         )
         let secret = "synthetic-azure-secret"
@@ -422,6 +431,7 @@ final class EKSNativeAuthViewModelTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: makeKubeClient(nativeProvider: configurator),
+            bookmarkManager: .inMemory(),
             gkeCredentialFilePicker: picker,
             nativeAuthConfigurator: configurator
         )

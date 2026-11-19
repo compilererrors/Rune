@@ -109,7 +109,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
             )
         )
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, lastAppStateStore: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), lastAppStateStore: store)
 
         XCTAssertEqual(state.selectedSection, .workloads)
         XCTAssertEqual(state.selectedWorkloadKind, .deployment)
@@ -145,7 +145,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
             )
         )
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, lastAppStateStore: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), lastAppStateStore: store)
 
         XCTAssertEqual(state.selectedSection, .overview)
         XCTAssertEqual(state.selectedWorkloadKind, .pod)
@@ -175,6 +175,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             lastAppStateStore: store,
             terminalWorkspaceStateStore: terminalStore
         )
@@ -200,6 +201,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             lastAppStateStore: store,
             terminalWorkspaceStateStore: terminalStore
         )
@@ -229,7 +231,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
         let store = RecordingLastAppStateStore()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, lastAppStateStore: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), lastAppStateStore: store)
         let pod = PodSummary(
             name: "synthetic-pod-a",
             namespace: "synthetic-scope-a",
@@ -271,7 +273,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
 
         let store = RecordingLastAppStateStore()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, lastAppStateStore: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), lastAppStateStore: store)
         let pod = PodSummary(
             name: "synthetic-pod-a",
             namespace: "synthetic-scope-a",
@@ -341,7 +343,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
             clusterRoles: [],
             clusterRoleBindings: []
         )
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         viewModel.openSavedWorkspace(
             SavedWorkspaceSnapshot(
@@ -405,9 +407,9 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let kubeConfigURL = directory.appendingPathComponent("synthetic-kubeconfig")
         try server.kubeconfigYAML().write(to: kubeConfigURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuite = "LastAppStatePersistenceTests.contextPreferences.\(UUID().uuidString)"
+        let defaultsSuite = TestDefaultsSuite.name("LastAppStatePersistenceTests.contextPreferences.\(UUID().uuidString)")
         let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
-        defer { contextDefaults.removePersistentDomain(forName: defaultsSuite) }
+        defer { contextDefaults.removeTestSuite(named: defaultsSuite) }
         let store = RecordingLastAppStateStore()
         do {
             let persistedState = RuneAppState()
@@ -418,6 +420,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
             persistedState.selectedWorkloadKind = .pod
             let writer = RuneAppViewModel(
                 state: persistedState,
+                bookmarkManager: .inMemory(),
                 contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
                 savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
                 lastAppStateStore: store,
@@ -432,7 +435,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: EmptyLastStateBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FixedLastStateKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
             savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
@@ -471,13 +474,13 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let kubeConfigURL = directory.appendingPathComponent("synthetic-kubeconfig")
         try server.kubeconfigYAML().write(to: kubeConfigURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuite = "LastAppStatePersistenceTests.fallbackPreferences.\(UUID().uuidString)"
+        let defaultsSuite = TestDefaultsSuite.name("LastAppStatePersistenceTests.fallbackPreferences.\(UUID().uuidString)")
         let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
-        defer { contextDefaults.removePersistentDomain(forName: defaultsSuite) }
+        defer { contextDefaults.removeTestSuite(named: defaultsSuite) }
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: EmptyLastStateBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FixedLastStateKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
             savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
@@ -520,13 +523,13 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let kubeConfigURL = directory.appendingPathComponent("synthetic-kubeconfig")
         try server.kubeconfigYAML().write(to: kubeConfigURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuite = "LastAppStatePersistenceTests.sourceScopePreferences.\(UUID().uuidString)"
+        let defaultsSuite = TestDefaultsSuite.name("LastAppStatePersistenceTests.sourceScopePreferences.\(UUID().uuidString)")
         let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
-        defer { contextDefaults.removePersistentDomain(forName: defaultsSuite) }
+        defer { contextDefaults.removeTestSuite(named: defaultsSuite) }
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: EmptyLastStateBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FixedLastStateKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
             savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
@@ -601,6 +604,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
         ])
         let writer = RuneAppViewModel(
             state: writerState,
+            bookmarkManager: .inMemory(),
             savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
             lastAppStateStore: writerStore,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
@@ -614,7 +618,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: EmptyLastStateBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FixedLastStateKubeConfigDiscoverer(urls: [kubeConfigURL]),
             savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
             lastAppStateStore: store,
@@ -662,9 +666,9 @@ final class LastAppStatePersistenceTests: XCTestCase {
             chart: "synthetic-chart-1.0.0",
             appVersion: "1.0.0"
         )
-        let defaultsSuite = "LastAppStatePersistenceTests.helmPreferences.\(UUID().uuidString)"
+        let defaultsSuite = TestDefaultsSuite.name("LastAppStatePersistenceTests.helmPreferences.\(UUID().uuidString)")
         let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
-        defer { contextDefaults.removePersistentDomain(forName: defaultsSuite) }
+        defer { contextDefaults.removeTestSuite(named: defaultsSuite) }
         let store = RecordingLastAppStateStore()
         do {
             let persistedState = RuneAppState()
@@ -676,6 +680,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
             persistedState.setHelmReleases([release])
             let writer = RuneAppViewModel(
                 state: persistedState,
+                bookmarkManager: .inMemory(),
                 contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
                 savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
                 lastAppStateStore: store,
@@ -692,7 +697,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: EmptyLastStateBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FixedLastStateKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
             savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
@@ -737,9 +742,9 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let kubeConfigURL = directory.appendingPathComponent("synthetic-kubeconfig")
         try server.kubeconfigYAML().write(to: kubeConfigURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuite = "LastAppStatePersistenceTests.resourcePreferences.\(UUID().uuidString)"
+        let defaultsSuite = TestDefaultsSuite.name("LastAppStatePersistenceTests.resourcePreferences.\(UUID().uuidString)")
         let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
-        defer { contextDefaults.removePersistentDomain(forName: defaultsSuite) }
+        defer { contextDefaults.removeTestSuite(named: defaultsSuite) }
         let store = RecordingLastAppStateStore()
         do {
             let persistedPod = PodSummary(
@@ -757,6 +762,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
             persistedState.setPods([persistedPod])
             let writer = RuneAppViewModel(
                 state: persistedState,
+                bookmarkManager: .inMemory(),
                 contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
                 savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
                 lastAppStateStore: store,
@@ -773,7 +779,7 @@ final class LastAppStatePersistenceTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: EmptyLastStateBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: FixedLastStateKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
             savedWorkspaceStore: EmptyLastStateSavedWorkspaceStore(),
@@ -878,11 +884,6 @@ private struct FixedLastStateKubeConfigDiscoverer: KubeConfigDiscovering {
     func discoverCandidateFiles() -> [URL] {
         urls
     }
-}
-
-private struct EmptyLastStateBookmarkStore: BookmarkStore {
-    func loadRecords() throws -> [BookmarkRecord] { [] }
-    func saveRecords(_ records: [BookmarkRecord]) throws {}
 }
 
 private struct EmptyLastStateSavedWorkspaceStore: SavedWorkspaceStoring {

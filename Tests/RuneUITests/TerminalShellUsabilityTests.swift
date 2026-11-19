@@ -74,7 +74,7 @@ final class TerminalShellUsabilityTests: XCTestCase {
     func testAShellInAMultiContainerPodUsesTheFirstContainerAndSaysSo() async throws {
         let backend = RecordingShell()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend)
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend, bookmarkManager: .inMemory())
         state.setContexts([KubeContext(name: "sample-cluster")])
         state.selectedContext = KubeContext(name: "sample-cluster")
         state.setNamespaces(["team-alpha"])
@@ -99,7 +99,7 @@ final class TerminalShellUsabilityTests: XCTestCase {
     func testAShellUsesThePodDefaultContainerAnnotationBeforeTheFirstContainer() async throws {
         let backend = RecordingShell()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend)
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend, bookmarkManager: .inMemory())
         state.setContexts([KubeContext(name: "sample-cluster")])
         state.selectedContext = KubeContext(name: "sample-cluster")
         state.setNamespaces(["team-alpha"])
@@ -116,13 +116,33 @@ final class TerminalShellUsabilityTests: XCTestCase {
         XCTAssertEqual(state.terminalSession?.containerName, "app")
     }
 
+    /// A one-off command names no container. The API server answers that
+    /// with HTTP 400 when the pod has several, so Rune picks the one
+    /// `kubectl exec` would.
+    func testAOneOffCommandRunsInTheContainerKubectlWouldPick() {
+        let state = RuneAppState()
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
+        state.setPods([
+            PodSummary(name: "api-0", namespace: "team-alpha", status: "Running", containerNamesLine: "proxy, app", defaultContainerName: "app"),
+            PodSummary(name: "web-0", namespace: "team-alpha", status: "Running", containerNamesLine: "proxy, web"),
+            PodSummary(name: "job-0", namespace: "team-alpha", status: "Running", containerNamesLine: "run"),
+            PodSummary(name: "api-0", namespace: "team-beta", status: "Running", containerNamesLine: "first, second")
+        ])
+
+        XCTAssertEqual(viewModel.defaultExecContainerName(podName: "api-0", namespace: "team-alpha"), "app", "the annotated container")
+        XCTAssertEqual(viewModel.defaultExecContainerName(podName: "web-0", namespace: "team-alpha"), "proxy", "else the first")
+        XCTAssertNil(viewModel.defaultExecContainerName(podName: "job-0", namespace: "team-alpha"), "one container: the server picks it")
+        XCTAssertEqual(viewModel.defaultExecContainerName(podName: "api-0", namespace: "team-beta"), "first", "the pod of that namespace")
+        XCTAssertNil(viewModel.defaultExecContainerName(podName: "gone-0", namespace: "team-alpha"))
+    }
+
     /// A session kept from before Rune chose a container has none. It could
     /// never connect to a multi-container pod, so Reconnect must move it to
     /// the default container instead of calling it another target.
     func testReconnectingASessionWithoutAContainerUsesTheDefaultContainer() async throws {
         let backend = RecordingShell()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend)
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend, bookmarkManager: .inMemory())
         state.setContexts([KubeContext(name: "sample-cluster")])
         state.selectedContext = KubeContext(name: "sample-cluster")
         state.setNamespaces(["team-alpha"])
@@ -148,7 +168,7 @@ final class TerminalShellUsabilityTests: XCTestCase {
     func testAClosedShellTabSurvivesAPodListThatIsStillLoading() async throws {
         let backend = RecordingShell()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend)
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend, bookmarkManager: .inMemory())
         state.setContexts([KubeContext(name: "sample-cluster")])
         state.selectedContext = KubeContext(name: "sample-cluster")
         state.setNamespaces(["team-alpha"])
@@ -195,7 +215,7 @@ final class TerminalShellUsabilityTests: XCTestCase {
 
     private func connectedViewModel(backend: RecordingShell) throws -> RuneAppViewModel {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend)
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend, bookmarkManager: .inMemory())
         state.setTerminalSession(PodTerminalSession(
             id: "shell-1", contextName: "sample-cluster", namespace: "team-alpha", podName: "api-0",
             shell: "sh", transcript: "$ ", status: .connected

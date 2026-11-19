@@ -2510,25 +2510,10 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
                     podName: podName,
                     containerName: containerName,
                     text: line,
-                    timestamp: parseTimestamp(line),
+                    timestamp: KubernetesLogTimestamp.leadingDate(in: line),
                     sequence: index
                 )
             }
-    }
-
-    private func parseTimestamp(_ line: String) -> Date? {
-        let token = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace).first
-        guard let timestampToken = token else { return nil }
-
-        let fractionalFormatter = ISO8601DateFormatter()
-        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-        if let date = fractionalFormatter.date(from: String(timestampToken)) {
-            return date
-        }
-
-        let formatter = ISO8601DateFormatter()
-        return formatter.date(from: String(timestampToken))
     }
 
     private static func taggedLineSort(lhs: TaggedLogLine, rhs: TaggedLogLine) -> Bool {
@@ -2952,8 +2937,12 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         guard capacity.cpuMilli > 0 || capacity.memoryBytes > 0 else {
             return (nil, nil)
         }
-        let cpu = capacity.cpuMilli > 0 ? Int((Double(usage.cpuMilli) / Double(capacity.cpuMilli) * 100).rounded()) : nil
-        let memory = capacity.memoryBytes > 0 ? Int((usage.memoryBytes / capacity.memoryBytes * 100).rounded()) : nil
+        let cpu = capacity.cpuMilli > 0
+            ? KubernetesQuantity.clampedInt((Double(usage.cpuMilli) / Double(capacity.cpuMilli) * 100).rounded())
+            : nil
+        let memory = capacity.memoryBytes > 0
+            ? KubernetesQuantity.clampedInt((usage.memoryBytes / capacity.memoryBytes * 100).rounded())
+            : nil
         return (cpu, memory)
     }
 
@@ -3028,35 +3017,11 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     }
 
     private static func parseCPUMilli(_ value: String?) -> Int {
-        guard let value else { return 0 }
-        if value.hasSuffix("n"), let raw = Double(value.dropLast()) {
-            return Int((raw / 1_000_000).rounded())
-        }
-        if value.hasSuffix("u"), let raw = Double(value.dropLast()) {
-            return Int((raw / 1_000).rounded())
-        }
-        if value.hasSuffix("m"), let raw = Double(value.dropLast()) {
-            return Int(raw.rounded())
-        }
-        return Int(((Double(value) ?? 0) * 1000).rounded())
+        KubernetesQuantity.cpuMillicores(value)
     }
 
     private static func parseMemoryBytes(_ value: String?) -> Double {
-        guard let value else { return 0 }
-        let units: [(suffix: String, multiplier: Double)] = [
-            ("Ki", 1024),
-            ("Mi", 1024 * 1024),
-            ("Gi", 1024 * 1024 * 1024),
-            ("Ti", 1024 * 1024 * 1024 * 1024),
-            ("K", 1000),
-            ("M", 1000 * 1000),
-            ("G", 1000 * 1000 * 1000),
-            ("T", 1000 * 1000 * 1000 * 1000)
-        ]
-        for unit in units where value.hasSuffix(unit.suffix) {
-            return (Double(value.dropLast(unit.suffix.count)) ?? 0) * unit.multiplier
-        }
-        return Double(value) ?? 0
+        KubernetesQuantity.memoryBytes(value)
     }
 
     private static func formatCPUMilli(_ value: Int) -> String {
@@ -3064,7 +3029,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     }
 
     private static func formatMemoryBytes(_ value: Double) -> String {
-        let mib = Int((value / (1024 * 1024)).rounded())
+        let mib = KubernetesQuantity.clampedInt((value / (1024 * 1024)).rounded())
         return "\(max(0, mib))Mi"
     }
 

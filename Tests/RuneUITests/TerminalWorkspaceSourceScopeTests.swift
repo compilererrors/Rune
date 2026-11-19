@@ -62,6 +62,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
             writerState.selectedNamespace = namespace
             let writer = RuneAppViewModel(
                 state: writerState,
+                bookmarkManager: .inMemory(),
                 terminalWorkspaceStateStore: store
             )
             writer.persistTerminalWorkspaceState(snapshot)
@@ -76,6 +77,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
         readerState.selectedNamespace = namespace
         let reader = RuneAppViewModel(
             state: readerState,
+            bookmarkManager: .inMemory(),
             terminalWorkspaceStateStore: store
         )
 
@@ -112,6 +114,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
         state.selectedNamespace = namespace
         let writer = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             terminalWorkspaceStateStore: store
         )
         writer.persistTerminalWorkspaceState(
@@ -143,6 +146,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
         readerState.selectedNamespace = namespace
         let reader = RuneAppViewModel(
             state: readerState,
+            bookmarkManager: .inMemory(),
             terminalWorkspaceStateStore: store
         )
 
@@ -194,9 +198,9 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
         )
         .write(to: originalSourceURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuite = "TerminalWorkspaceSourceScopeTests.runtimeImportPreferences.\(UUID().uuidString)"
+        let defaultsSuite = TestDefaultsSuite.name("TerminalWorkspaceSourceScopeTests.runtimeImportPreferences.\(UUID().uuidString)")
         let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
-        defer { contextDefaults.removePersistentDomain(forName: defaultsSuite) }
+        defer { contextDefaults.removeTestSuite(named: defaultsSuite) }
 
         let state = RuneAppState()
         state.setSources([KubeConfigSource(url: originalSourceURL)])
@@ -215,7 +219,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
         let terminalStore = SourceScopeTerminalWorkspaceStore()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: SourceScopeEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: SourceScopeFixedKubeConfigDiscoverer(urls: [originalSourceURL]),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
             savedWorkspaceStore: SourceScopeEmptySavedWorkspaceStore(),
@@ -322,9 +326,9 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
         )
         .write(to: kubeConfigURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuite = "TerminalWorkspaceSourceScopeTests.preferences.\(UUID().uuidString)"
+        let defaultsSuite = TestDefaultsSuite.name("TerminalWorkspaceSourceScopeTests.preferences.\(UUID().uuidString)")
         let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
-        defer { contextDefaults.removePersistentDomain(forName: defaultsSuite) }
+        defer { contextDefaults.removeTestSuite(named: defaultsSuite) }
 
         let legacySnapshot = LastAppStateSnapshot(
             contextName: legacyContext.contextName,
@@ -338,7 +342,7 @@ final class TerminalWorkspaceSourceScopeTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: SourceScopeEmptyBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: SourceScopeFixedKubeConfigDiscoverer(urls: [kubeConfigURL]),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
             savedWorkspaceStore: SourceScopeEmptySavedWorkspaceStore(),
@@ -508,11 +512,6 @@ private struct SourceScopeFixedKubeConfigDiscoverer: KubeConfigDiscovering {
     func discoverCandidateFiles() -> [URL] {
         urls
     }
-}
-
-private struct SourceScopeEmptyBookmarkStore: BookmarkStore {
-    func loadRecords() throws -> [BookmarkRecord] { [] }
-    func saveRecords(_ records: [BookmarkRecord]) throws {}
 }
 
 private struct SourceScopeEmptySavedWorkspaceStore: SavedWorkspaceStoring {

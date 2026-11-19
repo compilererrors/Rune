@@ -283,6 +283,7 @@ final class PendingWriteOperationLifecycleTests: XCTestCase {
         let runner = SuspendedWriteLifecycleHelmRunner()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigContextRemover: contextRemover,
             helmCommandRunner: runner,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),

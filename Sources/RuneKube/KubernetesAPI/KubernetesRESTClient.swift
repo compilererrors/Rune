@@ -290,16 +290,13 @@ final class KubernetesRESTClient: @unchecked Sendable {
 
         var components = URLComponents()
         components.path = basePath
+        // No resourceVersionMatch: it belongs to list requests, and the API
+        // server refuses a watch that sets it without sendInitialEvents.
         components.queryItems = [
             URLQueryItem(name: "watch", value: "1"),
             URLQueryItem(name: "allowWatchBookmarks", value: "true"),
             URLQueryItem(name: "timeoutSeconds", value: String(min(max(timeoutSeconds, 30), 600)))
-        ] + (resourceVersion.map {
-            [
-                URLQueryItem(name: "resourceVersion", value: $0),
-                URLQueryItem(name: "resourceVersionMatch", value: "NotOlderThan")
-            ]
-        } ?? [])
+        ] + (resourceVersion.map { [URLQueryItem(name: "resourceVersion", value: $0)] } ?? [])
         let apiPath = components.percentEncodedPath
             + (components.percentEncodedQuery.map { "?\($0)" } ?? "")
         guard let url = URL(string: apiPath, relativeTo: resolved.serverURL)?.absoluteURL else {
@@ -339,10 +336,14 @@ final class KubernetesRESTClient: @unchecked Sendable {
                             message: "Kubernetes watch failed with HTTP status \(status)."
                         )
                     }
-                    for try await line in bytes.lines {
+                    // One event per line feed. `bytes.lines` would also break
+                    // a line at U+0085 and U+2028, which JSON allows inside
+                    // a string, and so cut an event in two.
+                    var line: [UInt8] = []
+                    line.reserveCapacity(16 * 1024)
+                    func deliver(_ line: [UInt8]) throws {
                         try Task.checkCancellation()
-                        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                        let event = try KubernetesResourceWatchEvent.decode(line: line)
+                        guard let event = try KubernetesResourceWatchEvent.decodeLine(Data(line)) else { return }
                         if event.type == .error {
                             throw RuneError.commandFailed(
                                 command: "kubernetes REST watch",
@@ -351,6 +352,18 @@ final class KubernetesRESTClient: @unchecked Sendable {
                         }
                         continuation.yield(event)
                     }
+                    for try await byte in bytes {
+                        if byte == 0x0A {
+                            try deliver(line)
+                            line.removeAll(keepingCapacity: true)
+                        } else {
+                            line.append(byte)
+                            guard line.count <= KubernetesResourceWatchEvent.maximumLineBytes else {
+                                throw RuneError.parseError(message: "Kubernetes watch sent an event larger than Rune accepts.")
+                            }
+                        }
+                    }
+                    try deliver(line)
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
@@ -730,11 +743,18 @@ final class KubernetesRESTClient: @unchecked Sendable {
             environment: environment,
             contextName: contextName,
             method: "DELETE",
-            apiPath: path,
+            apiPath: Self.deleteAPIPath(resourcePath: path),
             headers: ["Accept": "application/json"],
             body: nil,
             timeout: timeout
         )
+    }
+
+    /// Deletes what the object owns as well, in the background, as kubectl
+    /// does. Left to the server's default, a `batch/v1` Job is deleted
+    /// without its pods, which stay behind as orphans.
+    static func deleteAPIPath(resourcePath: String) -> String {
+        "\(resourcePath)?propagationPolicy=Background"
     }
 
     func scaleDeployment(
@@ -998,30 +1018,12 @@ final class KubernetesRESTClient: @unchecked Sendable {
             name: cronJobName,
             timeout: timeout
         )
-        guard
-            let cronJob = try JSONSerialization.jsonObject(with: Data(cronJobRaw.utf8)) as? [String: Any],
-            let spec = cronJob["spec"] as? [String: Any],
-            let jobTemplate = spec["jobTemplate"] as? [String: Any],
-            let jobSpec = jobTemplate["spec"] as? [String: Any]
-        else {
-            throw RuneError.parseError(message: "CronJob \(cronJobName) does not contain a job template")
-        }
-
-        let templateMetadata = jobTemplate["metadata"] as? [String: Any]
-        var metadata: [String: Any] = [
-            "name": jobName,
-            "namespace": namespace,
-            "labels": templateMetadata?["labels"] ?? [:],
-            "annotations": templateMetadata?["annotations"] ?? [:]
-        ]
-        metadata["ownerReferences"] = nil
-
-        let job: [String: Any] = [
-            "apiVersion": "batch/v1",
-            "kind": "Job",
-            "metadata": metadata,
-            "spec": jobSpec
-        ]
+        let job = try Self.manualJobManifest(
+            fromCronJobJSON: cronJobRaw,
+            cronJobName: cronJobName,
+            jobName: jobName,
+            namespace: namespace
+        )
         let body = String(decoding: try JSONSerialization.data(withJSONObject: job), as: UTF8.self)
 
         _ = try await rawRequest(
@@ -1036,6 +1038,52 @@ final class KubernetesRESTClient: @unchecked Sendable {
             body: body,
             timeout: timeout
         )
+    }
+
+    /// The Job `kubectl create job --from=cronjob/<name>` makes: the job
+    /// template's spec, labels and annotations, marked as started by hand
+    /// and owned by the CronJob, so it is listed with the CronJob's jobs and
+    /// removed with it.
+    static func manualJobManifest(
+        fromCronJobJSON cronJobRaw: String,
+        cronJobName: String,
+        jobName: String,
+        namespace: String
+    ) throws -> [String: Any] {
+        guard
+            let cronJob = try JSONSerialization.jsonObject(with: Data(cronJobRaw.utf8)) as? [String: Any],
+            let spec = cronJob["spec"] as? [String: Any],
+            let jobTemplate = spec["jobTemplate"] as? [String: Any],
+            let jobSpec = jobTemplate["spec"] as? [String: Any]
+        else {
+            throw RuneError.parseError(message: "CronJob \(cronJobName) does not contain a job template")
+        }
+
+        let templateMetadata = jobTemplate["metadata"] as? [String: Any]
+        var annotations = templateMetadata?["annotations"] as? [String: Any] ?? [:]
+        annotations["cronjob.kubernetes.io/instantiate"] = "manual"
+        var metadata: [String: Any] = [
+            "name": jobName,
+            "namespace": namespace,
+            "labels": templateMetadata?["labels"] ?? [:],
+            "annotations": annotations
+        ]
+        let cronJobMetadata = cronJob["metadata"] as? [String: Any]
+        if let uid = cronJobMetadata?["uid"] as? String, !uid.isEmpty {
+            metadata["ownerReferences"] = [[
+                "apiVersion": "batch/v1",
+                "kind": "CronJob",
+                "name": cronJobMetadata?["name"] as? String ?? cronJobName,
+                "uid": uid
+            ]]
+        }
+
+        return [
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": metadata,
+            "spec": jobSpec
+        ]
     }
 
     func resourceDescribe(
@@ -1329,25 +1377,17 @@ final class KubernetesRESTClient: @unchecked Sendable {
             throw RuneError.invalidInput(message: "Port-forward ports must be between 1 and 65535.")
         }
 
+        _ = try PortForwardBindAddress.parse(address)
+
         if let conflictMessage = Self.localPortConflictMessage(port: localPort, address: address) {
             throw RuneError.commandFailed(command: "port-forward", message: conflictMessage)
         }
 
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
+        let listeners = try Self.makePortForwardListeners(address: address, localPort: localPort)
         if resolved.requiresLegacySPDYPortForward {
-            let port = NWEndpoint.Port(rawValue: UInt16(localPort))!
-            let parameters = NWParameters.tcp
-            parameters.allowLocalEndpointReuse = true
-            let listener: NWListener
-            do {
-                listener = try NWListener(using: parameters, on: port)
-            } catch {
-                let message = Self.localPortConflictMessage(port: localPort, address: address)
-                    ?? "Could not bind local port \(address):\(localPort): \(error.localizedDescription)"
-                throw RuneError.commandFailed(command: "port-forward", message: message)
-            }
             let handle = LegacySPDYPortForwardHandle(
-                listener: listener,
+                listeners: listeners,
                 resolved: resolved,
                 namespace: namespace,
                 podName: podName,
@@ -1360,22 +1400,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
 
         let restSession = makeSession(for: resolved)
-        let port = NWEndpoint.Port(rawValue: UInt16(localPort))!
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
-
-        let listener: NWListener
-        do {
-            listener = try NWListener(using: parameters, on: port)
-        } catch {
-            restSession.session.invalidateAndCancel()
-            let message = Self.localPortConflictMessage(port: localPort, address: address)
-                ?? "Could not bind local port \(address):\(localPort): \(error.localizedDescription)"
-            throw RuneError.commandFailed(command: "port-forward", message: message)
-        }
-
         let handle = KubernetesPortForwardHandle(
-            listener: listener,
+            listeners: listeners,
             session: restSession.session,
             resolved: resolved,
             namespace: namespace,
@@ -1398,6 +1424,23 @@ final class KubernetesRESTClient: @unchecked Sendable {
         )
         handle.start()
         return handle
+    }
+
+    /// Listeners bound to the addresses the forward was asked for, never to
+    /// the port alone: that would listen on every interface.
+    private static func makePortForwardListeners(
+        address: String,
+        localPort: Int
+    ) throws -> [PortForwardLocalListener] {
+        do {
+            return try PortForwardLocalListener.make(address: address, port: localPort)
+        } catch let error as RuneError {
+            throw error
+        } catch {
+            let message = localPortConflictMessage(port: localPort, address: address)
+                ?? "Could not bind local port \(address):\(localPort): \(error.localizedDescription)"
+            throw RuneError.commandFailed(command: "port-forward", message: message)
+        }
     }
 
     private static func localPortConflictMessage(
@@ -4478,8 +4521,10 @@ private final class ClientTLSIdentity: @unchecked Sendable {
     }
 
     deinit {
+        // The keychain has a folder of its own, so the lock file the
+        // Security framework puts next to it goes as well.
         guard let keychainPath else { return }
-        try? FileManager.default.removeItem(atPath: keychainPath)
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: keychainPath).deletingLastPathComponent())
     }
 
     var certificateData: Data? {
@@ -4494,8 +4539,13 @@ private final class ClientTLSIdentity: @unchecked Sendable {
     static func temporaryIdentity(certificateData: Data, keyData: Data) throws -> ClientTLSIdentity? {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("rune-kube-mtls", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let keychainURL = directory.appendingPathComponent("\(UUID().uuidString).keychain-db")
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let keychainURL = directory.appendingPathComponent("identity.keychain-db")
         let password = UUID().uuidString
 
         var keychain: SecKeychain?
@@ -4512,6 +4562,7 @@ private final class ClientTLSIdentity: @unchecked Sendable {
             }
         }
         guard createStatus == errSecSuccess, let keychain else {
+            try? FileManager.default.removeItem(at: directory)
             throw RuneError.invalidInput(message: "Could not create temporary keychain for Kubernetes client certificate auth: OSStatus \(createStatus)")
         }
 
@@ -4531,7 +4582,7 @@ private final class ClientTLSIdentity: @unchecked Sendable {
             }
             return ClientTLSIdentity(identity: identity, keychain: keychain, keychainPath: keychainURL.path)
         } catch {
-            try? FileManager.default.removeItem(at: keychainURL)
+            try? FileManager.default.removeItem(at: directory)
             throw error
         }
     }
@@ -4843,6 +4894,10 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
         Task {
             var exitCode: Int32 = 0
             var receivedAnything = false
+            // A frame may end in the middle of a character; each stream
+            // keeps the unfinished bytes for its next frame.
+            var stdoutDecoder = UTF8StreamDecoder()
+            var stderrDecoder = UTF8StreamDecoder()
             while await !state.isTerminated {
                 do {
                     let message = try await task.receive()
@@ -4860,8 +4915,9 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
                     let payload = Data(data.dropFirst())
                     switch channel {
                     case 1, 2:
-                        if !payload.isEmpty {
-                            onOutput(String(decoding: payload, as: UTF8.self))
+                        let text = channel == 1 ? stdoutDecoder.decode(payload) : stderrDecoder.decode(payload)
+                        if !text.isEmpty {
+                            onOutput(text)
                         }
                     case 3:
                         exitCode = KubernetesRESTClient.execExitCode(from: payload)
@@ -4881,6 +4937,10 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
                     }
                     await state.markTerminated()
                 }
+            }
+            let unfinished = stdoutDecoder.finish() + stderrDecoder.finish()
+            if !unfinished.isEmpty {
+                onOutput(unfinished)
             }
             task.cancel(with: .normalClosure, reason: nil)
             session.invalidateAndCancel()
@@ -4940,7 +5000,7 @@ private final class KubernetesExecWebSocketHandle: RunningCommandControlling, @u
 private final class KubernetesPortForwardHandle: RunningCommandControlling, @unchecked Sendable {
     let id = UUID()
 
-    private let listener: NWListener
+    private let listeners: [PortForwardLocalListener]
     private let session: URLSession
     private let resolved: ResolvedRESTContext
     private let namespace: String
@@ -4953,10 +5013,11 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
     private let lock = NSLock()
     private var bridges: [UUID: PortForwardConnectionBridge] = [:]
     private var listenerReady = false
+    private var readyRequiredListenerCount = 0
     private var terminated = false
 
     init(
-        listener: NWListener,
+        listeners: [PortForwardLocalListener],
         session: URLSession,
         resolved: ResolvedRESTContext,
         namespace: String,
@@ -4966,7 +5027,7 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
         onReady: @escaping @Sendable () -> Void,
         onFailure: @escaping @Sendable (String) -> Void
     ) {
-        self.listener = listener
+        self.listeners = listeners
         self.session = session
         self.resolved = resolved
         self.namespace = namespace
@@ -4978,28 +5039,38 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
     }
 
     func start() {
-        listener.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .ready:
-                self.markReady()
-                self.onReady()
-            case let .waiting(error):
-                self.onFailure("Port-forward listener is waiting: \(error.localizedDescription)")
-                self.terminate()
-            case let .failed(error):
-                self.onFailure("Port-forward listener failed: \(error.localizedDescription)")
-                self.terminate()
-            case .cancelled:
-                self.closeAllBridges()
-            default:
-                break
+        for member in listeners {
+            let listener = member.listener
+            let isRequired = member.isRequired
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    if self.markReady(isRequired: isRequired) {
+                        self.onReady()
+                    }
+                case let .waiting(error):
+                    // The IPv6 half of localhost is optional: go on without it.
+                    guard isRequired else { listener?.cancel(); return }
+                    self.onFailure("Port-forward listener is waiting: \(error.localizedDescription)")
+                    self.terminate()
+                case let .failed(error):
+                    guard isRequired else { listener?.cancel(); return }
+                    self.onFailure("Port-forward listener failed: \(error.localizedDescription)")
+                    self.terminate()
+                case .cancelled:
+                    if isRequired {
+                        self.closeAllBridges()
+                    }
+                default:
+                    break
+                }
             }
+            listener.newConnectionHandler = { [weak self] connection in
+                self?.accept(connection)
+            }
+            listener.start(queue: queue)
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.accept(connection)
-        }
-        listener.start(queue: queue)
         queue.asyncAfter(deadline: .now() + 10) { [weak self] in
             self?.failIfListenerDidNotStart()
         }
@@ -5012,15 +5083,22 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
         lock.unlock()
 
         guard shouldTerminate else { return }
-        listener.cancel()
+        for member in listeners {
+            member.listener.cancel()
+        }
         closeAllBridges()
         session.invalidateAndCancel()
     }
 
-    private func markReady() {
+    /// True once, when every listener the forward needs is listening.
+    private func markReady(isRequired: Bool) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
+        guard isRequired, !listenerReady else { return false }
+        readyRequiredListenerCount += 1
+        guard readyRequiredListenerCount >= listeners.filter(\.isRequired).count else { return false }
         listenerReady = true
-        lock.unlock()
+        return true
     }
 
     private func failIfListenerDidNotStart() {
@@ -5090,7 +5168,7 @@ private final class KubernetesPortForwardHandle: RunningCommandControlling, @unc
 private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unchecked Sendable {
     let id = UUID()
 
-    private let listener: NWListener
+    private let listeners: [PortForwardLocalListener]
     private let resolved: ResolvedRESTContext
     private let namespace: String
     private let podName: String
@@ -5101,10 +5179,11 @@ private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unc
     private let lock = NSLock()
     private var bridges: [UUID: LegacySPDYConnectionBridge] = [:]
     private var listenerReady = false
+    private var readyRequiredListenerCount = 0
     private var terminated = false
 
     init(
-        listener: NWListener,
+        listeners: [PortForwardLocalListener],
         resolved: ResolvedRESTContext,
         namespace: String,
         podName: String,
@@ -5112,7 +5191,7 @@ private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unc
         onReady: @escaping @Sendable () -> Void,
         onFailure: @escaping @Sendable (String) -> Void
     ) {
-        self.listener = listener
+        self.listeners = listeners
         self.resolved = resolved
         self.namespace = namespace
         self.podName = podName
@@ -5122,28 +5201,38 @@ private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unc
     }
 
     func start() {
-        listener.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .ready:
-                self.markReady()
-                self.onReady()
-            case let .waiting(error):
-                self.onFailure("Port-forward listener is waiting: \(error.localizedDescription)")
-                self.terminate()
-            case let .failed(error):
-                self.onFailure("Port-forward listener failed: \(error.localizedDescription)")
-                self.terminate()
-            case .cancelled:
-                self.closeAllBridges()
-            default:
-                break
+        for member in listeners {
+            let listener = member.listener
+            let isRequired = member.isRequired
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    if self.markReady(isRequired: isRequired) {
+                        self.onReady()
+                    }
+                case let .waiting(error):
+                    // The IPv6 half of localhost is optional: go on without it.
+                    guard isRequired else { listener?.cancel(); return }
+                    self.onFailure("Port-forward listener is waiting: \(error.localizedDescription)")
+                    self.terminate()
+                case let .failed(error):
+                    guard isRequired else { listener?.cancel(); return }
+                    self.onFailure("Port-forward listener failed: \(error.localizedDescription)")
+                    self.terminate()
+                case .cancelled:
+                    if isRequired {
+                        self.closeAllBridges()
+                    }
+                default:
+                    break
+                }
             }
+            listener.newConnectionHandler = { [weak self] connection in
+                self?.accept(connection)
+            }
+            listener.start(queue: queue)
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.accept(connection)
-        }
-        listener.start(queue: queue)
         queue.asyncAfter(deadline: .now() + 10) { [weak self] in
             self?.failIfListenerDidNotStart()
         }
@@ -5156,7 +5245,9 @@ private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unc
         lock.unlock()
 
         guard shouldTerminate else { return }
-        listener.cancel()
+        for member in listeners {
+            member.listener.cancel()
+        }
         closeAllBridges()
     }
 
@@ -5164,10 +5255,15 @@ private final class LegacySPDYPortForwardHandle: RunningCommandControlling, @unc
         throw RuneError.commandFailed(command: "port-forward", message: "Port-forward sessions do not accept stdin.")
     }
 
-    private func markReady() {
+    /// True once, when every listener the forward needs is listening.
+    private func markReady(isRequired: Bool) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
+        guard isRequired, !listenerReady else { return false }
+        readyRequiredListenerCount += 1
+        guard readyRequiredListenerCount >= listeners.filter(\.isRequired).count else { return false }
         listenerReady = true
-        lock.unlock()
+        return true
     }
 
     private func failIfListenerDidNotStart() {

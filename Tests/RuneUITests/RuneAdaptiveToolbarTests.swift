@@ -75,7 +75,7 @@ final class RuneAdaptiveToolbarTests: XCTestCase {
 
     @MainActor
     func testRealRBACAdopterStacksInsideItsEffectiveCompactWidth() throws {
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
         var latestSnapshot: RBACCanILayoutSnapshot?
         let host = NSHostingView(rootView: RBACCanISimulatorPanel(
             viewModel: viewModel,
@@ -305,7 +305,7 @@ private final class SyntheticRBACResizeModel: ObservableObject {
     let viewModel: RuneAppViewModel
 
     init() {
-        viewModel = RuneAppViewModel(state: RuneAppState())
+        viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
         viewModel.rbacCanIApiGroup = "apps"
     }
 }

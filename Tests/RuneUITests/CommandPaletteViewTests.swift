@@ -36,7 +36,7 @@ final class CommandPaletteViewTests: XCTestCase {
     }
 
     func testPaletteGeometryStaysBoundedAtDefaultAndEnlargedTextSizes() {
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
         let defaultHost = NSHostingView(rootView: AnyView(
             CommandPaletteView(viewModel: viewModel)
         ))
@@ -92,7 +92,7 @@ final class CommandPaletteViewTests: XCTestCase {
             status: "Pending"
         )
         state.setPods([stalePod])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let item = try XCTUnwrap(
             viewModel.commandPaletteItems(query: stalePod.name).first { item in
                 if case .pod = item.action { return true }
@@ -117,7 +117,7 @@ final class CommandPaletteViewTests: XCTestCase {
 
     func testEveryResourceActionFamilyResolvesNewestModelByStableID() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let staleDeployment = DeploymentSummary(
             name: "synthetic-deployment",
@@ -245,7 +245,7 @@ final class CommandPaletteViewTests: XCTestCase {
             status: "Running"
         )
         state.setPods([removedPod])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let item = try XCTUnwrap(
             viewModel.commandPaletteItems(query: removedPod.name).first { item in
                 if case .pod = item.action { return true }
@@ -280,7 +280,7 @@ final class CommandPaletteViewTests: XCTestCase {
         )
         state.setConfigMaps([currentConfigMap])
         state.selectedSection = .overview
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.presentCommandPalette()
 
         viewModel.executeCommandPaletteItem(
@@ -296,7 +296,7 @@ final class CommandPaletteViewTests: XCTestCase {
         let state = RuneAppState()
         state.setContexts([KubeContext(name: "synthetic-context")])
         state.setNamespaces(["synthetic-current", "synthetic-removed"])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let item = try XCTUnwrap(
             viewModel.commandPaletteItems(query: ":ns synthetic-removed").first { item in
                 if case .namespace("synthetic-removed") = item.action { return true }

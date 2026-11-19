@@ -32,8 +32,67 @@ final class RuneFakeK8sRESTServerTests: XCTestCase {
                 && line.contains("watch=1")
                 && line.contains("allowWatchBookmarks=true")
                 && line.contains("resourceVersion=synthetic-1")
-                && line.contains("resourceVersionMatch=NotOlderThan")
         })
+        XCTAssertFalse(
+            server.requestLines().contains { $0.contains("resourceVersionMatch") },
+            "the API server refuses a watch that sets resourceVersionMatch without sendInitialEvents"
+        )
+    }
+
+    func testFakeServerRefusesWhatTheAPIServerRefusesOnAWatch() async throws {
+        var fixture = RuneFakeK8sFixture()
+        fixture.expiredWatchResourceVersions = ["synthetic-old"]
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let base = "http://127.0.0.1:\(server.port)/api/v1/namespaces/alpha-zone/pods"
+
+        let (matchBody, matchResponse) = try await URLSession.shared.data(
+            from: try XCTUnwrap(URL(string: "\(base)?watch=1&resourceVersion=synthetic-1&resourceVersionMatch=NotOlderThan"))
+        )
+        XCTAssertEqual((matchResponse as? HTTPURLResponse)?.statusCode, 422)
+        XCTAssertTrue(String(decoding: matchBody, as: UTF8.self).contains("resourceVersionMatch is forbidden for watch"))
+
+        let (_, goneResponse) = try await URLSession.shared.data(
+            from: try XCTUnwrap(URL(string: "\(base)?watch=1&resourceVersion=synthetic-old"))
+        )
+        XCTAssertEqual((goneResponse as? HTTPURLResponse)?.statusCode, 410)
+    }
+
+    func testWatchFailsOnAResourceVersionTheServerNoLongerHas() async throws {
+        var fixture = RuneFakeK8sFixture()
+        fixture.expiredWatchResourceVersions = ["synthetic-old"]
+        let server = try await RuneFakeK8sRESTServer.start(fixture: fixture)
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+        let client = KubernetesClient(commandTimeout: 2)
+
+        let stream = try await client.watchResourceChanges(
+            from: [KubeConfigSource(url: kubeconfig)],
+            context: KubeContext(name: RuneFakeK8sFixture.defaultContextName),
+            namespace: "alpha-zone",
+            kind: .pod,
+            resourceVersion: "synthetic-old",
+            timeoutSeconds: 30
+        )
+        do {
+            for try await _ in stream {}
+            XCTFail("a watch from an expired resource version must fail, so the caller starts over")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("410"), error.localizedDescription)
+        }
+    }
+
+    func testWatchLinesBreakOnlyAtLineFeeds() throws {
+        // U+0085 and U+2028 are legal inside a JSON string and are not line ends.
+        let json = #"{"type":"MODIFIED","object":{"metadata":{"resourceVersion":"7","annotations":{"note":"a\#u{85}b\#u{2028}c"}}}}"#
+        let event = try XCTUnwrap(KubernetesResourceWatchEvent.decodeLine(Data(json.utf8)))
+        XCTAssertEqual(event.type, .modified)
+        XCTAssertEqual(event.resourceVersion, "7")
+
+        XCTAssertNil(try KubernetesResourceWatchEvent.decodeLine(Data()))
+        XCTAssertNil(try KubernetesResourceWatchEvent.decodeLine(Data(" \r".utf8)))
+        XCTAssertThrowsError(try KubernetesResourceWatchEvent.decodeLine(Data(#"{"type":"MODIFIED","object":{"metadata""#.utf8)))
     }
 
     func testRESTResponseDecodingPreservesValidLogsAroundMalformedUTF8() {

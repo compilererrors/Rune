@@ -2115,7 +2115,7 @@ final class RuneViewModelSelectionRaceTests: XCTestCase {
         state: RuneAppState,
         kubeClient: KubernetesClient = KubernetesClient(),
         store: ResourceStore = ResourceStore(),
-        bookmarkManager: BookmarkManager = BookmarkManager(store: EmptySelectionRaceBookmarkStore()),
+        bookmarkManager: BookmarkManager = BookmarkManager.inMemory(),
         kubeConfigDiscoverer: KubeConfigDiscovering = EmptySelectionRaceKubeConfigDiscoverer(),
         kubeContextList: KubeContextListing? = nil,
         helmReleaseList: HelmReleaseListing? = nil,
@@ -2425,14 +2425,6 @@ private struct EmptySelectionRaceKubeConfigDiscoverer: KubeConfigDiscovering {
     func discoverCandidateFiles() -> [URL] {
         []
     }
-}
-
-private final class EmptySelectionRaceBookmarkStore: BookmarkStore, @unchecked Sendable {
-    func loadRecords() throws -> [BookmarkRecord] {
-        []
-    }
-
-    func saveRecords(_ records: [BookmarkRecord]) throws {}
 }
 
 private final class EmptyContextPreferences: ContextPreferencesStoring {

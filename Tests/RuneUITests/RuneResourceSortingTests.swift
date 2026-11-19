@@ -7,7 +7,7 @@ final class RuneResourceSortingTests: XCTestCase {
     @MainActor
     func testResourceNamesUseNaturalNumericOrder() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setPods([10, 2, 1].map { PodSummary(name: "sample-\($0)", namespace: "alpha", status: "Running") })
         XCTAssertEqual(viewModel.visiblePods.map(\.name), ["sample-1", "sample-2", "sample-10"])
         viewModel.togglePodSort(.name)
@@ -17,7 +17,7 @@ final class RuneResourceSortingTests: XCTestCase {
     @MainActor
     func testEventDatesSortChronologicallyAcrossOffsetsAndKeepUnknownDatesLast() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setEvents([
             ("later", "2026-01-01T09:30:00.250Z"),
             ("earlier", "2026-01-01T10:00:00+01:00"),
@@ -34,7 +34,7 @@ final class RuneResourceSortingTests: XCTestCase {
 
     @MainActor
     func testResourceComparatorsAreIrreflexiveInBothDirections() {
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
         let pod = PodSummary(name: "sample", namespace: "alpha", status: "Running")
         let deployment = DeploymentSummary(
             name: "sample",
@@ -117,7 +117,7 @@ final class RuneResourceSortingTests: XCTestCase {
     @MainActor
     func testDuplicateNamesUseDeterministicNamespaceTieBreakInBothDirections() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         state.setPods([
             PodSummary(name: "shared", namespace: "zeta", status: "Running"),
@@ -191,7 +191,7 @@ final class RuneResourceSortingTests: XCTestCase {
     @MainActor
     func testEquivalentPodSnapshotsKeepInputOrderAcrossSortDirections() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setPods([
             PodSummary(name: "same", namespace: "alpha", status: "Second snapshot"),
             PodSummary(name: "same", namespace: "alpha", status: "First snapshot")
@@ -208,14 +208,15 @@ final class RuneResourceSortingTests: XCTestCase {
 
     @MainActor
     func testFavoritesRemainFirstDuringDescendingSorts() {
-        let suiteName = "RuneResourceSortingTests.favorites.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneResourceSortingTests.favorites.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "synthetic-sort-context")
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
         )
 

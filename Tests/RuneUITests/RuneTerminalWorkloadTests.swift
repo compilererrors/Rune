@@ -66,12 +66,8 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// loop pins the CPU and AppKit aborts ("more Update Constraints passes
     /// than there are views"). Sweeps inspector widths across both breakpoints.
     func testLogHeaderBreakpointsNeverOscillate() async throws {
-        let defaults = UserDefaults.standard
-        let previous = defaults.object(forKey: RuneSettingsKeys.layoutDetailWidth)
-        defer { if let previous { defaults.set(previous, forKey: RuneSettingsKeys.layoutDetailWidth) } else { defaults.removeObject(forKey: RuneSettingsKeys.layoutDetailWidth) } }
-        let previousScrollBars = defaults.object(forKey: "AppleShowScrollBars")
-        defaults.set("Always", forKey: "AppleShowScrollBars")
-        defer { if let previousScrollBars { defaults.set(previousScrollBars, forKey: "AppleShowScrollBars") } else { defaults.removeObject(forKey: "AppleShowScrollBars") } }
+        let defaults = VolatileTestDefaults(self)
+        try await defaults.setScrollBars("Always")
         var busyWidths: [Int] = []
         for detailWidth in stride(from: 420, through: 660, by: 5) {
             defaults.set(Double(detailWidth), forKey: RuneSettingsKeys.layoutDetailWidth)
@@ -477,16 +473,9 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// shell transcript, the log output and the tab strips must not turn
     /// that into a layout loop. User-sized window, user-sized inspector.
     func testPressingPlusWithAlwaysVisibleScrollBarsNeverLoops() async throws {
-        let defaults = UserDefaults.standard
-        let previousScrollBars = defaults.object(forKey: "AppleShowScrollBars")
-        let previousDetail = defaults.object(forKey: RuneSettingsKeys.layoutDetailWidth)
-        defaults.set("Always", forKey: "AppleShowScrollBars")
+        let defaults = VolatileTestDefaults(self)
+        try await defaults.setScrollBars("Always")
         defaults.set(680.0, forKey: RuneSettingsKeys.layoutDetailWidth)
-        defer {
-            if let previousScrollBars { defaults.set(previousScrollBars, forKey: "AppleShowScrollBars") } else { defaults.removeObject(forKey: "AppleShowScrollBars") }
-            if let previousDetail { defaults.set(previousDetail, forKey: RuneSettingsKeys.layoutDetailWidth) } else { defaults.removeObject(forKey: RuneSettingsKeys.layoutDetailWidth) }
-        }
-        print("SCROLLER STYLE", NSScroller.preferredScrollerStyle.rawValue)
         let harness = try await makeHarness(sessionCount: 2, transcriptLines: 300, podCount: 8, windowSize: NSSize(width: 1728, height: 1080))
         defer { RuneTestWindow.close(harness.window) }
         for round in 0..<5 {
@@ -505,16 +494,10 @@ final class RuneTerminalWorkloadTests: XCTestCase {
     /// The state the app crashed in: many shell tabs and many log tabs, so
     /// both strips overflow and scroll, then one more tab in each.
     func testOverflowingShellAndLogTabStripsNeverLoop() async throws {
-        let defaults = UserDefaults.standard
-        let previousScrollBars = defaults.object(forKey: "AppleShowScrollBars")
-        let previousDetail = defaults.object(forKey: RuneSettingsKeys.layoutDetailWidth)
-        defer {
-            if let previousScrollBars { defaults.set(previousScrollBars, forKey: "AppleShowScrollBars") } else { defaults.removeObject(forKey: "AppleShowScrollBars") }
-            if let previousDetail { defaults.set(previousDetail, forKey: RuneSettingsKeys.layoutDetailWidth) } else { defaults.removeObject(forKey: RuneSettingsKeys.layoutDetailWidth) }
-        }
+        let defaults = VolatileTestDefaults(self)
         for scrollBars in ["Always", "WhenScrolling"] {
+            try await defaults.setScrollBars(scrollBars)
             for detailWidth in [520.0, 680.0] {
-                defaults.set(scrollBars, forKey: "AppleShowScrollBars")
                 defaults.set(detailWidth, forKey: RuneSettingsKeys.layoutDetailWidth)
                 let harness = try await makeHarness(sessionCount: 1, transcriptLines: 300, settleSeconds: 1.0, podCount: 10, windowSize: NSSize(width: 1728, height: 1080))
                 for round in 0..<7 {
@@ -626,7 +609,7 @@ final class RuneTerminalWorkloadTests: XCTestCase {
         }
         state.selectTerminalSession(id: "shell-0")
         let backend = FakePodShellBackend()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend, terminalWorkspaceStateStore: store)
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: backend, bookmarkManager: .inMemory(), terminalWorkspaceStateStore: store)
         viewModel.isSidebarVisible = true
         viewModel.isDetailPaneVisible = true
 

@@ -13,7 +13,7 @@ final class RuneYAMLValidationPipelineTests: XCTestCase {
 
     func testRapidDraftEditsEndOnTheLastTextsIssues() async throws {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         _ = viewModel
         state.setResourceYAML(valid)
         for text in [tabbed, valid, duplicate, valid, missingKind] {
@@ -27,7 +27,7 @@ final class RuneYAMLValidationPipelineTests: XCTestCase {
 
     func testEveryEditPathRevalidates() async throws {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         _ = viewModel
 
         // Document load or switch.
@@ -52,7 +52,7 @@ final class RuneYAMLValidationPipelineTests: XCTestCase {
 
     func testIssuesAreNeverPublishedForAStaleText() async throws {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         _ = viewModel
         state.setResourceYAML(valid)
         try await settle(state, expecting: valid)

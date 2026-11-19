@@ -109,6 +109,7 @@ final class RuneResourceYAMLLocalValidationTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: KubernetesClient(),
+            bookmarkManager: .inMemory(),
             store: ResourceStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )

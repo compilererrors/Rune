@@ -25,6 +25,82 @@ final class KubernetesClientTests: XCTestCase {
         )
     }
 
+    func testDeleteRemovesDependentsInTheBackgroundAsKubectlDoes() {
+        // Without a propagation policy a batch/v1 Job is deleted alone and
+        // its pods are left behind.
+        XCTAssertEqual(
+            KubernetesRESTClient.deleteAPIPath(resourcePath: "/apis/batch/v1/namespaces/synthetic/jobs/report"),
+            "/apis/batch/v1/namespaces/synthetic/jobs/report?propagationPolicy=Background"
+        )
+    }
+
+    func testManualJobFromCronJobMatchesKubectlCreateJob() throws {
+        let cronJob = #"""
+        {
+          "apiVersion": "batch/v1",
+          "kind": "CronJob",
+          "metadata": {"name": "report", "namespace": "synthetic", "uid": "5f0c2a9e-0000-4000-8000-000000000001"},
+          "spec": {
+            "schedule": "0 3 * * *",
+            "jobTemplate": {
+              "metadata": {"labels": {"app": "report"}, "annotations": {"team": "synthetic"}},
+              "spec": {"backoffLimit": 2, "template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "run", "image": "example.test/report:1"}]}}}
+            }
+          }
+        }
+        """#
+
+        let job = try KubernetesRESTClient.manualJobManifest(
+            fromCronJobJSON: cronJob,
+            cronJobName: "report",
+            jobName: "report-manual-1",
+            namespace: "synthetic"
+        )
+
+        XCTAssertEqual(job["apiVersion"] as? String, "batch/v1")
+        XCTAssertEqual(job["kind"] as? String, "Job")
+        let metadata = try XCTUnwrap(job["metadata"] as? [String: Any])
+        XCTAssertEqual(metadata["name"] as? String, "report-manual-1")
+        XCTAssertEqual(metadata["namespace"] as? String, "synthetic")
+        XCTAssertEqual(metadata["labels"] as? [String: String], ["app": "report"])
+        XCTAssertEqual(
+            metadata["annotations"] as? [String: String],
+            ["team": "synthetic", "cronjob.kubernetes.io/instantiate": "manual"]
+        )
+        let owners = try XCTUnwrap(metadata["ownerReferences"] as? [[String: String]])
+        XCTAssertEqual(owners, [[
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "name": "report",
+            "uid": "5f0c2a9e-0000-4000-8000-000000000001"
+        ]])
+        XCTAssertEqual((job["spec"] as? [String: Any])?["backoffLimit"] as? Int, 2)
+        XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: job))
+    }
+
+    func testManualJobWithoutTemplateMetadataOrUIDStillHasTheManualAnnotation() throws {
+        let cronJob = #"{"metadata":{"name":"report"},"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[]}}}}}}"#
+
+        let job = try KubernetesRESTClient.manualJobManifest(
+            fromCronJobJSON: cronJob,
+            cronJobName: "report",
+            jobName: "report-manual-1",
+            namespace: "synthetic"
+        )
+
+        let metadata = try XCTUnwrap(job["metadata"] as? [String: Any])
+        XCTAssertEqual(metadata["annotations"] as? [String: String], ["cronjob.kubernetes.io/instantiate": "manual"])
+        XCTAssertNil(metadata["ownerReferences"], "an owner reference without a uid is refused by the API server")
+        XCTAssertThrowsError(
+            try KubernetesRESTClient.manualJobManifest(
+                fromCronJobJSON: #"{"spec":{}}"#,
+                cronJobName: "report",
+                jobName: "report-manual-1",
+                namespace: "synthetic"
+            )
+        )
+    }
+
     func testRESTRequestCoalescerSharesIdenticalInFlightReads() async throws {
         let coalescer = KubernetesRESTRequestCoalescer()
         let counter = RESTRequestCoalescerCounter()

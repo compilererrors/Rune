@@ -62,9 +62,9 @@ final class CustomLogPresetTests: XCTestCase {
     }
 
     func testMissingPersistedValuesUseSlotDefaults() throws {
-        let suiteName = "CustomLogPresetTests.missing.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("CustomLogPresetTests.missing.\(UUID().uuidString)")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertEqual(
             defaults.runeCustomLogPresetConfig(slot: .one),
@@ -77,9 +77,9 @@ final class CustomLogPresetTests: XCTestCase {
     }
 
     func testStoredBlankAndOverflowValuesMatchSettingsSummaryNormalization() throws {
-        let suiteName = "CustomLogPresetTests.invalid.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("CustomLogPresetTests.invalid.\(UUID().uuidString)")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         defaults.set("", forKey: RuneSettingsKeys.logsCustomPresetOneLines)
         defaults.set(
@@ -126,6 +126,32 @@ final class CustomLogPresetTests: XCTestCase {
         XCTAssertTrue(cached.contains("[older session log cache truncated]"))
         XCTAssertFalse(cached.contains(firstLine))
         XCTAssertTrue(cached.contains(lastLine))
+    }
+
+    @MainActor
+    func testWarmCacheIsCutBetweenCharactersNotInsideOne() {
+        // Every character here is several bytes; a cut at a fixed byte count
+        // lands inside one unless it moves to the next boundary.
+        let state = RuneAppState()
+        let logs = String(repeating: "å🚀日", count: 150_000)
+
+        state.replacePodLogRead(
+            logs,
+            contextName: "synthetic-context",
+            namespace: "synthetic-namespace",
+            podName: "synthetic-pod"
+        )
+
+        let cached = state.cachedLogs(
+            contextName: "synthetic-context",
+            namespace: "synthetic-namespace",
+            kind: .pod,
+            resourceName: "synthetic-pod"
+        )
+        XCTAssertTrue(cached.hasPrefix("[older session log cache truncated]\n"))
+        XCTAssertFalse(cached.unicodeScalars.contains("\u{FFFD}"), "the cut split a character")
+        XCTAssertLessThanOrEqual(cached.utf8.count, 1_000_000 + 64)
+        XCTAssertTrue(cached.hasSuffix("å🚀日"))
     }
 
     @MainActor

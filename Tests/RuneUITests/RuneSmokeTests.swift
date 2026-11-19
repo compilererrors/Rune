@@ -12,7 +12,7 @@ final class RuneSmokeTests: XCTestCase {
     }
 
     func testCommandPaletteCheatSheetExposesNativeHelmReader() async {
-        let viewModel = await MainActor.run { RuneAppViewModel() }
+        let viewModel = await MainActor.run { RuneAppViewModel(bookmarkManager: .inMemory()) }
         let titles = await MainActor.run {
             viewModel.commandPaletteItems(query: ":").map(\.title).joined(separator: "\n").lowercased()
         }

@@ -9,17 +9,17 @@ import XCTest
 /// them, and survive a restart.
 @MainActor
 final class TerminalCommandHistoryRecordingTests: XCTestCase {
-    private let suiteName = "rune.tests.terminal-command-history"
+    private let suiteName = TestDefaultsSuite.name("rune.tests.terminal-command-history")
     private var defaults: UserDefaults!
 
     override func setUp() async throws {
         defaults = UserDefaults(suiteName: suiteName)
-        defaults.removePersistentDomain(forName: suiteName)
+        defaults.removeTestSuite(named: suiteName)
         defaults.set(50, forKey: RuneSettingsKeys.terminalCommandHistoryLimit)
     }
 
     override func tearDown() async throws {
-        defaults.removePersistentDomain(forName: suiteName)
+        defaults.removeTestSuite(named: suiteName)
         defaults = nil
     }
 
@@ -252,7 +252,7 @@ final class TerminalCommandHistoryRecordingTests: XCTestCase {
     }
 
     private func newViewModel(state: RuneAppState) -> RuneAppViewModel {
-        RuneAppViewModel(state: state, terminalBackend: SilentShell(), terminalCommandHistoryDefaults: defaults)
+        RuneAppViewModel(state: state, terminalBackend: SilentShell(), bookmarkManager: .inMemory(), terminalCommandHistoryDefaults: defaults)
     }
 
     private func connectedViewModel() -> RuneAppViewModel {

@@ -113,19 +113,36 @@ public final class BookmarkManager: @unchecked Sendable {
     }
 
     public func loadKubeConfigSources() throws -> [KubeConfigSource] {
+        try loadKubeConfigSourcesReportingUnavailable().sources
+    }
+
+    /// The kubeconfigs whose bookmarks resolve, and how many do not. A file
+    /// that was deleted, or whose volume is not mounted, must not take the
+    /// other kubeconfigs with it; its record is kept, so the source comes
+    /// back with the file.
+    public func loadKubeConfigSourcesReportingUnavailable() throws -> (
+        sources: [KubeConfigSource],
+        unavailableCount: Int
+    ) {
         try transactionLock.withLock {
             let originalRecords = try store.loadRecords()
             var refreshedRecords = originalRecords
             var sources: [KubeConfigSource] = []
+            var unavailableCount = 0
             var didRefreshStaleBookmark = false
             sources.reserveCapacity(originalRecords.count)
 
             for (index, record) in originalRecords.enumerated() {
-                let resolved = try resolveBookmarkData(record.bookmarkData)
-                if resolved.isStale {
+                guard let resolved = try? resolveBookmarkData(record.bookmarkData) else {
+                    unavailableCount += 1
+                    continue
+                }
+                // A stale bookmark still resolved; one that cannot be made
+                // again is used as it is and tried again next time.
+                if resolved.isStale, let refreshed = try? createBookmarkData(resolved.url) {
                     refreshedRecords[index] = BookmarkRecord(
                         path: resolved.url.path,
-                        bookmarkData: try createBookmarkData(resolved.url)
+                        bookmarkData: refreshed
                     )
                     didRefreshStaleBookmark = true
                 }
@@ -135,7 +152,7 @@ public final class BookmarkManager: @unchecked Sendable {
             if didRefreshStaleBookmark {
                 try saveWithRollback(refreshedRecords, originalRecords: originalRecords)
             }
-            return sources
+            return (sources, unavailableCount)
         }
     }
 

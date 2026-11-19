@@ -14,7 +14,7 @@ import XCTest
 final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testUserDefaultsNotificationsPostedOffMainThreadAreDeliveredSafely() async {
-        let viewModel = RuneAppViewModel()
+        let viewModel = RuneAppViewModel(bookmarkManager: .inMemory())
 
         await Task.detached {
             NotificationCenter.default.post(
@@ -376,7 +376,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testKubeConfigDuplicateHandlingChoiceDefaultsToSkipAndCanChange() {
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.kubeConfigDuplicateHandlingChoice, .skipDuplicate)
 
@@ -951,6 +951,7 @@ final class RuneAppStateTests: XCTestCase {
     func testViewModelStoresKubeConfigImportReviewWithoutLeakingSecrets() {
         let viewModel = RuneAppViewModel(
             state: RuneAppState(),
+            bookmarkManager: .inMemory(),
             kubeConfigImportValidator: KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"])
         )
 
@@ -1018,6 +1019,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSources([KubeConfigSource(url: kubeconfig)])
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigImportValidator: KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"])
         )
 
@@ -1802,9 +1804,9 @@ final class RuneAppStateTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let suiteName = "RuneAppStateTests.importPreferences.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.importPreferences.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
         let bookmarkStore = InMemoryBookmarkStore()
@@ -2046,6 +2048,7 @@ final class RuneAppStateTests: XCTestCase {
     func testManualKubeConfigSecretCanBeClearedWithoutChangingNonSecretDraftFields() {
         let viewModel = RuneAppViewModel(
             state: RuneAppState(),
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()
         )
         viewModel.manualKubeConfigName = "Synthetic Cluster"
@@ -3133,9 +3136,9 @@ final class RuneAppStateTests: XCTestCase {
         let cacheDirectory = directory.appendingPathComponent("namespace-cache", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let suiteName = "RuneAppStateTests.namespaceSourceRotationPreferences.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.namespaceSourceRotationPreferences.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let contextPreferences = UserDefaultsContextPreferencesStore(defaults: defaults)
         contextPreferences.saveManualNamespaces(["old-scope-only"], for: contextName)
 
@@ -3500,7 +3503,7 @@ final class RuneAppStateTests: XCTestCase {
             serviceAccounts: [],
             events: []
         )
-        let viewModel = RuneAppViewModel(state: state, store: resourceStore, savedWorkspaceStore: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), store: resourceStore, savedWorkspaceStore: store)
         viewModel.selectedLogPreset = .last15Minutes
         viewModel.includePreviousLogs = true
         viewModel.selectedLogContainer = "sidecar"
@@ -3594,7 +3597,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.loadDemoCluster()
         let release = try XCTUnwrap(state.helmReleases.first)
         let operatorResource = try XCTUnwrap(state.operatorResources.first)
@@ -3695,6 +3698,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setContexts([KubeContext(name: "context-alpha")])
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: contextPreferences,
             savedWorkspaceStore: workspaceStore
         )
@@ -3738,9 +3742,9 @@ final class RuneAppStateTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("context-preferences.json")
 
-        let suiteName = "RuneAppStateTests.legacyPreferences.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.legacyPreferences.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let legacy = UserDefaultsContextPreferencesStore(defaults: defaults)
         legacy.saveFavoriteContextNames(["context-alpha"])
         legacy.saveFavoriteResourceIDs(["context-alpha|deployment|default|api"])
@@ -3797,9 +3801,9 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     func testWriteSafetySettingsDefaultOnAndPersistAsUserPreferences() {
-        let suiteName = "RuneAppStateTests.writeSafety.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.writeSafety.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertTrue(defaults.runeWriteSafetyRequireApplyDryRun)
         XCTAssertTrue(defaults.runeWriteSafetyRequireRolloutDryRun)
@@ -3820,9 +3824,9 @@ final class RuneAppStateTests: XCTestCase {
     }
 
     func testManagedFieldsDisplaySettingDefaultsOnAndPersists() {
-        let suiteName = "RuneAppStateTests.managedFields.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.managedFields.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertTrue(defaults.runeHideManagedFieldsByDefault)
 
@@ -3853,7 +3857,7 @@ final class RuneAppStateTests: XCTestCase {
         defaults.runeLayoutSidebarVisible = false
         defaults.runeLayoutDetailPaneVisible = true
 
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
 
         XCTAssertFalse(viewModel.isSidebarVisible)
         XCTAssertTrue(viewModel.isDetailPaneVisible)
@@ -3881,7 +3885,7 @@ final class RuneAppStateTests: XCTestCase {
         state.isLoading = true
         state.isLoadingLogs = true
         state.setError(RuneError.invalidInput(message: "Previous startup error"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         viewModel.loadDemoCluster()
 
@@ -3955,7 +3959,7 @@ final class RuneAppStateTests: XCTestCase {
                 involvedNamespace: "frontend"
             )
         ])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.visibleEvents.map(\.reason), ["BackOff", "Scheduled", "Started"])
 
@@ -3988,7 +3992,7 @@ final class RuneAppStateTests: XCTestCase {
         )
         state.setEvents([event])
         state.selectedSection = .events
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         viewModel.openEventSource(event)
 
@@ -4028,7 +4032,7 @@ final class RuneAppStateTests: XCTestCase {
             nodesCount: 0,
             events: [event]
         )
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let incident = try XCTUnwrap(viewModel.overviewIncidentTimelineItems.first)
 
         viewModel.openOverviewSignal(incident)
@@ -4054,6 +4058,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setContexts([KubeContext(name: "previous-context")])
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()
         )
 
@@ -4081,7 +4086,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         viewModel.loadDemoCluster()
         state.setPods([])
@@ -4113,7 +4118,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01))
+        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01), bookmarkManager: .inMemory())
         viewModel.loadDemoCluster()
 
         viewModel.setSection(RuneSection.workloads)
@@ -4154,7 +4159,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.loadDemoCluster()
         viewModel.setSection(.workloads)
         viewModel.setWorkloadKind(.deployment)
@@ -4211,7 +4216,8 @@ final class RuneAppStateTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: KubernetesClient(commandTimeout: 0.01)
-        )
+        ,
+            bookmarkManager: .inMemory())
 
         viewModel.refreshResourceInspectorOnly()
 
@@ -4265,7 +4271,8 @@ final class RuneAppStateTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: KubernetesClient(commandTimeout: 0.01)
-        )
+        ,
+            bookmarkManager: .inMemory())
 
         viewModel.refreshResourceInspectorOnly()
 
@@ -4289,7 +4296,7 @@ final class RuneAppStateTests: XCTestCase {
 
         let exporter = RecordingFileExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         viewModel.loadDemoCluster()
         viewModel.setSection(.helm)
 
@@ -4374,7 +4381,8 @@ final class RuneAppStateTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: KubernetesClient(commandTimeout: 0.01)
-        )
+        ,
+            bookmarkManager: .inMemory())
 
         viewModel.refreshSelectedHelmInspector()
 
@@ -4405,7 +4413,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.loadDemoCluster()
         state.selectedSection = .terminal
 
@@ -4426,7 +4434,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testTerminalPodInspectorDefaultsLogContainerForMultiContainerPods() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let pod = PodSummary(
             name: "alpha-log-matrix",
             namespace: "alpha-zone",
@@ -4471,7 +4479,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testOverviewIncidentAndDependencyProjectionsUseCurrentSnapshot() throws {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let pods = [
             PodSummary(
                 name: "synthetic-api-7f6d9c7b5c-a1b2c",
@@ -4560,7 +4568,7 @@ final class RuneAppStateTests: XCTestCase {
             message: "Certificate renewal failed"
         )
         state.setOperatorResources([certificate])
-        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01))
+        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01), bookmarkManager: .inMemory())
 
         let signal = try XCTUnwrap(viewModel.overviewUnhealthyItems.first { $0.title == "api-tls" })
         XCTAssertEqual(signal.operatorResourceID, certificate.id)
@@ -4587,7 +4595,7 @@ final class RuneAppStateTests: XCTestCase {
             message: "Application health is degraded"
         )
         state.setOperatorResources([application])
-        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01))
+        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01), bookmarkManager: .inMemory())
 
         let signal = try XCTUnwrap(viewModel.overviewUnhealthyItems.first { $0.title == "payments" })
         XCTAssertEqual(signal.operatorResourceID, application.id)
@@ -4641,7 +4649,7 @@ final class RuneAppStateTests: XCTestCase {
                 message: "Certificate is ready"
             )
         ])
-        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01))
+        let viewModel = RuneAppViewModel(state: state, kubeClient: KubernetesClient(commandTimeout: 0.01), bookmarkManager: .inMemory())
 
         let rollups = viewModel.overviewGitOpsRollupItems
 
@@ -4688,7 +4696,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedDeployment(deployment)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .deployment
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedDeploymentRelatedPods.map(\.name), ["api-7c9d8f6b5c-abc12", "api-7c9d8f6b5c-def34"])
         XCTAssertEqual(viewModel.selectedDeploymentRelatedReplicaSets.map(\.name), ["api-7c9d8f6b5c"])
@@ -4736,7 +4744,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedDeployment(deployment)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .deployment
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedDeploymentRelatedReplicaSets.map(\.name), ["generated-rs"])
         XCTAssertEqual(viewModel.selectedDeploymentRelatedPods.map(\.name), ["generated-pod"])
@@ -4775,7 +4783,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setReplicaSets([replicaSet])
         state.setDeployments([deployment])
         state.setSelectedDeployment(deployment)
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(
             viewModel.selectedDeploymentRelatedPods.map(\.name),
@@ -4812,7 +4820,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedService(service)
         state.selectedSection = .networking
         state.selectedWorkloadKind = .service
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedServiceRelatedPods.map(\.name), ["api-7c9d8f6b5c-abc12", "api-7c9d8f6b5c-def34"])
 
@@ -4854,7 +4862,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedService(api)
         state.selectedSection = .networking
         state.selectedWorkloadKind = .ingress
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedIngressRelatedServices.map(\.name), ["api", "metrics"])
         XCTAssertEqual(viewModel.selectedServiceRelatedIngresses.map(\.name), ["api-public"])
@@ -4900,7 +4908,7 @@ final class RuneAppStateTests: XCTestCase {
         )
         state.setServices([api, metrics])
         state.setIngresses([ingress])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let dependencies = viewModel.overviewDependencyItems.filter { $0.source == "Ingress/api-public" }
 
@@ -4937,7 +4945,7 @@ final class RuneAppStateTests: XCTestCase {
         )
         state.setPersistentVolumeClaims([pvc])
         state.setPersistentVolumes([pv])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let dependency = try XCTUnwrap(viewModel.overviewDependencyItems.first { $0.source == "PVC/postgres-data" })
 
@@ -4975,7 +4983,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedPersistentVolumeClaim(pvc)
         state.selectedSection = .storage
         state.selectedWorkloadKind = .persistentVolumeClaim
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedPersistentVolumeClaimRelatedPersistentVolume?.name, "pv-postgres-data")
 
@@ -5016,7 +5024,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedPersistentVolume(pv)
         state.selectedSection = .storage
         state.selectedWorkloadKind = .persistentVolume
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedPersistentVolumeRelatedPersistentVolumeClaims.map(\.name), ["postgres-data"])
 
@@ -5047,7 +5055,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedReplicaSet(replicaSet)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .replicaSet
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedReplicaSetRelatedPods.map(\.name), ["api-7c9d8f6b5c-abc12"])
 
@@ -5079,7 +5087,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedStatefulSet(statefulSet)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .statefulSet
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedStatefulSetRelatedPods.map(\.name), ["database-0", "database-1"])
 
@@ -5111,7 +5119,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedDaemonSet(daemonSet)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .daemonSet
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedDaemonSetRelatedPods.map(\.name), ["node-agent-abc12", "node-agent-def34"])
 
@@ -5143,7 +5151,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedJob(job)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .job
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedJobRelatedPods.map(\.name), ["backup-28600123-x4k9p", "backup-28600123-z8m2q"])
 
@@ -5175,7 +5183,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedCronJob(cronJob)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .cronJob
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedCronJobRelatedJobs.map(\.name), ["backup-28600123", "backup-28600124"])
 
@@ -5209,7 +5217,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedHorizontalPodAutoscaler(hpa)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .horizontalPodAutoscaler
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let target = try XCTUnwrap(viewModel.selectedHorizontalPodAutoscalerScaleTarget)
         XCTAssertEqual(target.kind, .deployment)
@@ -5244,7 +5252,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedNode(node)
         state.selectedSection = .storage
         state.selectedWorkloadKind = .node
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedNodeRelatedPods.map(\.name), ["api-0"])
 
@@ -5272,7 +5280,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedPod(pod)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedPodRelatedNode?.name, "node-a")
 
@@ -5345,7 +5353,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedService(service)
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedPodRelatedEvents.map(\.reason), ["BackOff"])
         state.setSelectedDeployment(deployment)
@@ -5652,7 +5660,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedContext = KubeContext(name: "cluster")
         state.setNamespaces(["zeta", "default", "Alpha", "beta"])
         state.selectedNamespace = "zeta"
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.namespaceOptions, ["Alpha", "beta", "default", "zeta"])
     }
@@ -5675,7 +5683,7 @@ final class RuneAppStateTests: XCTestCase {
             KubeContext(name: "alpha"),
             KubeContext(name: "Beta")
         ])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setFavoriteContextNames(["prod"])
 
         XCTAssertEqual(viewModel.contextMenuOptions.map(\.name), ["prod", "alpha", "Beta"])
@@ -5781,7 +5789,7 @@ final class RuneAppStateTests: XCTestCase {
             KubeContext(name: "context-beta"),
             KubeContext(name: "context-gamma")
         ])
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
 
         viewModel.setContextSearchQuery("payments")
         XCTAssertEqual(viewModel.visibleContexts.map(\.name), ["context-alpha"])
@@ -5822,7 +5830,7 @@ final class RuneAppStateTests: XCTestCase {
 
         let state = RuneAppState()
         state.setContexts([KubeContext(name: "context-alpha"), KubeContext(name: "context-beta")])
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
 
         let commandItem = viewModel.commandPaletteItems(query: ":ctx payments").first
         XCTAssertEqual(commandItem?.title, "Checkout Production")
@@ -5846,9 +5854,9 @@ final class RuneAppStateTests: XCTestCase {
             }
         }
 
-        let suiteName = "RuneAppStateTests.commandPaletteUnicode.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.commandPaletteUnicode.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
         store.saveContextDisplayMetadata(
             ContextDisplayMetadata(alias: "München Produktion", tags: ["plattform"]),
@@ -5862,7 +5870,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedNamespace = "first"
         state.setNamespaces(["first"])
         state.setPods([PodSummary(name: "initial-pod", namespace: "first", status: "Running")])
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
 
         XCTAssertEqual(
             viewModel.commandPaletteItems(query: "MÜNCHEN").first { $0.id == "context:synthetic-context" }?.title,
@@ -5934,7 +5942,7 @@ final class RuneAppStateTests: XCTestCase {
             clusterRoles: [],
             clusterRoleBindings: []
         )
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let globalItems = viewModel.commandPaletteItems(query: "synthetic")
         XCTAssertEqual(globalItems.count, 160)
@@ -5977,7 +5985,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedNamespace = "default"
         state.setNamespaces(["default", "payments"])
         state.isCommandPalettePresented = true
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.commandPaletteItems(query: ":ns pay").first?.id, "cmd:namespace:payments")
         XCTAssertEqual(viewModel.commandPaletteItems(query: "ns pay").first?.id, "cmd:namespace:payments")
@@ -5990,7 +5998,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteColonShowsBuiltInCommandCheatSheet() {
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
 
         let items = viewModel.commandPaletteItems(query: ":")
 
@@ -6011,7 +6019,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testCommandPaletteServiceAccountCommandNavigatesWithoutStub() {
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
         let items = viewModel.commandPaletteItems(query: ":sa")
 
         XCTAssertFalse(items.contains { $0.id.hasPrefix("stub:") })
@@ -6023,7 +6031,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testCommandPaletteResourceKindShortcutsExecuteExpectedNavigation() throws {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let cases: [(query: String, section: RuneSection, kind: KubeResourceKind)] = [
             (":po", .workloads, .pod),
             ("po", .workloads, .pod),
@@ -6088,7 +6096,7 @@ final class RuneAppStateTests: XCTestCase {
             clusterRoles: [],
             clusterRoleBindings: []
         )
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.commandPaletteItems(query: ":ep needle").first?.id, "cmd:ep:endpoint|default|needle-endpoints")
         XCTAssertEqual(viewModel.commandPaletteItems(query: ":sa runner").first?.id, "cmd:sa:serviceAccount|default|needle-runner")
@@ -6140,7 +6148,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
         state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let writeQueries = [
             "delete",
             ":delete",
@@ -6188,7 +6196,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
         state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.commandPaletteItems(query: "delete").first?.title, "Delete Pod: api-0")
         let item = try XCTUnwrap(viewModel.commandPaletteItems(query: ":delete").first)
@@ -6219,7 +6227,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedWorkloadKind = .service
         state.isCommandPalettePresented = true
         state.setSelectedService(ServiceSummary(name: "api", namespace: "default", type: "ClusterIP", clusterIP: "10.0.0.10"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         viewModel.executeCommandPaletteQuery(":delete")
 
@@ -6249,7 +6257,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
         state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let item = try XCTUnwrap(viewModel.commandPaletteItems(query: ":rm").first)
         viewModel.executeCommandPaletteItem(item)
@@ -6282,7 +6290,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
         state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let item = CommandPaletteItem(
             id: "synthetic-delete-bypass",
             title: "Delete Pod: api-0",
@@ -6313,7 +6321,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
         state.isCommandPalettePresented = true
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertTrue(viewModel.commandPaletteItems(query: ":delete").isEmpty)
         XCTAssertTrue(viewModel.commandPaletteItems(query: ":rm").isEmpty)
@@ -6363,7 +6371,7 @@ final class RuneAppStateTests: XCTestCase {
             state.selectedContext = KubeContext(name: "synthetic-dev")
             state.selectedNamespace = "default"
             configure(state)
-            let viewModel = RuneAppViewModel(state: state)
+            let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
             XCTAssertTrue(viewModel.commandPaletteItems(query: ":delete").isEmpty, label)
             XCTAssertTrue(viewModel.commandPaletteItems(query: ":rm").isEmpty, label)
@@ -6392,7 +6400,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedWorkloadKind = .pod
         state.isReadOnlyMode = true
         state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let item = try XCTUnwrap(viewModel.commandPaletteItems(query: ":del").first)
         viewModel.executeCommandPaletteItem(item)
@@ -6420,7 +6428,7 @@ final class RuneAppStateTests: XCTestCase {
             KubeContext(name: "prod"),
             KubeContext(name: "qa")
         ])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertTrue(viewModel.visibleContexts.map(\.name).contains("rune-demo"))
         XCTAssertTrue(viewModel.contextMenuOptions.map(\.name).contains("rune-demo"))
@@ -6437,7 +6445,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testHistoryBackAndForwardWorksAfterFirstTrackedNavigation() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(state.selectedSection, .overview)
         XCTAssertFalse(viewModel.canNavigateBack)
@@ -6463,7 +6471,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testCommandPaletteCompositeNavigationKeepsInitialBackTarget() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let item = CommandPaletteItem(
             id: "kind:service",
             title: "Services",
@@ -6490,7 +6498,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testWorkloadKindSwitchDefersDetailsWhenSnapshotReloadIsNeeded() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
 
@@ -6503,7 +6511,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testCompositeSectionAndKindNavigationDefersDetailsUntilRefreshCompletes() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "synthetic")
         state.selectedNamespace = "default"
         state.setServices([
@@ -6526,7 +6534,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testWorkloadKindNavigationSkipsDetailsForSectionsWithoutInspectors() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedSection = .overview
         state.isLoadingResourceDetails = true
 
@@ -6540,7 +6548,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testEmptySelectionDoesNotStartInspectorDetailsLoad() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
         state.isLoadingResourceDetails = true
@@ -6554,7 +6562,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testNavigationClearsObsoleteInspectorAndLogLoadingState() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
         state.isLoadingResourceDetails = true
@@ -6570,7 +6578,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testStoppingPortForwardMarksStartingSessionStoppedImmediately() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let session = PortForwardSession(
             id: "pf-1",
             contextName: "fake",
@@ -6596,7 +6604,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testClearingPortForwardSessionsOnlyRemovesInactiveRows() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let active = PortForwardSession(
             id: "pf-active",
             contextName: "fake",
@@ -6664,7 +6672,7 @@ final class RuneAppStateTests: XCTestCase {
     func testOpenPortForwardInBrowserOpensActiveLocalURL() {
         let state = RuneAppState()
         let browserOpener = RecordingPortForwardBrowserOpener()
-        let viewModel = RuneAppViewModel(state: state, portForwardBrowserOpener: browserOpener)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), portForwardBrowserOpener: browserOpener)
         let session = PortForwardSession(
             id: "pf-1",
             contextName: "fake",
@@ -6690,7 +6698,7 @@ final class RuneAppStateTests: XCTestCase {
     func testOpenPortForwardInBrowserRejectsDisconnectedSession() {
         let state = RuneAppState()
         let browserOpener = RecordingPortForwardBrowserOpener()
-        let viewModel = RuneAppViewModel(state: state, portForwardBrowserOpener: browserOpener)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), portForwardBrowserOpener: browserOpener)
         let session = PortForwardSession(
             id: "pf-1",
             contextName: "fake",
@@ -6713,7 +6721,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testCancelledLogExportDoesNotShowGlobalError() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: CancelledFileExporter())
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: CancelledFileExporter())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .pod
@@ -6730,7 +6738,7 @@ final class RuneAppStateTests: XCTestCase {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
         configuredExporter.savedURL = URL(fileURLWithPath: "/tmp/synthetic-logs-2.log")
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .pod
@@ -6761,7 +6769,7 @@ final class RuneAppStateTests: XCTestCase {
             let state = RuneAppState()
             let exporter = RecordingConfiguredExporter()
             exporter.savedURL = URL(fileURLWithPath: "/tmp/synthetic-recovered.log")
-            let viewModel = RuneAppViewModel(state: state, configuredExporter: exporter)
+            let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: exporter)
             state.selectedWorkloadKind = .pod
             state.selectedPod = PodSummary(name: "synthetic-api", namespace: "synthetic", status: "Running")
             state.setPodLogs("synthetic log line\n")
@@ -6798,7 +6806,7 @@ final class RuneAppStateTests: XCTestCase {
             let configuredExporter = RecordingConfiguredExporter()
             configuredExporter.error = exportError
             let state = RuneAppState()
-            let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+            let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
             state.selectedWorkloadKind = .pod
             state.selectedPod = PodSummary(name: "synthetic-api", namespace: "synthetic", status: "Running")
             state.setPodLogs("synthetic log line\n")
@@ -6832,7 +6840,7 @@ final class RuneAppStateTests: XCTestCase {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
         configuredExporter.savedURL = URL(fileURLWithPath: "/tmp/synthetic-logs-2.log")
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         state.selectedWorkloadKind = .pod
         state.selectedPod = PodSummary(name: "synthetic-api", namespace: "synthetic", status: "Running")
         state.setPodLogs("synthetic log line\n")
@@ -6858,7 +6866,7 @@ final class RuneAppStateTests: XCTestCase {
     func testSavedLogOpenFailureReplacesSavedActionsWithAnErrorNotice() {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         let savedURL = URL(fileURLWithPath: "/tmp/synthetic-logs.log")
         configuredExporter.error = FileExportError.exportFolderUnavailable
 
@@ -6877,7 +6885,7 @@ final class RuneAppStateTests: XCTestCase {
     func testHelmAndRolloutConfiguredExportsUseTextWorkflow() {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         let release = HelmReleaseSummary(
             name: "synthetic-release",
             namespace: "synthetic",
@@ -6932,7 +6940,7 @@ final class RuneAppStateTests: XCTestCase {
     func testVisibleLogsZipConfiguredExportUsesArchiveWorkflow() {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .pod
@@ -7002,7 +7010,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testApplyYAMLRequiresUnsavedEdits() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "fake")
         state.selectedNamespace = "default"
         state.selectedSection = .workloads
@@ -7045,7 +7053,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "synthetic")
         state.selectedNamespace = "test-space"
         state.selectedSection = .config
@@ -7122,7 +7130,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "synthetic")
         state.selectedNamespace = "test-space"
         state.selectedSection = .config
@@ -7174,7 +7182,7 @@ final class RuneAppStateTests: XCTestCase {
     func testCurrentResourceYAMLExportRequiresMatchingDetailScope() {
         let exporter = RecordingFileExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         state.selectedContext = KubeContext(name: "fake")
         state.selectedNamespace = "default"
         state.selectedSection = .workloads
@@ -7199,7 +7207,7 @@ final class RuneAppStateTests: XCTestCase {
     func testCurrentResourceYAMLConfiguredExportUsesTextWorkflow() {
         let configuredExporter = RecordingConfiguredExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         state.selectedContext = KubeContext(name: "fake")
         state.selectedNamespace = "default"
         state.selectedSection = .workloads
@@ -7229,7 +7237,7 @@ final class RuneAppStateTests: XCTestCase {
     func testStaleResourceYAMLExportIsBlockedWhenDetailScopeDoesNotMatchSelection() {
         let exporter = RecordingFileExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         state.selectedContext = KubeContext(name: "fake")
         state.selectedNamespace = "default"
         state.selectedSection = .workloads
@@ -7252,7 +7260,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testStaleResourceYAMLApplyIsBlockedWhenDetailScopeDoesNotMatchSelection() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "fake")
         state.selectedNamespace = "default"
         state.selectedSection = .workloads
@@ -7293,7 +7301,7 @@ final class RuneAppStateTests: XCTestCase {
     func testStaleOperatorDetailScopeDoesNotBypassCurrentResourceYAMLExportGuard() {
         let exporter = RecordingFileExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         state.selectedContext = KubeContext(name: "fake")
         state.selectedNamespace = "default"
         state.selectedSection = .workloads
@@ -7325,7 +7333,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testApplyYAMLRejectsValidationErrorsBeforeConfirm() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "fake")
         state.selectedNamespace = "default"
         state.selectedSection = .workloads
@@ -7368,7 +7376,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "synthetic")
         state.selectedNamespace = "test-space"
         state.selectedSection = .config
@@ -7427,7 +7435,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedSection = .config
@@ -7479,7 +7487,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testReapplyResourceYAMLBaselineIsDisabledForSecrets() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedSection = .config
@@ -7739,7 +7747,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testPendingApplyMessageIncludesYAMLDiffPreview() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedSection = .config
@@ -7790,7 +7798,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedSection = .config
@@ -7841,7 +7849,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedSection = .config
@@ -7927,7 +7935,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testClosingBackgroundTerminalTabNeverActivatesItOrClearsActiveDraft() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let first = PodTerminalSession(
             id: "shell-a",
             contextName: "synthetic",
@@ -7996,7 +8004,7 @@ final class RuneAppStateTests: XCTestCase {
     func testActiveTerminalTranscriptExportSavesCurrentShellOnly() {
         let exporter = RecordingFileExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         state.setTerminalSession(PodTerminalSession(
             id: "shell-a",
             contextName: "demo-context",
@@ -8036,7 +8044,7 @@ final class RuneAppStateTests: XCTestCase {
         let configuredExporter = RecordingConfiguredExporter()
         configuredExporter.savedURL = URL(fileURLWithPath: "/tmp/synthetic-transcript-2.log")
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         state.setTerminalSession(PodTerminalSession(
             id: "shell-a",
             contextName: "demo-context",
@@ -8068,7 +8076,7 @@ final class RuneAppStateTests: XCTestCase {
     func testAllTerminalTranscriptExportBuildsOneArchiveForEveryShellTab() throws {
         let exporter = RecordingFileExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         state.setTerminalSession(PodTerminalSession(
             id: "shell-a",
             contextName: "demo-context",
@@ -8113,7 +8121,7 @@ final class RuneAppStateTests: XCTestCase {
     func testAllTerminalTranscriptConfiguredExportUsesArchiveWorkflow() throws {
         let configuredExporter = RecordingConfiguredExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         state.setTerminalSession(PodTerminalSession(
             id: "shell-a",
             contextName: "demo-context",
@@ -8153,7 +8161,7 @@ final class RuneAppStateTests: XCTestCase {
         let exporter = RecordingFileExporter()
         let configuredExporter = RecordingConfiguredExporter()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter, configuredExporter: configuredExporter)
         state.setTerminalSession(PodTerminalSession(
             id: "shell-empty",
             contextName: "demo-context",
@@ -8230,7 +8238,7 @@ final class RuneAppStateTests: XCTestCase {
             let state = RuneAppState()
             state.selectedContext = KubeContext(name: item.4)
             state.selectedNamespace = item.5
-            let viewModel = RuneAppViewModel(state: state)
+            let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
             state.setTerminalSession(PodTerminalSession(
                 id: "terminal-\(index)",
                 contextName: item.0,
@@ -8264,7 +8272,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testScopeHardeningContextSwitchStopsAndClearsEveryTerminalSessionInLeavingContext() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
         let leaving = KubeContext(name: "context-leaving")
         let target = KubeContext(name: "context-target")
         state.setContexts([leaving, target])
@@ -8301,7 +8309,7 @@ final class RuneAppStateTests: XCTestCase {
         let context = KubeContext(name: "context-alpha")
         state.selectedContext = context
         state.selectedNamespace = "namespace-leaving"
-        let viewModel = RuneAppViewModel(state: state, kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
         state.setTerminalSession(PodTerminalSession(
             id: "target-session",
             contextName: context.name,
@@ -8335,7 +8343,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setContexts([contextAlpha, contextBeta])
         state.selectedContext = contextAlpha
         state.selectedNamespace = "namespace-alpha"
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let startScope = viewModel.currentPortForwardStartScope()
         state.selectedContext = contextBeta
@@ -8371,7 +8379,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setContexts([KubeContext(name: "context-current")])
         state.selectedContext = KubeContext(name: "context-current")
         state.selectedNamespace = "namespace-current"
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let session = PortForwardSession(
             id: "port-forward-unresolved",
             contextName: "context-removed",
@@ -8396,7 +8404,7 @@ final class RuneAppStateTests: XCTestCase {
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "benchmark")
         state.selectedNamespace = "default"
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setTerminalSession(PodTerminalSession(
             id: "shell-a",
             contextName: "benchmark",
@@ -8419,7 +8427,7 @@ final class RuneAppStateTests: XCTestCase {
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "benchmark")
         state.selectedNamespace = "default"
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let pod = PodSummary(
             name: "pod-0",
             namespace: "default",
@@ -8536,11 +8544,12 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testFavoriteResourcesSortBeforeOtherResources() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.favoriteResources.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.favoriteResources.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
         )
         state.selectedContext = KubeContext(name: "demo")
@@ -8560,7 +8569,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testGenericResourceListSortsByHeaderMetadata() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "sort-contract")
         state.selectedNamespace = "default"
         state.setConfigMaps([
@@ -8587,7 +8596,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testDeploymentListSortsByHeaderMetadata() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "sort-contract")
         state.selectedNamespace = "default"
         state.setDeployments([
@@ -8610,7 +8619,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testServiceListSortsByHeaderMetadata() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "sort-contract")
         state.selectedNamespace = "default"
         state.setServices([
@@ -8633,7 +8642,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testHelmReleaseListSortsByHeaderMetadata() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "sort-contract")
         state.selectedNamespace = "default"
         state.setHelmReleases([
@@ -8660,11 +8669,11 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testFavoriteResourcesPersistAndAreScopedByKindNamespaceAndName() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.favoriteResourceScope.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.favoriteResourceScope.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         state.selectedContext = KubeContext(name: "demo")
 
         viewModel.toggleFavoriteResource(kind: .pod, namespace: "default", name: "api")
@@ -8677,7 +8686,7 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertFalse(viewModel.isFavoriteResource(kind: .deployment, namespace: "default", name: "api"))
 
         let reloadedState = RuneAppState()
-        let reloadedViewModel = RuneAppViewModel(state: reloadedState, contextPreferences: store)
+        let reloadedViewModel = RuneAppViewModel(state: reloadedState, bookmarkManager: .inMemory(), contextPreferences: store)
         reloadedState.selectedContext = KubeContext(name: "demo")
         XCTAssertTrue(reloadedViewModel.isFavoriteResource(kind: .pod, namespace: "default", name: "api"))
         XCTAssertTrue(reloadedViewModel.isFavoriteResource(kind: .service, namespace: "default", name: "api"))
@@ -8687,11 +8696,11 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testFavoriteNamespacesPersistAndSortFirst() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.favoriteNamespaceScope.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.favoriteNamespaceScope.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         state.selectedContext = KubeContext(name: "demo")
         state.setNamespaces(["zeta", "alpha", "bravo"])
         state.selectedNamespace = "alpha"
@@ -8703,7 +8712,7 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.namespaceOptions, ["zeta", "alpha", "bravo"])
 
         let reloadedState = RuneAppState()
-        let reloadedViewModel = RuneAppViewModel(state: reloadedState, contextPreferences: store)
+        let reloadedViewModel = RuneAppViewModel(state: reloadedState, bookmarkManager: .inMemory(), contextPreferences: store)
         reloadedState.selectedContext = KubeContext(name: "demo")
         reloadedState.setNamespaces(["alpha", "zeta"])
         reloadedState.selectedNamespace = "alpha"
@@ -8713,11 +8722,11 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testManualNamespacesPersistPerContextAndAppearWithoutListPermission() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.manualNamespaces.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.manualNamespaces.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         state.selectedContext = KubeContext(name: "demo")
         state.setNamespaces([])
 
@@ -8727,7 +8736,7 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.manualNamespaceOptions, ["team-a"])
 
         let reloadedState = RuneAppState()
-        let reloadedViewModel = RuneAppViewModel(state: reloadedState, contextPreferences: store)
+        let reloadedViewModel = RuneAppViewModel(state: reloadedState, bookmarkManager: .inMemory(), contextPreferences: store)
         reloadedState.selectedContext = KubeContext(name: "demo")
         reloadedState.selectedNamespace = ""
         reloadedState.setNamespaces([])
@@ -8742,6 +8751,7 @@ final class RuneAppStateTests: XCTestCase {
         let store = ResourceStore()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
             store: store
         )
@@ -8761,12 +8771,13 @@ final class RuneAppStateTests: XCTestCase {
     func testContextSwitchNeverPublishesOrPersistsUnverifiedLeavingNamespace() async throws {
         let state = RuneAppState()
         let resourceStore = ResourceStore()
-        let suiteName = "RuneAppStateTests.contextNamespaceIsolation.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.contextNamespaceIsolation.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let preferences = UserDefaultsContextPreferencesStore(defaults: defaults)
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
             store: resourceStore,
             contextPreferences: preferences,
@@ -8817,14 +8828,15 @@ final class RuneAppStateTests: XCTestCase {
     func testContextSwitchFallsBackToTargetSavedNamespaceWhenCarriedNamespaceIsMissing() {
         let state = RuneAppState()
         let store = ResourceStore()
-        let suiteName = "RuneAppStateTests.contextNamespaceCarry.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.contextNamespaceCarry.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let preferences = UserDefaultsContextPreferencesStore(defaults: defaults)
         preferences.savePreferredNamespace("namespace-green", for: "synthetic-target")
 
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
             store: store,
             contextPreferences: preferences
@@ -8849,14 +8861,14 @@ final class RuneAppStateTests: XCTestCase {
             restoreUserDefaultsValue(previous, forKey: RuneSettingsKeys.writeSafetyRequireProductionSecondConfirmation)
         }
 
-        let suiteName = "RuneAppStateTests.manualProduction.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.manualProduction.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
         let context = KubeContext(name: "staging-west")
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         state.selectedContext = context
         state.selectedNamespace = "default"
 
@@ -8865,7 +8877,7 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertTrue(viewModel.isManuallyMarkedProduction(context))
 
         let reloadedState = RuneAppState()
-        let reloadedViewModel = RuneAppViewModel(state: reloadedState, contextPreferences: store)
+        let reloadedViewModel = RuneAppViewModel(state: reloadedState, bookmarkManager: .inMemory(), contextPreferences: store)
         reloadedState.selectedContext = context
         reloadedState.selectedNamespace = "default"
         reloadedViewModel.pendingWriteAction = .delete(kind: .pod, name: "api")
@@ -8876,11 +8888,11 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testUnmarkProductionContextRemovesManualOverrideWithoutDisablingAutoDetection() {
-        let suiteName = "RuneAppStateTests.manualProductionUnmark.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.manualProductionUnmark.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
-        let viewModel = RuneAppViewModel(state: RuneAppState(), contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory(), contextPreferences: store)
         let staging = KubeContext(name: "staging-west")
 
         viewModel.toggleProductionMark(for: staging)
@@ -8895,15 +8907,15 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testManualProductionContextPersistenceDoesNotStoreKubeconfigPayloads() {
-        let suiteName = "RuneAppStateTests.manualProductionPrivacy.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.manualProductionPrivacy.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let storageKey = "manualProductionContexts"
         let store = UserDefaultsContextPreferencesStore(
             defaults: defaults,
             manualProductionContextsKey: storageKey
         )
-        let viewModel = RuneAppViewModel(state: RuneAppState(), contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory(), contextPreferences: store)
 
         viewModel.toggleProductionMark(for: KubeContext(name: "staging-synthetic"))
 
@@ -8955,7 +8967,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testSelectedPodsForBulkActionsPreserveHiddenSelectionsAcrossFilter() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "benchmark")
         state.selectedNamespace = "default"
         let pods = [
@@ -8990,11 +9002,12 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testPodFavoritesSortFirstWhilePreservingMetricSortWithinGroups() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.podMetricSort.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.podMetricSort.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
         )
         state.selectedContext = KubeContext(name: "sort-contract")
@@ -9026,11 +9039,12 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testDeploymentAndServiceFavoritesSortFirstWithoutDroppingActiveSort() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.workloadFavoriteSort.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.workloadFavoriteSort.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
         )
         state.selectedContext = KubeContext(name: "sort-contract")
@@ -9060,7 +9074,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testResourceSearchQueryNormalizesPastedLineBreaksBeforeFiltering() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.setPods([
@@ -9090,7 +9104,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testGenericResourceBulkSelectionBuildsDeleteConfirmation() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .configMap
@@ -9117,7 +9131,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testGenericSelectVisiblePreservesAndActsOnHiddenSelections() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "synthetic-context")
         state.selectedNamespace = "synthetic-namespace"
         state.selectedWorkloadKind = .configMap
@@ -9192,6 +9206,7 @@ final class RuneAppStateTests: XCTestCase {
         )
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
             store: store
         )
@@ -9268,6 +9283,7 @@ final class RuneAppStateTests: XCTestCase {
         cacheSyntheticSnapshot(configMaps: [configMapB], context: context, namespace: namespaceB, store: store)
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
             store: store
         )
@@ -9307,7 +9323,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testSelectedGenericResourceComparisonIncludesFilterHiddenSelection() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .configMap
@@ -9337,7 +9353,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testSelectedGenericResourceComparisonRequiresAtLeastTwoResources() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .configMap
@@ -9354,7 +9370,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testSelectedGenericResourceComparisonCopiesToRequestedPasteboard() throws {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "synthetic-context")
         state.selectedNamespace = "synthetic-namespace"
         state.selectedWorkloadKind = .configMap
@@ -9377,7 +9393,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testOperatorResourcesParticipateInSearchAcrossFamilyKindStatusAndMessage() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setOperatorResources([
             OperatorResourceSummary(
                 family: "Flux",
@@ -9419,11 +9435,11 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testOperatorResourceGitOpsFocusFiltersFluxAndArgoWithoutDroppingSortOrFavorites() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.operatorGitOpsFocus.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.operatorGitOpsFocus.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         state.selectedContext = KubeContext(name: "demo")
         state.setOperatorResources([
             OperatorResourceSummary(
@@ -9500,11 +9516,11 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testOperatorResourceFavoritesSortFirst() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.operatorFavorites.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.operatorFavorites.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         state.selectedContext = KubeContext(name: "demo")
         state.setOperatorResources([
             OperatorResourceSummary(
@@ -9535,11 +9551,11 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testOperatorPrinterColumnsCanBeHiddenPerFamilyWithoutChangingFavoriteOrder() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.operatorPrinterColumns.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.operatorPrinterColumns.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         state.selectedContext = KubeContext(name: "demo")
         state.setOperatorResources([
             OperatorResourceSummary(
@@ -9574,18 +9590,18 @@ final class RuneAppStateTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleOperatorResources.map(\.name), ["beta", "alpha"])
         XCTAssertEqual(store.loadHiddenOperatorPrinterColumnFamilies(), ["Custom Resources"])
 
-        let reloaded = RuneAppViewModel(state: state, contextPreferences: store)
+        let reloaded = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         XCTAssertFalse(reloaded.showsOperatorPrinterColumnsForCurrentFamily)
     }
 
     @MainActor
     func testOperatorResourcesSortBySelectedColumnWithFavoritesFirst() {
         let state = RuneAppState()
-        let suiteName = "RuneAppStateTests.operatorSort.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RuneAppStateTests.operatorSort.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let store = UserDefaultsContextPreferencesStore(defaults: defaults)
-        let viewModel = RuneAppViewModel(state: state, contextPreferences: store)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), contextPreferences: store)
         state.selectedContext = KubeContext(name: "demo")
         state.setOperatorResources([
             OperatorResourceSummary(
@@ -9632,7 +9648,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testOperatorResourcesArePagedForLargeCRDBrowsing() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setOperatorResources((0..<45).map { index in
             OperatorResourceSummary(
                 family: "Custom Resources",
@@ -9660,7 +9676,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testOperatorResourceSelectionIsSeparateFromHelmReleaseForDrilldown() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let release = HelmReleaseSummary(
             name: "sample-release",
             namespace: "default",
@@ -9726,7 +9742,7 @@ final class RuneAppStateTests: XCTestCase {
 
     @MainActor
     func testLogStreamPauseIsDistinctFromTailMode() {
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
 
         XCTAssertFalse(viewModel.isLogTailModeEnabled)
         viewModel.toggleLogStreamPause()
@@ -9752,7 +9768,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testCreateManualJobFromCronJobRequiresPendingWriteConfirmation() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.setSelectedCronJob(ClusterResourceSummary(
@@ -9774,7 +9790,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testReadOnlyModeBlocksPendingWriteBeforeKubernetesCallAndAuditAppend() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.isReadOnlyMode = true
@@ -9796,7 +9812,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "prod")
         state.selectedNamespace = "default"
         viewModel.pendingWriteAction = .delete(kind: .pod, name: "api")
@@ -9827,7 +9843,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "prod")
         state.selectedNamespace = "default"
         viewModel.pendingWriteAction = .rolloutUndo(deploymentName: "api", revision: 2)
@@ -9854,7 +9870,7 @@ final class RuneAppStateTests: XCTestCase {
 
         let state = RuneAppState()
         let helmRunner = RecordingHelmCommandRunner()
-        let viewModel = RuneAppViewModel(state: state, helmCommandRunner: helmRunner)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), helmCommandRunner: helmRunner)
         state.selectedContext = KubeContext(name: "prod")
         state.selectedNamespace = "payments"
         state.setSelectedHelmRelease(
@@ -9893,7 +9909,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "prod")
         state.selectedNamespace = "default"
         viewModel.pendingWriteAction = .delete(kind: .pod, name: "api")
@@ -9911,7 +9927,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         viewModel.pendingWriteAction = .delete(kind: .pod, name: "api")
@@ -10002,7 +10018,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "payments"
         state.setSelectedDeployment(
@@ -10048,7 +10064,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "payments"
         state.setSelectedDeployment(
@@ -10075,7 +10091,7 @@ final class RuneAppStateTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "storage"
         state.selectedWorkloadKind = .statefulSet
@@ -10132,7 +10148,7 @@ final class RuneAppStateTests: XCTestCase {
         try Data("apiVersion: v1\n".utf8).write(to: kubeconfig)
         state.setSources([KubeConfigSource(url: kubeconfig)])
         let helmRunner = RecordingHelmCommandRunner()
-        let viewModel = RuneAppViewModel(state: state, helmCommandRunner: helmRunner)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), helmCommandRunner: helmRunner)
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "payments"
         state.setSelectedHelmRelease(
@@ -10210,7 +10226,7 @@ final class RuneAppStateTests: XCTestCase {
             appVersion: "1.2.0"
         ))
         let helmRunner = RecordingHelmCommandRunner()
-        let viewModel = RuneAppViewModel(state: state, helmCommandRunner: helmRunner)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), helmCommandRunner: helmRunner)
 
         viewModel.requestHelmRollback(revision: 2)
 
@@ -10253,7 +10269,7 @@ final class RuneAppStateTests: XCTestCase {
         try Data("apiVersion: v1\n".utf8).write(to: kubeconfig)
         state.setSources([KubeConfigSource(url: kubeconfig)])
         let helmRunner = RecordingHelmCommandRunner()
-        let viewModel = RuneAppViewModel(state: state, helmCommandRunner: helmRunner)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), helmCommandRunner: helmRunner)
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "payments"
         state.setSelectedHelmRelease(
@@ -10335,7 +10351,7 @@ final class RuneAppStateTests: XCTestCase {
     func testWriteAuditSearchAndExportUsesVisibleEntries() throws {
         let state = RuneAppState()
         let exporter = RecordingFileExporter()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         state.appendWriteAuditEntry(
             WriteAuditEntry(
                 action: "Apply YAML",
@@ -10374,7 +10390,7 @@ final class RuneAppStateTests: XCTestCase {
     func testWriteAuditConfiguredExportUsesVisibleEntriesAndTextWorkflow() throws {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         state.appendWriteAuditEntry(
             WriteAuditEntry(
                 action: "Apply YAML",
@@ -10412,7 +10428,7 @@ final class RuneAppStateTests: XCTestCase {
     func testVisibleLogZipExportUsesDisplayedText() throws {
         let state = RuneAppState()
         let exporter = RecordingFileExporter()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         state.selectedContext = KubeContext(name: "demo")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .pod
@@ -10431,7 +10447,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testCommandPaletteWorkspaceCommandAliasesPublishTypedRequests() throws {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let cases: [(queries: [String], id: String, command: WorkspaceCommand)] = [
             ([":logs", ":log", ":l", "logs"], "cmd:workspace:open-logs", .openLogs),
             ([":save-view", ":sv", "save-view"], "cmd:workspace:save-current-detail", .saveCurrentDetail),
@@ -10479,6 +10495,7 @@ final class RuneAppStateTests: XCTestCase {
         let configuredExporter = RecordingConfiguredExporter()
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             exporter: exporter,
             configuredExporter: configuredExporter
         )
@@ -10525,7 +10542,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedNamespace = "default"
         let pod = PodSummary(name: "logs", namespace: "default", status: "Running")
         state.setPods([pod])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let item = try XCTUnwrap(viewModel.commandPaletteItems(query: ":po logs").first)
 
@@ -10544,7 +10561,7 @@ final class RuneAppStateTests: XCTestCase {
     func testResourceDescribeExportSavesCurrentDescribeText() throws {
         let state = RuneAppState()
         let exporter = RecordingFileExporter()
-        let viewModel = RuneAppViewModel(state: state, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), exporter: exporter)
         state.selectedWorkloadKind = .pod
         state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
         state.setResourceDescribe("Name: api-0\nManaged Fields:\n  manager: kube-controller\n")
@@ -10561,7 +10578,7 @@ final class RuneAppStateTests: XCTestCase {
     func testResourceDescribeConfiguredExportUsesTextWorkflow() {
         let state = RuneAppState()
         let configuredExporter = RecordingConfiguredExporter()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
         state.selectedWorkloadKind = .pod
         state.selectedPod = PodSummary(name: "api-0", namespace: "default", status: "Running")
         state.setResourceDescribe("Name: api-0\nManaged Fields:\n  manager: kube-controller\n")
@@ -10625,7 +10642,7 @@ final class RuneAppStateTests: XCTestCase {
         try server.kubeconfigYAML().write(to: kubeconfig, atomically: true, encoding: .utf8)
 
         let podName = "orbit-lens-6f58d7d89b-hx9q2"
-        let viewModel = RuneAppViewModel(state: RuneAppState())
+        let viewModel = RuneAppViewModel(state: RuneAppState(), bookmarkManager: .inMemory())
         let data = try await viewModel.fullPodLogsZipData(
             pods: [PodSummary(
                 name: podName,
@@ -11110,7 +11127,7 @@ final class RuneAppStateTests: XCTestCase {
         )
         let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
         let exporter = RecordingFileExporter()
-        let viewModel = RuneAppViewModel(state: state, kubeClient: client, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, kubeClient: client, bookmarkManager: .inMemory(), exporter: exporter)
 
         viewModel.saveSupportBundle()
         try await waitUntilForRuneAppState {
@@ -11189,7 +11206,7 @@ final class RuneAppStateTests: XCTestCase {
         let state = RuneAppState()
         state.setSources([KubeConfigSource(url: fixture.kubeconfig)])
         state.selectedContext = KubeContext(name: contextName)
-        let viewModel = RuneAppViewModel(state: state, kubeClient: client)
+        let viewModel = RuneAppViewModel(state: state, kubeClient: client, bookmarkManager: .inMemory())
 
         viewModel.refreshKubernetesRequestMetricsSummary()
 
@@ -11251,6 +11268,7 @@ final class RuneAppStateTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: client,
+            bookmarkManager: .inMemory(),
             exporter: exporter
         )
 
@@ -11326,6 +11344,7 @@ final class RuneAppStateTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: client,
+            bookmarkManager: .inMemory(),
             exporter: exporter
         )
 
@@ -11369,7 +11388,7 @@ final class RuneAppStateTests: XCTestCase {
         let client = KubernetesClient(restClient: restClient, requestMetricsRecorder: recorder)
         let state = RuneAppState()
         let exporter = RecordingFileExporter()
-        let viewModel = RuneAppViewModel(state: state, kubeClient: client, exporter: exporter)
+        let viewModel = RuneAppViewModel(state: state, kubeClient: client, bookmarkManager: .inMemory(), exporter: exporter)
 
         viewModel.refreshKubernetesRequestMetricsSummary()
         try await waitUntilForRuneAppState {
@@ -11403,7 +11422,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedContext = KubeContext(name: "synthetic-context")
         state.selectedNamespace = "default"
         let configuredExporter = RecordingConfiguredExporter()
-        let viewModel = RuneAppViewModel(state: state, configuredExporter: configuredExporter)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), configuredExporter: configuredExporter)
 
         viewModel.saveSupportBundleToExportFolder(openAfterSave: true)
         try await waitUntilForRuneAppState {
@@ -11879,7 +11898,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testAuthDoctorOutputCanBeClearedWhenIdle() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setAuthDoctorChecks([
             RuneHealthCheck(id: "namespace-list", title: "Namespace list", status: .warning, message: "Synthetic warning")
         ])
@@ -11896,7 +11915,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedNamespace = "payments"
         state.setSources([KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune-synthetic-kubeconfig"))])
         let checker = RecordingRBACCanIChecker(result: true)
-        let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), rbacCanICheck: checker.check)
         viewModel.rbacCanIVerb = " create "
         viewModel.rbacCanIResource = " pods "
         viewModel.rbacCanIApiGroup = " "
@@ -11935,7 +11954,7 @@ final class RuneAppStateTests: XCTestCase {
         )
         state.setRBACData(roles: [], serviceAccounts: [], roleBindings: [], clusterRoles: [clusterRole], clusterRoleBindings: [])
         let checker = RecordingRBACCanIChecker(result: false)
-        let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), rbacCanICheck: checker.check)
 
         viewModel.selectRBACResource(clusterRole)
 
@@ -11962,7 +11981,7 @@ final class RuneAppStateTests: XCTestCase {
     @MainActor
     func testRBACCanIPresetPopulatesSimulatorFields() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         viewModel.useRBACCanIPreset(
             verb: " list ",
@@ -12002,7 +12021,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedRBACResource(binding)
         state.selectedSection = .rbac
         state.selectedWorkloadKind = .roleBinding
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let referencedRole = try XCTUnwrap(viewModel.selectedRBACBindingReferencedRole)
         XCTAssertEqual(referencedRole.kind, .clusterRole)
@@ -12050,7 +12069,7 @@ final class RuneAppStateTests: XCTestCase {
         state.setSelectedRBACResource(role)
         state.selectedSection = .rbac
         state.selectedWorkloadKind = .role
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         XCTAssertEqual(viewModel.selectedRBACRoleRelatedBindings.map(\.name), ["api-reader-binding"])
 
@@ -12066,7 +12085,7 @@ final class RuneAppStateTests: XCTestCase {
         let state = RuneAppState()
         state.selectedNamespace = "payments"
         let checker = RecordingRBACCanIChecker(result: true)
-        let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), rbacCanICheck: checker.check)
 
         viewModel.runRBACCanISimulator()
 
@@ -12103,7 +12122,7 @@ final class RuneAppStateTests: XCTestCase {
         state.selectedNamespace = "payments"
         state.setSources([KubeConfigSource(url: URL(fileURLWithPath: "/tmp/rune-synthetic-kubeconfig"))])
         let checker = RecordingRBACCanIChecker(error: RuneError.invalidInput(message: "Synthetic RBAC failure"))
-        let viewModel = RuneAppViewModel(state: state, rbacCanICheck: checker.check)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory(), rbacCanICheck: checker.check)
 
         viewModel.runRBACCanISimulator()
 
@@ -12440,22 +12459,6 @@ private final class BlockingCloudKubeConfigImporter: CloudKubeConfigImporting, @
         self.continuation = nil
         lock.unlock()
         continuation?.resume(returning: result)
-    }
-}
-
-private final class InMemoryBookmarkStore: BookmarkStore, @unchecked Sendable {
-    private(set) var records: [BookmarkRecord] = []
-
-    func loadRecords() throws -> [BookmarkRecord] {
-        records
-    }
-
-    func saveRecords(_ records: [BookmarkRecord]) throws {
-        self.records = records
-    }
-
-    func removeAllRecords() {
-        records = []
     }
 }
 

@@ -30,7 +30,7 @@ final class RuneSidebarDragRegressionTests: XCTestCase {
         let pods = (0..<20).map { PodSummary(name: "sample-pod-\($0)", namespace: "default", status: "Running") }
         state.setPods(pods)
         state.selectedPod = pods[0]
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.isSidebarVisible = true
         viewModel.isDetailPaneVisible = true
 
@@ -122,7 +122,7 @@ final class RuneSidebarDragRegressionTests: XCTestCase {
         let longValue = String(repeating: "sample-value-", count: 24)
         state.setResourceYAML((["apiVersion: v1", "kind: Pod", "metadata:", "  name: sample-pod-0", "  annotations:"]
             + (0..<4).map { "    note-\($0): \(longValue)" }).joined(separator: "\n"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.isSidebarVisible = true
         viewModel.isDetailPaneVisible = true
 

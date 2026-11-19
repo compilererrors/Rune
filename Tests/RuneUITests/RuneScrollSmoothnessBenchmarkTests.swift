@@ -104,7 +104,7 @@ final class RuneScrollSmoothnessBenchmarkTests: XCTestCase {
         rootState.selectedWorkloadKind = .pod
         rootState.setPods(pods)
         rootState.selectedPod = pods[0]
-        let rootViewModel = RuneAppViewModel(state: rootState)
+        let rootViewModel = RuneAppViewModel(state: rootState, bookmarkManager: .inMemory())
         rootViewModel.isSidebarVisible = true
         rootViewModel.isDetailPaneVisible = true
         let rootSteps = Int(ProcessInfo.processInfo.environment["RUNE_SCROLL_ROOT_STEPS"] ?? "") ?? 240

@@ -133,7 +133,7 @@ public final class SavePanelExporter: FileExporting {
             throw FileExportError.userCancelled
         }
 
-        try data.write(to: destination)
+        try data.write(to: destination, options: .atomic)
         return destination
     }
 }

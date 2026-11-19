@@ -5,14 +5,15 @@ import XCTest
 @MainActor
 final class RunePodProjectionCacheTests: XCTestCase {
     func testPodFavoriteMatcherAgreesWithPerPodFavoriteLookup() {
-        let suiteName = "RunePodProjectionCacheTests.favorites.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RunePodProjectionCacheTests.favorites.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "synthetic-context")
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
         )
         let pods = [
@@ -42,7 +43,7 @@ final class RunePodProjectionCacheTests: XCTestCase {
     func testPodOrderIsReusedOnlyWhileSortKeysAreUnchanged() {
         let state = RuneAppState()
         state.selectedContext = KubeContext(name: "synthetic-context")
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         var pods = (0..<200).map {
             PodSummary(name: "pod-\($0)", namespace: "default", status: $0 % 3 == 0 ? "Pending" : "Running", totalRestarts: $0 % 5)
         }

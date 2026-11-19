@@ -138,6 +138,7 @@ final class AddClusterImportLifecycleTests: XCTestCase {
     ) -> RuneAppViewModel {
         RuneAppViewModel(
             state: RuneAppState(),
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: LifecycleEmptyDiscoverer(),
             cloudKubeConfigImporter: importer,
             azureCLISignInRunner: signIn,

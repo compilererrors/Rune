@@ -566,7 +566,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.loadDemoCluster()
         viewModel.setSection(.overview)
 
@@ -2792,7 +2792,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         let state = RuneAppState()
         state.setContexts((1...80).map { KubeContext(name: String(format: "cluster-%03d", $0)) })
         state.setNamespaces(["default"])
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         let host = NSHostingController(
             rootView: RuneRootView(
@@ -4054,7 +4054,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.loadDemoCluster()
         viewModel.setSection(.workloads)
         viewModel.setWorkloadKind(.pod)
@@ -4160,7 +4160,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
 
         func makeWorkspace() -> (RuneAppState, NSHostingController<AnyView>, NSWindow) {
             let state = RuneAppState()
-            let viewModel = RuneAppViewModel(state: state)
+            let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
             viewModel.loadDemoCluster()
             viewModel.setSection(.workloads)
             viewModel.setWorkloadKind(.pod)

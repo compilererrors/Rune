@@ -61,9 +61,9 @@ final class TerminalCommandHistoryTests: XCTestCase {
     }
 
     func testTurningHistoryOffMakesTheLimitZeroAndRemovesSavedHistory() throws {
-        let suiteName = "TerminalCommandHistoryTests.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("TerminalCommandHistoryTests.\(UUID().uuidString)")
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
 
         XCTAssertTrue(defaults.runeTerminalCommandHistoryEnabled, "on by default")
         XCTAssertEqual(defaults.runeEffectiveTerminalCommandHistoryLimit, RuneSettingsKeys.terminalCommandHistoryLimitDefault)

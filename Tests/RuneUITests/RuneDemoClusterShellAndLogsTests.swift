@@ -26,7 +26,7 @@ final class RuneDemoClusterShellAndLogsTests: XCTestCase {
     func testTheDemoShellConnectsInMemoryAndAnswersCommands() async throws {
         let realShell = RecordingShellBackend()
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: realShell)
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: realShell, bookmarkManager: .inMemory())
         viewModel.loadDemoCluster()
         let pod = try XCTUnwrap(state.pods.first)
 
@@ -55,7 +55,7 @@ final class RuneDemoClusterShellAndLogsTests: XCTestCase {
 
     func testReloadingDemoPodLogsShowsThemOnce() async throws {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: RecordingShellBackend())
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: RecordingShellBackend(), bookmarkManager: .inMemory())
         viewModel.loadDemoCluster()
         viewModel.setSection(.workloads)
         viewModel.setWorkloadKind(.pod)

@@ -1896,6 +1896,7 @@ final class RuneDockerComposeViewModelIntegrationTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: kubeClient,
+            bookmarkManager: .inMemory(),
             exporter: exporter,
             configuredExporter: configuredExporter,
             contextPreferences: DockerComposeEmptyContextPreferencesStore(),

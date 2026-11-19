@@ -130,12 +130,14 @@ public enum KubernetesRequestRetryPolicy {
         return min(defaultTransientDelayNanoseconds * multiplier, maximumRetryDelayNanoseconds)
     }
 
+    /// The header is the server's: `inf` or `1e30` parse as numbers and
+    /// would trap in the conversion, so the value is bounded first.
+    private static let maximumRetryAfterSeconds: Double = 3_600
+
     private static func retryAfterDelayNanoseconds(from header: String?) -> UInt64? {
         guard let header else { return nil }
         let trimmed = header.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let seconds = Double(trimmed), seconds >= 0 {
-            return UInt64(seconds * 1_000_000_000)
-        }
-        return nil
+        guard let seconds = Double(trimmed), seconds.isFinite, seconds >= 0 else { return nil }
+        return UInt64(min(seconds, maximumRetryAfterSeconds) * 1_000_000_000)
     }
 }

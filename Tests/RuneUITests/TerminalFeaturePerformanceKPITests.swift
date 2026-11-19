@@ -17,7 +17,7 @@ final class TerminalFeaturePerformanceKPITests: XCTestCase {
         defer { if let savedHistory { defaults.set(savedHistory, forKey: historyKey) } else { defaults.removeObject(forKey: historyKey) } }
 
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state, terminalBackend: DiscardingShell())
+        let viewModel = RuneAppViewModel(state: state, terminalBackend: DiscardingShell(), bookmarkManager: .inMemory())
         state.setTerminalSession(PodTerminalSession(
             id: "shell-1", contextName: "sample-cluster", namespace: "team-alpha", podName: "api-0",
             shell: "sh", transcript: "$ ", status: .connected

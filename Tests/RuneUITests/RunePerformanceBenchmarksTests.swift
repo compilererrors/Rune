@@ -213,6 +213,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
         return RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -1021,7 +1022,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         state.selectedSection = .workloads
         state.selectedWorkloadKind = .pod
         state.setSelectedPod(PodSummary(name: "api-0", namespace: "default", status: "Running"))
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
 
         var invalidTransitionCount = 0
         let transitionCount = 10_000
@@ -1230,7 +1231,8 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             )
         }
 
-        XCTAssertGreaterThan(zip.count, text.utf8.count / 2)
+        XCTAssertGreaterThan(zip.count, 0)
+        XCTAssertLessThan(zip.count, text.utf8.count / 2, "log archives are deflated")
         XCTAssertLessThan(elapsedSeconds, 0.45, "KPI: exporting a 24k-line, 12-pod log archive should stay below 450ms on local benchmark runs.")
 
         measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
@@ -1327,7 +1329,8 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             )
         }
 
-        XCTAssertGreaterThan(zip.count, text.utf8.count / 2)
+        XCTAssertGreaterThan(zip.count, 0)
+        XCTAssertLessThan(zip.count, text.utf8.count / 2, "log archives are deflated")
         XCTAssertLessThan(elapsedSeconds, 0.45, "KPI: metadata should not push a 24k-line, 12-pod log archive above the 450ms export target.")
         XCTAssertTrue(String(decoding: zip, as: UTF8.self).contains("metadata-20260507T100000Z.json"))
     }
@@ -1821,6 +1824,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: KubernetesClient(),
+            bookmarkManager: .inMemory(),
             store: ResourceStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
@@ -1883,6 +1887,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let viewModel = RuneAppViewModel(
             state: state,
             kubeClient: KubernetesClient(),
+            bookmarkManager: .inMemory(),
             store: ResourceStore(),
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -2163,8 +2168,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testColdStartBootstrapReturnPathKPI() {
         let state = RuneAppState()
+        // No kubeconfigs at all: none discovered, and none bookmarked on
+        // the machine that runs the test.
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()
         )
 
@@ -2172,6 +2180,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             let freshState = RuneAppState()
             let freshViewModel = RuneAppViewModel(
                 state: freshState,
+                bookmarkManager: BookmarkManager.inMemory(),
                 kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()
             )
             freshViewModel.bootstrapIfNeeded()
@@ -2192,8 +2201,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testColdStartEmptyBootstrapDoesNotChurnVisibleLoadingStateKPI() async {
         let state = RuneAppState()
+        // No kubeconfigs at all: none discovered, and none bookmarked on
+        // the machine that runs the test.
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()
         )
         var stateChangeCount = 0
@@ -2224,8 +2236,11 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testLaunchExperienceCoversFastBootstrapThenFinishesKPI() async {
         let state = RuneAppState()
+        // No kubeconfigs at all: none discovered, and none bookmarked on
+        // the machine that runs the test.
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()
         )
 
@@ -2246,7 +2261,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testColdStartBootstrapDefersDiscoveryUntilAfterFirstPaintKPI() async {
         let discoverer = CountingKubeConfigDiscoverer()
-        let viewModel = RuneAppViewModel(kubeConfigDiscoverer: discoverer)
+        let viewModel = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: discoverer)
 
         viewModel.bootstrapIfNeeded()
         XCTAssertEqual(discoverer.callCount, 0)
@@ -2270,13 +2285,13 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     func testColdStartViewModelInitializationKPI() {
         measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
             for _ in 0..<200 {
-                _ = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+                _ = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
             }
         }
 
         let elapsedSeconds = minimumElapsedSeconds {
             for _ in 0..<200 {
-                _ = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+                _ = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
             }
         }
 
@@ -2296,7 +2311,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     func testColdStartAddClusterWorkflowComparisonKPI() {
         let baselineSeconds = minimumElapsedSeconds {
             for _ in 0..<200 {
-                _ = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+                _ = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
             }
         }
 
@@ -2340,6 +2355,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let addClusterColdStartSeconds = minimumElapsedSeconds {
             for _ in 0..<200 {
                 let viewModel = RuneAppViewModel(
+                    bookmarkManager: .inMemory(),
                     kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
                     cloudKubeConfigImporter: importer
                 )
@@ -2375,7 +2391,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     func testColdStartRootShellConstructionKPI() {
         measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
             for _ in 0..<200 {
-                let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+                let viewModel = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
                 _ = RuneRootView(
                     viewModel: viewModel,
                     onLayoutSnapshotChange: nil,
@@ -2386,7 +2402,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
         let started = ContinuousClock.now
         for _ in 0..<200 {
-            let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+            let viewModel = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
             _ = RuneRootView(
                 viewModel: viewModel,
                 onLayoutSnapshotChange: nil,
@@ -2411,7 +2427,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     func testColdStartRootShellAddClusterComparisonKPI() {
         let baselineSeconds = minimumElapsedSeconds {
             for _ in 0..<200 {
-                let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+                let viewModel = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
                 _ = RuneRootView(
                     viewModel: viewModel,
                     onLayoutSnapshotChange: nil,
@@ -2430,7 +2446,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let addClusterRootShellSeconds = minimumElapsedSeconds {
             var readyProjectionCount = 0
             for _ in 0..<200 {
-                let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+                let viewModel = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
                 _ = RuneRootView(
                     viewModel: viewModel,
                     onLayoutSnapshotChange: nil,
@@ -2468,7 +2484,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testColdStartLaunchShellInitialMountKPI() {
         measure(metrics: [XCTClockMetric(), XCTMemoryMetric()]) {
-            let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+            let viewModel = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
             let controller = NSHostingController(
                 rootView: RuneRootView(
                     viewModel: viewModel,
@@ -2480,7 +2496,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         let elapsedSeconds = minimumElapsedSeconds {
-            let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+            let viewModel = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
             let controller = NSHostingController(
                 rootView: RuneRootView(
                     viewModel: viewModel,
@@ -2508,7 +2524,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         }
 
         let baselineSeconds = minimumElapsedSeconds(repetitions: 5) {
-            mountLaunchShell(viewModel: RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()))
+            mountLaunchShell(viewModel: RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer()))
         }
 
         let importer = BenchmarkCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
@@ -2523,6 +2539,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         ))
         let addClusterMountSeconds = minimumElapsedSeconds(repetitions: 5) {
             let viewModel = RuneAppViewModel(
+                bookmarkManager: .inMemory(),
                 kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
                 cloudKubeConfigImporter: importer
             )
@@ -2603,6 +2620,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         state.setSources([KubeConfigSource(url: kubeconfig)])
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
@@ -2721,6 +2739,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -2820,6 +2839,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         )
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
         )
@@ -2873,6 +2893,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             state.setSources([KubeConfigSource(url: kubeconfig)])
             let viewModel = RuneAppViewModel(
                 state: state,
+                bookmarkManager: .inMemory(),
                 overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
                 namespaceListPersistence: NoopNamespaceListPersistenceStore()
             )
@@ -2911,7 +2932,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testOperatorResourceBrowserProjectionBenchmarkKPI() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let resources = (0..<500).map { index in
             OperatorResourceSummary(
                 family: index.isMultiple(of: 3) ? "Custom Resources" : "Flux",
@@ -4324,7 +4345,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testGenericResourceQuickCompareBenchmarkKPI() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "benchmark")
         state.selectedNamespace = "default"
         state.selectedWorkloadKind = .configMap
@@ -4356,11 +4377,12 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testFavoriteResourceSortingBenchmarkKPI() {
         let state = RuneAppState()
-        let suiteName = "RunePerformanceBenchmarksTests.favoriteSort.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RunePerformanceBenchmarksTests.favoriteSort.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
         )
         state.selectedContext = KubeContext(name: "benchmark")
@@ -4398,11 +4420,12 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testPodMetricSortingBenchmarkKPI() {
         let state = RuneAppState()
-        let suiteName = "RunePerformanceBenchmarksTests.podMetricSort.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RunePerformanceBenchmarksTests.podMetricSort.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
         )
         state.selectedContext = KubeContext(name: "benchmark")
@@ -4443,11 +4466,12 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testFavoriteNamespaceSortingBenchmarkKPI() {
         let state = RuneAppState()
-        let suiteName = "RunePerformanceBenchmarksTests.favoriteNamespaces.\(UUID().uuidString)"
+        let suiteName = TestDefaultsSuite.name("RunePerformanceBenchmarksTests.favoriteNamespaces.\(UUID().uuidString)")
         let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defer { defaults.removeTestSuite(named: suiteName) }
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             contextPreferences: UserDefaultsContextPreferencesStore(defaults: defaults)
         )
         state.selectedContext = KubeContext(name: "benchmark")
@@ -4473,7 +4497,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
 
     @MainActor
     func testContextSwitchNamespaceCarryResolutionBenchmarkKPI() {
-        let viewModel = RuneAppViewModel(kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
+        let viewModel = RuneAppViewModel(bookmarkManager: .inMemory(), kubeConfigDiscoverer: EmptyKubeConfigDiscoverer())
         let namespaces = ["default", "namespace-blue", "namespace-green", "namespace-orange", "kube-system"]
             + (0..<2_000).map { "namespace-\(String(format: "%04d", $0))" }
         let contexts = (0..<100).map { "cluster-\(String(format: "%03d", $0))" }
@@ -4530,7 +4554,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testOverviewIncidentProjectionBenchmarkKPI() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         let pods = (0..<5_000).map { index in
             PodSummary(
                 name: "synthetic-app-\(String(format: "%04d", index))-7d8c9f6b5-\(String(format: "%05d", index))",
@@ -5161,6 +5185,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         state.setSources(sources)
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             kubeConfigImportValidator: KubeConfigImportValidator(fileExists: { _ in true }, executableSearchPaths: ["/synthetic/bin"])
         )
 
@@ -5560,7 +5585,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             let state = RuneAppState()
             let viewModel = RuneAppViewModel(
                 state: state,
-                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                bookmarkManager: BookmarkManager.inMemory(),
                 kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
                 cloudKubeConfigImporter: importer,
                 overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
@@ -5651,7 +5676,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             let viewModel = RuneAppViewModel(
                 state: state,
                 kubeClient: kubeClient,
-                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                bookmarkManager: BookmarkManager.inMemory(),
                 kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
                 kubeConfigImportStore: AppOwnedKubeConfigImportStore(
                     rootDirectory: directory.appendingPathComponent("imports", isDirectory: true)
@@ -5716,7 +5741,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         let state = RuneAppState()
         let viewModel = RuneAppViewModel(
             state: state,
-            bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+            bookmarkManager: BookmarkManager.inMemory(),
             kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
             cloudKubeConfigImporter: importer,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
@@ -5766,6 +5791,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
         ])
         let viewModel = RuneAppViewModel(
             state: state,
+            bookmarkManager: .inMemory(),
             nativeCloudClusterImporter: importer,
             overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
             namespaceListPersistence: NoopNamespaceListPersistenceStore()
@@ -5855,7 +5881,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             let state = RuneAppState()
             let viewModel = RuneAppViewModel(
                 state: state,
-                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                bookmarkManager: BookmarkManager.inMemory(),
                 kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
                 cloudKubeConfigImporter: BenchmarkCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
                     command: command,
@@ -5943,7 +5969,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             let state = RuneAppState()
             let viewModel = RuneAppViewModel(
                 state: state,
-                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                bookmarkManager: BookmarkManager.inMemory(),
                 kubeConfigDiscoverer: EmptyKubeConfigDiscoverer(),
                 cloudKubeConfigImporter: importer,
                 overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
@@ -6020,7 +6046,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
             let state = RuneAppState()
             let viewModel = RuneAppViewModel(
                 state: state,
-                bookmarkManager: BookmarkManager(store: BenchmarkBookmarkStore()),
+                bookmarkManager: BookmarkManager.inMemory(),
                 kubeConfigDiscoverer: discoverer,
                 cloudKubeConfigImporter: BenchmarkCloudKubeConfigImporter(result: CloudKubeConfigImportResult(
                     command: CloudKubeConfigCommandPreview(executable: "aws", arguments: [], displayCommand: "aws eks update-kubeconfig"),
@@ -6496,7 +6522,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testPodLogContainerOptionsBenchmarkKPI() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.setSelectedPod(PodSummary(
             name: "api",
             namespace: "default",
@@ -6520,7 +6546,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testPodBulkSelectionBenchmarkKPI() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         state.selectedContext = KubeContext(name: "benchmark")
         state.selectedNamespace = "default"
         state.setPods((0..<5_000).map { index in
@@ -7030,7 +7056,7 @@ final class RunePerformanceBenchmarksTests: XCTestCase {
     @MainActor
     func testWriteAuditSearchBenchmarkKPI() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         for index in 0..<200 {
             state.appendWriteAuditEntry(WriteAuditEntry(
                 action: index.isMultiple(of: 10) ? "Delete" : "Apply YAML",
@@ -7804,14 +7830,6 @@ private final class BenchmarkBlockingCloudKubeConfigImporter: CloudKubeConfigImp
         lock.unlock()
         continuation?.resume(returning: result)
     }
-}
-
-private final class BenchmarkBookmarkStore: BookmarkStore, @unchecked Sendable {
-    func loadRecords() throws -> [BookmarkRecord] {
-        []
-    }
-
-    func saveRecords(_ records: [BookmarkRecord]) throws {}
 }
 
 private final class CountingKubeConfigDiscoverer: KubeConfigDiscovering, @unchecked Sendable {

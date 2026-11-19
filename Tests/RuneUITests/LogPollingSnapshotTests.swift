@@ -6,7 +6,7 @@ import XCTest
 final class LogPollingSnapshotTests: XCTestCase {
     func testPodPollingReplacesIdenticalAndGrowingFullSnapshots() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.isLogTailModeEnabled = true
 
         let initial = """
@@ -50,7 +50,7 @@ final class LogPollingSnapshotTests: XCTestCase {
 
     func testUnifiedPollingReplacesSnapshotsWhenNewLinesAppearInsideMultiplePodGroups() {
         let state = RuneAppState()
-        let viewModel = RuneAppViewModel(state: state)
+        let viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
         viewModel.isLogTailModeEnabled = true
 
         let initial = """

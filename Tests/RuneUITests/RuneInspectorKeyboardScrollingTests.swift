@@ -111,7 +111,7 @@ final class RuneInspectorKeyboardScrollingTests: XCTestCase {
             state.selectedPod = pod
             state.setResourceYAML(Self.longYAML)
             state.setPodLogs(Self.longLogs)
-            viewModel = RuneAppViewModel(state: state)
+            viewModel = RuneAppViewModel(state: state, bookmarkManager: .inMemory())
             viewModel.isSidebarVisible = true
             viewModel.isDetailPaneVisible = true
             host = NSHostingController(rootView: AnyView(RuneRootView(
