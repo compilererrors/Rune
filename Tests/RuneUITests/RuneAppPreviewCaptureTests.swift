@@ -3,123 +3,266 @@
 import AppKit
 import AVFoundation
 import CoreVideo
+import RuneCore
 @testable import RuneUI
 import XCTest
 
-/// Footage for the App Store App Preview: the scripted scenario against the
-/// local Docker Compose K3s clusters, recorded from Rune's own windows at
-/// 1920 by 1080 (a 1440 by 810 point window, 16 by 9). Needs no screen
-/// recording permission. Writes `app-preview-recording.mov` and
-/// `app-preview-markers.json` (where each scene starts, in seconds); the
-/// marketing renderer cuts the preview from them.
+/// Footage for the three App Store App Previews, against the local Docker
+/// Compose K3s clusters: overview, logs and access. Each test records Rune's
+/// own window at 2880 by 1620 (a 1440 by 810 point window, 16 by 9, so the
+/// renderer can zoom in and stay sharp) into
+/// `<name>-recording.mov`, with `<name>-markers.json` saying where each scene
+/// starts, in seconds; the marketing renderer cuts the previews from them.
+/// Needs no screen recording or accessibility permission.
 ///
 /// Runs only when `RUNE_UI_APPPREVIEW_DIR` is set; see
-/// `RuneAppStoreCaptureFixture` for the rest. Run it on its own.
+/// `RuneAppStoreCaptureFixture` for the rest. Run one test at a time.
 @MainActor
 final class RuneAppPreviewCaptureTests: XCTestCase {
-    /// Each step and how long to keep recording once it has settled.
-    private static let steps: [(RuneRootLiveDebugScenarioStep, TimeInterval)] = [
-        (.overview, 4),
-        (.workloadPodLogs, 6),
-        (.workloadDeploymentUnifiedLogs, 5),
-        (.terminalLogs, 7),
-        (.workloadDeploymentYAMLValidation, 4),
-        (.authDoctor, 6),
-        (.rbacCanI, 4)
-    ]
+    /// One scene from each part of Rune.
+    func testRecordOverviewPreviewFootage() async throws {
+        try await record("overview", steps: [
+            (.overview, 4),
+            (.workloadPodLogs, 6),
+            (.workloadDeploymentUnifiedLogs, 5),
+            (.terminalLogs, 7),
+            (.workloadDeploymentYAMLValidation, 4),
+            (.authDoctor, 6),
+            (.rbacCanI, 4)
+        ]) { step, take in
+            switch step {
+            case .terminalLogs:
+                await take.pause(0.7)
+                for character in "ps -o pid,comm" {
+                    take.viewModel.terminalSessionInput.append(character)
+                    await take.pause(0.09)
+                }
+                take.viewModel.sendTerminalSessionInput()
+            case .authDoctor:
+                // Run it again on camera so the checks fill in.
+                await take.pause(0.5)
+                take.viewModel.runAuthDoctor()
+            default:
+                break
+            }
+        } after: { take in
+            let viewModel = take.viewModel
+            viewModel.setSection(.workloads)
+            viewModel.setWorkloadKind(.pod)
+            await take.pause(1.5)
+            take.mark("commandPalette")
+            viewModel.presentCommandPalette()
+            await take.pause(0.7)
+            await take.typeSlowly(":po log", every: 0.14)
+            await take.pause(1.4)
+            take.press("\r", keyCode: 36)
+            await take.pause(3)
+            if take.state.isCommandPalettePresented { viewModel.dismissCommandPalette() }
+            viewModel.setSection(.overview)
+            await take.pause(1.5)
+            take.mark("closing")
+            await take.pause(5)
+        }
+    }
 
-    func testRecordAppPreviewFootage() async throws {
+    /// Every container in one timeline, timestamps, one container, how many
+    /// lines, search, a whole deployment, and saving from the palette.
+    func testRecordLogsPreviewFootage() async throws {
+        try await record("logs", steps: [
+            (.workloadPodLogs, 0),
+            (.workloadDeploymentUnifiedLogs, 5)
+        ], prepare: { fixture in
+            // Off at first, so the preview can turn them on.
+            fixture.setSetting(false, forKey: RuneSettingsKeys.logsShowTimestamps)
+        }) { step, take in
+            let viewModel = take.viewModel
+            switch step {
+            case .workloadPodLogs:
+                await take.pause(2.8)
+                take.mark("timestamps")
+                take.fixture.setSetting(true, forKey: RuneSettingsKeys.logsShowTimestamps)
+                await take.pause(3.2)
+                take.mark("oneContainer")
+                viewModel.selectedLogContainer = "sidecar"
+                viewModel.reloadLogsForSelection()
+                await take.pause(2.8)
+                take.mark("range")
+                viewModel.selectedLogContainer = ""
+                viewModel.selectedLogPreset = .customOne
+                viewModel.reloadLogsForSelection()
+                await take.pause(2.2)
+                viewModel.selectedLogPreset = .largeTail
+                viewModel.reloadLogsForSelection()
+                await take.pause(2.4)
+                take.mark("search")
+                take.press("f", keyCode: 3, modifiers: .command)
+                await take.pause(0.5)
+                await take.typeSlowly("index=1", every: 0.13)
+                await take.pause(2.6)
+            case .workloadDeploymentUnifiedLogs:
+                await take.pause(1)
+                viewModel.isLogTailModeEnabled = true
+            default:
+                break
+            }
+        } after: { take in
+            let viewModel = take.viewModel
+            take.mark("save")
+            viewModel.presentCommandPalette()
+            await take.pause(0.7)
+            await take.typeSlowly(":so", every: 0.16)
+            await take.pause(3.2)
+            viewModel.dismissCommandPalette()
+            await take.pause(1)
+            take.mark("closing")
+            await take.pause(5)
+        }
+    }
+
+    /// Auth Doctor, RBAC Can I for logs and exec, YAML validation and Helm.
+    func testRecordAccessPreviewFootage() async throws {
+        try await record("access", steps: [
+            (.authDoctor, 6),
+            (.rbacCanI, 0),
+            (.workloadDeploymentYAMLValidation, 4.5)
+        ]) { step, take in
+            let viewModel = take.viewModel
+            switch step {
+            case .authDoctor:
+                await take.pause(0.5)
+                viewModel.runAuthDoctor()
+            case .rbacCanI:
+                await take.pause(3)
+                take.mark("rbacExec")
+                viewModel.rbacCanIVerb = "create"
+                viewModel.rbacCanIResource = "pods"
+                viewModel.rbacCanISubresource = "exec"
+                viewModel.runRBACCanISimulator()
+                await take.pause(3.5)
+            default:
+                break
+            }
+        } after: { take in
+            let viewModel = take.viewModel
+            let state = take.state
+            viewModel.setSection(.helm)
+            try? await take.fixture.waitUntil(timeout: 20) { !state.helmReleases.isEmpty }
+            if let release = state.helmReleases.first(where: { $0.name == "orbit-lens" }) ?? state.helmReleases.first {
+                viewModel.selectHelmRelease(release)
+            }
+            await take.pause(1.5)
+            take.mark("helm")
+            await take.pause(5)
+            viewModel.setSection(.overview)
+            await take.pause(1.5)
+            take.mark("closing")
+            await take.pause(5)
+        }
+    }
+
+    private typealias Steps = [(RuneRootLiveDebugScenarioStep, TimeInterval)]
+
+    /// Runs the scenario's steps while recording. `during` runs once each step
+    /// has settled, after its marker; the step's time is recorded after it.
+    /// `after` runs once the scenario is done.
+    private func record(
+        _ name: String,
+        steps: Steps,
+        prepare: (RuneAppStoreCaptureFixture) -> Void = { _ in },
+        during: @escaping @MainActor (RuneRootLiveDebugScenarioStep, PreviewTake) async -> Void,
+        after: @MainActor (PreviewTake) async throws -> Void
+    ) async throws {
         let fixture = try await RuneAppStoreCaptureFixture(
             self,
             outputVariable: "RUNE_UI_APPPREVIEW_DIR",
-            steps: Self.steps.map(\.0),
+            steps: steps.map(\.0),
             windowSize: NSSize(width: 1440, height: 810)
         )
-        let viewModel = fixture.viewModel
-        let state = fixture.state
-        let movie = fixture.output.appendingPathComponent("app-preview-recording.mov")
+        prepare(fixture)
+        let movie = fixture.output.appendingPathComponent("\(name)-recording.mov")
         try? FileManager.default.removeItem(at: movie)
 
-        var settled: [RuneRootLiveDebugScenarioStep] = []
-        var recorder: RuneWindowRecorder?
+        var settled = 0
+        var current: PreviewTake?
         RuneRootLayoutDebug.liveScenarioSnapshotHandler = { step in
-            guard let recorder, let dwell = Self.steps.first(where: { $0.0 == step })?.1 else { return }
+            guard let take = current, let dwell = steps.first(where: { $0.0 == step })?.1 else { return }
             await fixture.keepWindowSize()
             if step == .workloadPodLogs {
                 await fixture.selectLogMatrixPod()
             }
-            recorder.mark(step.rawValue)
-            switch step {
-            case .terminalLogs:
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                for character in "ps -o pid,comm" {
-                    viewModel.terminalSessionInput.append(character)
-                    try? await Task.sleep(nanoseconds: 90_000_000)
-                }
-                viewModel.sendTerminalSessionInput()
-            case .authDoctor:
-                // Run it again on camera so the checks fill in.
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                viewModel.runAuthDoctor()
-            default:
-                break
-            }
-            try? await Task.sleep(nanoseconds: UInt64(dwell * 1_000_000_000))
-            settled.append(step)
+            take.mark(step.rawValue)
+            await during(step, take)
+            await take.pause(dwell)
+            settled += 1
         }
         defer { RuneRootLayoutDebug.liveScenarioSnapshotHandler = nil }
 
         // The recorder is in place before the scenario's first step can run.
         let window = fixture.openWindow()
         defer { fixture.closeWindow() }
-        let started = try RuneWindowRecorder(url: movie, windowID: CGWindowID(window.windowNumber))
-        recorder = started
-        started.start()
+        let recorder = try RuneWindowRecorder(url: movie, windowID: CGWindowID(window.windowNumber))
+        let take = PreviewTake(fixture: fixture, recorder: recorder, window: window)
+        current = take
+        recorder.start()
         await fixture.keepWindowSize()
 
-        try await fixture.waitUntil(timeout: 400) { settled.count == Self.steps.count }
+        try await fixture.waitUntil(timeout: 400) { settled == steps.count }
+        try await after(take)
 
-        // The command palette, typed into as a person would.
-        viewModel.setSection(.workloads)
-        viewModel.setWorkloadKind(.pod)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        started.mark("commandPalette")
-        viewModel.presentCommandPalette()
-        try await Task.sleep(nanoseconds: 700_000_000)
-        for character in ":po log" {
-            type(String(character), keyCode: 0, near: window)
-            try await Task.sleep(nanoseconds: 140_000_000)
-        }
-        try await Task.sleep(nanoseconds: 1_400_000_000)
-        type("\r", keyCode: 36, near: window)
-        try await Task.sleep(nanoseconds: 3_000_000_000)
-        if state.isCommandPalettePresented { viewModel.dismissCommandPalette() }
-
-        // The overview again, for the closing scene.
-        viewModel.setSection(.overview)
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        started.mark("closing")
-        try await Task.sleep(nanoseconds: 5_000_000_000)
-
-        let result = await started.finish()
+        let result = await recorder.finish()
         XCTAssertNil(result.error, "recording finished")
-        XCTAssertGreaterThan(result.frames, 400, "frames recorded")
+        XCTAssertGreaterThan(result.frames, 300, "frames recorded")
         let markers = result.markers.map { ["name": $0.name, "seconds": $0.seconds] as [String: Any] }
         let json = try JSONSerialization.data(withJSONObject: markers, options: [.prettyPrinted, .sortedKeys])
-        try json.write(to: fixture.output.appendingPathComponent("app-preview-markers.json"))
+        try json.write(to: fixture.output.appendingPathComponent("\(name)-markers.json"))
         let names = Set(result.markers.map(\.name))
-        XCTAssertEqual(names, Set(Self.steps.map(\.0.rawValue) + ["commandPalette", "closing"]), "scene markers")
+        XCTAssertTrue(names.isSuperset(of: steps.map(\.0.rawValue) + ["closing"]), "scene markers")
+    }
+}
+
+/// What a preview's script works with while it is being recorded.
+@MainActor
+final class PreviewTake {
+    let fixture: RuneAppStoreCaptureFixture
+    let recorder: RuneWindowRecorder
+    let window: NSWindow
+
+    init(fixture: RuneAppStoreCaptureFixture, recorder: RuneWindowRecorder, window: NSWindow) {
+        self.fixture = fixture
+        self.recorder = recorder
+        self.window = window
+    }
+
+    var viewModel: RuneAppViewModel { fixture.viewModel }
+    var state: RuneAppState { fixture.state }
+
+    func mark(_ name: String) {
+        recorder.mark(name)
+    }
+
+    func pause(_ seconds: TimeInterval) async {
+        guard seconds > 0 else { return }
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    func typeSlowly(_ text: String, every seconds: TimeInterval) async {
+        for character in text {
+            press(String(character), keyCode: 0)
+            await pause(seconds)
+        }
     }
 
     /// A key press delivered to the window that has keyboard focus, as if
     /// typed: needs no accessibility permission because it stays in process.
-    private func type(_ characters: String, keyCode: UInt16, near window: NSWindow) {
+    /// A shortcut with modifiers goes through the window's key equivalents
+    /// first, as a menu or button shortcut would.
+    func press(_ characters: String, keyCode: UInt16, modifiers: NSEvent.ModifierFlags = []) {
         let target = window.attachedSheet ?? NSApp.keyWindow ?? window
         for type in [NSEvent.EventType.keyDown, .keyUp] {
             guard let event = NSEvent.keyEvent(
                 with: type,
                 location: .zero,
-                modifierFlags: [],
+                modifierFlags: modifiers,
                 timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: target.windowNumber,
                 context: nil,
@@ -128,13 +271,16 @@ final class RuneAppPreviewCaptureTests: XCTestCase {
                 isARepeat: false,
                 keyCode: keyCode
             ) else { continue }
+            if type == .keyDown, !modifiers.isEmpty, target.performKeyEquivalent(with: event) {
+                continue
+            }
             target.sendEvent(event)
         }
     }
 }
 
 /// Records one window of this process, with any sheet, popover or menu of
-/// the process above it, into a 1920 by 1080 H.264 movie on a background
+/// the process above it, into a 2880 by 1620 H.264 movie on a background
 /// thread. `CGImage(windowListFromArrayScreenBounds:)` of the process's own
 /// windows needs no screen recording permission.
 final class RuneWindowRecorder: @unchecked Sendable {
@@ -149,7 +295,7 @@ final class RuneWindowRecorder: @unchecked Sendable {
         let error: String?
     }
 
-    private static let size = CGSize(width: 1920, height: 1080)
+    private static let size = CGSize(width: 2880, height: 1620)
     private static let frameInterval = 1.0 / 30
 
     private let writer: AVAssetWriter
@@ -171,7 +317,7 @@ final class RuneWindowRecorder: @unchecked Sendable {
             AVVideoWidthKey: Int(Self.size.width),
             AVVideoHeightKey: Int(Self.size.height),
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 40_000_000,
+                AVVideoAverageBitRateKey: 60_000_000,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
             ]
         ])

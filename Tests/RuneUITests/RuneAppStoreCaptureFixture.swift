@@ -74,6 +74,9 @@ final class RuneAppStoreCaptureFixture {
         volatile.set(true, forKey: RuneSettingsKeys.logsShowTimestamps)
         volatile.set(false, forKey: RuneSettingsKeys.saveLastAppState)
         volatile.set(260.0, forKey: RuneSettingsKeys.layoutSidebarWidth)
+        // Never the export folder of the person running the capture.
+        volatile.set(Data(), forKey: RuneSettingsKeys.exportFolderBookmark)
+        volatile.set("Rune Exports", forKey: RuneSettingsKeys.exportFolderDisplayName)
 
         let state = RuneAppState()
         state.setSources([KubeConfigSource(url: kubeconfig)])
@@ -100,6 +103,13 @@ final class RuneAppStoreCaptureFixture {
         }
         viewModel.isSidebarVisible = true
         viewModel.isDetailPaneVisible = true
+    }
+
+    /// Changes a setting for this test only, as Settings would: the app
+    /// hears about it through the usual defaults notification.
+    func setSetting(_ value: Any, forKey key: String) {
+        volatile.set(value, forKey: key)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: UserDefaults.standard)
     }
 
     /// Opens Rune's root view in a window of the fixture's size. Closed by
