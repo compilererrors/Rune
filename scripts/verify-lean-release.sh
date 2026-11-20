@@ -46,7 +46,10 @@ for marker in "${TEST_DATA_MARKERS[@]}"; do
   fi
 done
 
-stray="$(find "${app_bundle}" \( -iname '*fixture*' -o -iname '*.yaml' -o -iname '*.yml' -o -iname '*kubeconfig*' \
+# Only what the bundle carries: the bundle's own name and its executable are
+# whatever the build chose.
+stray="$(find "${app_bundle}/Contents" -mindepth 1 -not -path "${app_bundle}/Contents/MacOS/${PRODUCT_NAME}" \
+  \( -iname '*fixture*' -o -iname '*.yaml' -o -iname '*.yml' -o -iname '*kubeconfig*' \
   -o -iname '*.xctest' -o -iname '*test*' -o -iname '*screenshot*' -o -name '.DS_Store' \) -print | head -5)"
 if [[ -n "${stray}" ]]; then
   fail_gate "the bundle contains files that are not part of the app: ${stray//$'\n'/, }."

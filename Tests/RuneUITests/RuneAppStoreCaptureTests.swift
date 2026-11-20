@@ -1,3 +1,5 @@
+// The scripted scenario it drives exists only in debug builds.
+#if DEBUG
 import AppKit
 import RuneCore
 import RuneKube
@@ -238,3 +240,4 @@ final class RuneAppStoreCaptureTests: XCTestCase {
             .deletingLastPathComponent()
     }
 }
+#endif
