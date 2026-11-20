@@ -105,6 +105,10 @@ extension RuneRootView {
         } else {
             RuneRootLayoutDebug.logScenario(step, status: "snapshot-missing")
         }
+        if let handler = RuneRootLayoutDebug.liveScenarioSnapshotHandler {
+            await handler(step)
+            return
+        }
         await waitForLiveDebugScenarioInteractionAcknowledgement(step)
     }
 
@@ -224,6 +228,11 @@ extension RuneRootView {
         }
     }
 
+    var preferredLiveScenarioPod: PodSummary? {
+        guard let name = RuneRootLayoutDebug.liveScenarioPodName, !name.isEmpty else { return nil }
+        return viewModel.state.pods.first { $0.name == name }
+    }
+
     @MainActor
     func applyLiveDebugScenarioStep(_ step: RuneRootLiveDebugScenarioStep) -> Bool {
         if !step.presentsYAMLEditorSheet {
@@ -250,7 +259,13 @@ extension RuneRootView {
             yamlManifestIsEditing = false
             return true
         case .workloadPodLogs:
-            guard let pod = viewModel.state.selectedPod ?? viewModel.visiblePods.first else { return false }
+            if RuneRootLayoutDebug.liveScenarioPodName?.isEmpty == false, preferredLiveScenarioPod == nil {
+                // Show the pod list and try again once it has the preferred pod.
+                viewModel.setSection(.workloads)
+                viewModel.setWorkloadKind(.pod)
+                return false
+            }
+            guard let pod = preferredLiveScenarioPod ?? viewModel.state.selectedPod ?? viewModel.visiblePods.first else { return false }
             viewModel.setSection(.workloads)
             viewModel.setWorkloadKind(.pod)
             viewModel.selectPod(pod)
@@ -545,7 +560,7 @@ extension RuneRootView {
             viewModel.setSection(.terminal)
             terminalInspectorTab = .logs
             yamlManifestIsEditing = false
-            guard let pod = terminalLogActivePod ?? terminalInitialLogPod else { return false }
+            guard let pod = preferredLiveScenarioPod ?? terminalLogActivePod ?? terminalInitialLogPod else { return false }
             ensureTerminalLogTabs(for: pod)
             let additionalPods = viewModel.state.pods
                 .filter {

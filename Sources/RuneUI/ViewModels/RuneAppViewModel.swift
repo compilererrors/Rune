@@ -14470,7 +14470,8 @@ public final class RuneAppViewModel: ObservableObject {
                         namespace: self.state.selectedNamespace,
                         service: service,
                         filter: self.selectedLogPreset.filter,
-                        previous: self.includePreviousLogs
+                        previous: self.includePreviousLogs,
+                        showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                     )
                 }
                 async let manifests = fetchYAMLAndDescribe(
@@ -14526,7 +14527,8 @@ public final class RuneAppViewModel: ObservableObject {
                         namespace: self.state.selectedNamespace,
                         deployment: deployment,
                         filter: self.selectedLogPreset.filter,
-                        previous: self.includePreviousLogs
+                        previous: self.includePreviousLogs,
+                        showTimestamps: UserDefaults.standard.runeLogsShowTimestamps
                     )
                 }
                 async let manifests = fetchYAMLAndDescribe(

@@ -166,9 +166,14 @@ enum RuneRootLayoutDebug {
     // Layout logging and the scripted scenario are for debug builds and
     // tests only; a release build compiles them out.
     #if DEBUG
+    /// Called at each scenario step's snapshot moment instead of waiting for
+    /// an outside screenshot, so a test can capture its own window.
+    @MainActor static var liveScenarioSnapshotHandler: ((RuneRootLiveDebugScenarioStep) async -> Void)?
     static let isEnabled = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT"] == "1"
     static let liveScenarioEnabled = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_LIVE_SCENARIO"] == "1"
     static let liveScenarioExitWhenDone = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_LIVE_SCENARIO_EXIT"] == "1"
+    /// The pod the pod and terminal steps start from, when it exists.
+    static let liveScenarioPodName = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_POD"]
     static let liveScenarioContextName = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_CONTEXT"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
     static let liveScenarioNamespace = ProcessInfo.processInfo.environment["RUNE_DEBUG_LAYOUT_NAMESPACE"]?
