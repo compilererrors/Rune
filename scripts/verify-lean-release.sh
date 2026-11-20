@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Fails when a release app bundle ships symbols, debug-only code or grows past the size budget.
+# Fails when a release app bundle ships symbols, debug-only code, test data or
+# local paths, or grows past the size budget.
 set -euo pipefail
 
 MAX_APP_SIZE_MB="${MAX_APP_SIZE_MB:-25}"
 DEBUG_ONLY_MARKERS=(RuneUIComponentGallery RuneDebugFakePodShell RuneFakeK8s)
+# Fake-cluster fixtures, the scripted debug scenario, screenshot capture and
+# build-machine paths belong to tests only.
+TEST_DATA_MARKERS=(fake-orbit-mesh fake-lattice-spark alpha-zone RUNE_DEBUG_LAYOUT liveScenario RuneAppStoreCapture RUNE_UI_APPSTORE /Users/ docker-compose/generated)
 
 fail_gate() {
   echo "Lean release gate failed: $*" >&2
@@ -35,6 +39,18 @@ for marker in "${DEBUG_ONLY_MARKERS[@]}"; do
     fail_gate "${PRODUCT_NAME} contains debug-only code (${marker})."
   fi
 done
+
+for marker in "${TEST_DATA_MARKERS[@]}"; do
+  if grep -qF -- "${marker}" "${work}/strings"; then
+    fail_gate "${PRODUCT_NAME} contains test data or a local path (${marker})."
+  fi
+done
+
+stray="$(find "${app_bundle}" \( -iname '*fixture*' -o -iname '*.yaml' -o -iname '*.yml' -o -iname '*kubeconfig*' \
+  -o -iname '*.xctest' -o -iname '*test*' -o -iname '*screenshot*' -o -name '.DS_Store' \) -print | head -5)"
+if [[ -n "${stray}" ]]; then
+  fail_gate "the bundle contains files that are not part of the app: ${stray//$'\n'/, }."
+fi
 
 app_kb="$(du -sk "${app_bundle}" | cut -f1)"
 if (( app_kb > MAX_APP_SIZE_MB * 1024 )); then
