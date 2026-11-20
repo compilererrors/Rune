@@ -158,6 +158,79 @@ final class CustomLogSettingsReloadTests: XCTestCase {
         withExtendedLifetime(viewModel) {}
     }
 
+    /// Selecting a deployment or a service loads its logs with the details;
+    /// those must ask for the kubelet's time and keep it when it is shown.
+    func testSelectingADeploymentOrServiceShowsTimestampsWhenTheSettingIsOn() async throws {
+        let defaults = UserDefaults.standard
+        let key = RuneSettingsKeys.logsShowTimestamps
+        let savedValue = defaults.persistedTestValue(forKey: key)
+        defer {
+            if let savedValue {
+                defaults.set(savedValue, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        defaults.set(true, forKey: key)
+
+        let server = try await RuneFakeK8sRESTServer.start()
+        defer { server.stop() }
+        let kubeconfig = try writeKubeconfig(server.kubeconfigYAML())
+        defer { try? FileManager.default.removeItem(at: kubeconfig) }
+        let contextDefaultsSuite = TestDefaultsSuite.name("CustomLogSettingsReloadTests.\(UUID().uuidString)")
+        let contextDefaults = try XCTUnwrap(UserDefaults(suiteName: contextDefaultsSuite))
+        defer { contextDefaults.removeTestSuite(named: contextDefaultsSuite) }
+
+        let state = RuneAppState()
+        state.setSources([KubeConfigSource(url: kubeconfig)])
+        state.selectedContext = KubeContext(name: RuneFakeK8sFixture.defaultContextName)
+        state.selectedNamespace = "alpha-zone"
+        let viewModel = RuneAppViewModel(
+            state: state,
+            bookmarkManager: BookmarkManager.inMemory(),
+            contextPreferences: UserDefaultsContextPreferencesStore(defaults: contextDefaults),
+            savedWorkspaceStore: EmptyCustomLogSavedWorkspaceStore(),
+            overviewSnapshotPersistence: NoopOverviewSnapshotCacheStore(),
+            namespaceListPersistence: NoopNamespaceListPersistenceStore()
+        )
+
+        viewModel.setSection(.workloads)
+        viewModel.setWorkloadKind(.deployment)
+        viewModel.selectDeployment(DeploymentSummary(
+            name: "ember-gate",
+            namespace: "alpha-zone",
+            readyReplicas: 1,
+            desiredReplicas: 2,
+            selector: ["app": "ember-gate"]
+        ))
+        try await waitUntil {
+            state.unifiedServiceLogs.contains("[ember-gate") && state.unifiedServiceLogs.contains(".000000123Z")
+        }
+        XCTAssertTrue(
+            server.requestLines().filter { $0.contains("/log?") }.allSatisfy { $0.contains("timestamps=true") },
+            "\(server.requestLines())"
+        )
+
+        server.resetRequestLines()
+        viewModel.setSection(.networking)
+        viewModel.setWorkloadKind(.service)
+        viewModel.selectService(ServiceSummary(
+            name: "orbit-lens",
+            namespace: "alpha-zone",
+            type: "ClusterIP",
+            clusterIP: "10.96.0.20",
+            selector: ["app": "orbit-lens"]
+        ))
+        try await waitUntil {
+            state.unifiedServiceLogs.contains("[orbit-lens") && state.unifiedServiceLogs.contains(".000000123Z")
+        }
+        XCTAssertTrue(
+            server.requestLines().filter { $0.contains("/log?") }.allSatisfy { $0.contains("timestamps=true") },
+            "\(server.requestLines())"
+        )
+        withExtendedLifetime(viewModel) {}
+    }
+
     private func writeKubeconfig(_ contents: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("custom-log-settings-\(UUID().uuidString).yaml")

@@ -209,6 +209,67 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
         XCTAssertTrue(contents.contains("|| fail_gate \"could not strip"), "a failed strip names the gate instead of exiting silently")
     }
 
+    /// The gate passes a clean app and stops one with test-only strings in
+    /// its binary or stray files in its bundle.
+    func testLeanReleaseGateRejectsTestDataAndStrayFiles() throws {
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rune-lean-gate-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+
+        func makeApp(named name: String, embedding text: String?) throws -> URL {
+            let app = work.appendingPathComponent("\(name).app", isDirectory: true)
+            let macOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
+            try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: app.appendingPathComponent("Contents/Resources", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            let plist = ["CFBundleExecutable": "RuneApp"] as NSDictionary
+            try plist.write(to: app.appendingPathComponent("Contents/Info.plist"))
+            let source = work.appendingPathComponent("\(name).c")
+            let literal = text.map { "\"\($0)\"" } ?? "\"rune\""
+            try "const char *marker = \(literal);\nint main(void) { return marker[0] == 0; }\n"
+                .write(to: source, atomically: true, encoding: .utf8)
+            XCTAssertEqual(try run("/usr/bin/xcrun", ["clang", "-o", macOS.appendingPathComponent("RuneApp").path, source.path]).status, 0)
+            XCTAssertEqual(try run("/usr/bin/xcrun", ["strip", macOS.appendingPathComponent("RuneApp").path]).status, 0)
+            return app
+        }
+        let gate = repositoryRoot.appendingPathComponent("scripts/verify-lean-release.sh").path
+
+        let clean = try run("/bin/bash", [gate, try makeApp(named: "Clean", embedding: nil).path])
+        XCTAssertEqual(clean.status, 0, clean.output)
+
+        for marker in ["RUNE_DEBUG_LAYOUT_LIVE_SCENARIO", "fake-orbit-mesh", "/Users/someone/Workspace/Rune"] {
+            let result = try run("/bin/bash", [gate, try makeApp(named: "Marker\(abs(marker.hashValue))", embedding: marker).path])
+            XCTAssertNotEqual(result.status, 0, "\(marker) must stop the gate")
+            XCTAssertTrue(result.output.contains("test data or a local path"), result.output)
+        }
+
+        let stray = try makeApp(named: "Stray", embedding: nil)
+        try "apiVersion: v1\n".write(
+            to: stray.appendingPathComponent("Contents/Resources/sample-kubeconfig.yaml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let strayResult = try run("/bin/bash", [gate, stray.path])
+        XCTAssertNotEqual(strayResult.status, 0)
+        XCTAssertTrue(strayResult.output.contains("files that are not part of the app"), strayResult.output)
+    }
+
+    private func run(_ executable: String, _ arguments: [String]) throws -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
     func testBuildScriptCopiesSwiftPackageResourcesIntoAppBundle() throws {
         let script = repositoryRoot.appendingPathComponent("scripts/build-macos-app.sh")
         let contents = try String(contentsOf: script, encoding: .utf8)
@@ -315,6 +376,13 @@ final class RuneAppBundleInfoPlistTests: XCTestCase {
 
         XCTAssertTrue(contents.contains("WindowGroup(\"Rune\", id: RuneApplicationIdentifiers.mainWindowScene)"))
         XCTAssertTrue(contents.contains("openWindow(id: RuneApplicationIdentifiers.mainWindowScene)"))
+        // One main window: every window would share the view model and mirror
+        // the others, so the command brings the window forward first and a
+        // tab's "+" cannot open another.
+        XCTAssertTrue(contents.contains("openMainWindowCommandTitle = \"Show Rune Window\""))
+        XCTAssertTrue(contents.contains("if !RuneMainWindow.presentIfPresent() {"))
+        XCTAssertTrue(contents.contains("NSWindow.allowsAutomaticWindowTabbing = false"))
+        XCTAssertFalse(contents.contains("New Rune Window"))
         XCTAssertTrue(contents.contains("applicationShouldHandleReopen"))
         XCTAssertTrue(contents.contains("NSApplication.didFinishRestoringWindowsNotification"))
         XCTAssertTrue(contents.contains("window restoration completion inferred after launch"))
