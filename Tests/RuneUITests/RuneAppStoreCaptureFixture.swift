@@ -16,7 +16,8 @@ import XCTest
 ///
 /// Skips unless `outputVariable` names a folder, the stack is up and
 /// `RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1`. `RUNE_UI_APPSTORE_THEME` picks
-/// the theme by raw value (default `emberGlass`). The scenario is switched on
+/// the theme by raw value (default `emberGlass`) and `RUNE_UI_APPSTORE_LANGUAGE`
+/// the interface language (default `en`). The scenario is switched on
 /// for the whole test process, so each capture test runs on its own.
 @MainActor
 final class RuneAppStoreCaptureFixture {
@@ -72,6 +73,9 @@ final class RuneAppStoreCaptureFixture {
         let theme = environment["RUNE_UI_APPSTORE_THEME"].flatMap(RuneAppearanceTheme.init(rawValue:)) ?? .emberGlass
         volatile = VolatileTestDefaults(testCase)
         volatile.set(theme.rawValue, forKey: RuneSettingsKeys.appearanceTheme)
+        // `RUNE_UI_APPSTORE_LANGUAGE` picks the interface language by raw value (default English).
+        let language = environment["RUNE_UI_APPSTORE_LANGUAGE"].flatMap(RuneLanguage.init(rawValue:)) ?? .english
+        volatile.set(language.rawValue, forKey: RuneSettingsKeys.interfaceLanguage)
         volatile.set(false, forKey: RuneSettingsKeys.enableDemoCluster)
         volatile.set(true, forKey: RuneSettingsKeys.logsShowTimestamps)
         volatile.set(false, forKey: RuneSettingsKeys.saveLastAppState)
