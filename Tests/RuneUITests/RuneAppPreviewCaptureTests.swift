@@ -66,11 +66,14 @@ final class RuneAppPreviewCaptureTests: XCTestCase {
     }
 
     /// Every container in one timeline, timestamps, one container, how many
-    /// lines, search, a whole deployment, and saving from the palette.
+    /// lines, search, a whole deployment, a service, log tabs beside the
+    /// shell, and saving from the palette.
     func testRecordLogsPreviewFootage() async throws {
         try await record("logs", steps: [
             (.workloadPodLogs, 0),
-            (.workloadDeploymentUnifiedLogs, 5)
+            (.workloadDeploymentUnifiedLogs, 5),
+            (.networkingServiceUnifiedLogs, 4.5),
+            (.terminalLogs, 4.5)
         ], prepare: { fixture in
             // Off at first, so the preview can turn them on.
             fixture.setSetting(false, forKey: RuneSettingsKeys.logsShowTimestamps)
@@ -119,7 +122,8 @@ final class RuneAppPreviewCaptureTests: XCTestCase {
         }
     }
 
-    /// Auth Doctor, RBAC Can I for logs and exec, YAML validation and Helm.
+    /// Auth Doctor, RBAC Can I for logs and exec, YAML validation, Helm and
+    /// switching to the other cluster.
     func testRecordAccessPreviewFootage() async throws {
         try await record("access", steps: [
             (.authDoctor, 6),
@@ -154,7 +158,14 @@ final class RuneAppPreviewCaptureTests: XCTestCase {
             take.mark("helm")
             await take.pause(5)
             viewModel.setSection(.overview)
-            await take.pause(1.5)
+            await take.pause(2)
+            // The other cluster, switched to on camera.
+            take.mark("otherCluster")
+            viewModel.setContext(KubeContext(name: "fake-lattice-spark"))
+            try? await take.fixture.waitUntil(timeout: 30) {
+                state.selectedContext?.name == "fake-lattice-spark" && !state.isLoading
+            }
+            await take.pause(4)
             take.mark("closing")
             await take.pause(5)
         }
