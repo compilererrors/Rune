@@ -33,7 +33,9 @@ final class RuneAppStoreCaptureFixture {
         _ testCase: XCTestCase,
         outputVariable: String,
         steps: [RuneRootLiveDebugScenarioStep],
-        windowSize: NSSize
+        windowSize: NSSize,
+        context: String = "fake-orbit-mesh",
+        extraKubeconfigs: [URL] = []
     ) async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let directory = environment[outputVariable], !directory.isEmpty else {
@@ -56,7 +58,7 @@ final class RuneAppStoreCaptureFixture {
         // any RuneRootView exists in this process.
         setenv("RUNE_DEBUG_LAYOUT_LIVE_SCENARIO", "1", 1)
         setenv("RUNE_DEBUG_LAYOUT_LIVE_SCENARIO_STEPS", steps.map(\.rawValue).joined(separator: ","), 1)
-        setenv("RUNE_DEBUG_LAYOUT_CONTEXT", "fake-orbit-mesh", 1)
+        setenv("RUNE_DEBUG_LAYOUT_CONTEXT", context, 1)
         setenv("RUNE_DEBUG_LAYOUT_NAMESPACE", "alpha-zone", 1)
         // The multi-container pod, whose logs interleave.
         setenv("RUNE_DEBUG_LAYOUT_POD", Self.podName, 1)
@@ -79,7 +81,7 @@ final class RuneAppStoreCaptureFixture {
         volatile.set("Rune Exports", forKey: RuneSettingsKeys.exportFolderDisplayName)
 
         let state = RuneAppState()
-        state.setSources([KubeConfigSource(url: kubeconfig)])
+        state.setSources(([kubeconfig] + extraKubeconfigs).map { KubeConfigSource(url: $0) })
         let preferencesSuite = TestDefaultsSuite.name("RuneAppStoreCapture.\(UUID().uuidString)")
         let preferencesDefaults = try XCTUnwrap(UserDefaults(suiteName: preferencesSuite))
         testCase.addTeardownBlock { @MainActor in
@@ -96,8 +98,8 @@ final class RuneAppStoreCaptureFixture {
         self.state = state
         self.viewModel = viewModel
         try await viewModel.reloadContexts()
-        try await waitUntil(timeout: 30) { state.contexts.contains { $0.name == "fake-orbit-mesh" } }
-        viewModel.setContext(KubeContext(name: "fake-orbit-mesh"))
+        try await waitUntil(timeout: 30) { state.contexts.contains { $0.name == context } }
+        viewModel.setContext(KubeContext(name: context))
         try await waitUntil(timeout: 30) {
             state.selectedNamespace == "alpha-zone" && !state.pods.isEmpty && !state.isLoading
         }

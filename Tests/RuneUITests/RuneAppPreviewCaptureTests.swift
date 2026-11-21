@@ -122,50 +122,64 @@ final class RuneAppPreviewCaptureTests: XCTestCase {
         }
     }
 
-    /// Auth Doctor, RBAC Can I for logs and exec, YAML validation, Helm and
-    /// switching to the other cluster.
+    /// One story about access, as a user who may read but not exec: the
+    /// shell is refused, Auth Doctor shows the login is fine, and RBAC Can I,
+    /// filled in on camera, says exec is denied and logs are allowed.
     func testRecordAccessPreviewFootage() async throws {
+        let viewer = try PreviewViewer.makeKubeconfig()
         try await record("access", steps: [
-            (.authDoctor, 6),
-            (.rbacCanI, 0),
-            (.workloadDeploymentYAMLValidation, 4.5)
-        ]) { step, take in
+            (.authDoctor, 0),
+            (.rbacCanI, 0)
+        ], context: PreviewViewer.context, extraKubeconfigs: [viewer]) { step, take in
             let viewModel = take.viewModel
+            let state = take.state
             switch step {
             case .authDoctor:
-                await take.pause(0.5)
+                // A wide shell for the pod, so the whole refusal fits on a line.
+                await take.fixture.selectLogMatrixPod()
+                viewModel.isDetailPaneVisible = false
+                viewModel.setSection(.terminal)
+                await take.pause(1.2)
+                take.mark("denied")
+                let name = RuneAppStoreCaptureFixture.podName
+                if !state.terminalSessions.contains(where: { $0.podName == name }),
+                   let pod = state.pods.first(where: { $0.name == name }) {
+                    viewModel.startTerminalSession(for: pod)
+                }
+                await take.pause(5.5)
+                viewModel.isDetailPaneVisible = true
+                viewModel.setSection(.overview)
+                await take.pause(0.8)
+                take.mark("authDoctorRun")
                 viewModel.runAuthDoctor()
+                await take.pause(6)
             case .rbacCanI:
-                await take.pause(3)
-                take.mark("rbacExec")
-                viewModel.rbacCanIVerb = "create"
-                viewModel.rbacCanIResource = "pods"
-                viewModel.rbacCanISubresource = "exec"
+                // The scenario's own check ran first; start from empty fields.
+                viewModel.rbacCanIVerb = ""
+                viewModel.rbacCanIResource = ""
+                viewModel.rbacCanISubresource = ""
+                await take.pause(1.2)
+                take.mark("canIExec")
+                await take.pause(0.6)
+                await take.fill(\.rbacCanIVerb, "create")
+                await take.fill(\.rbacCanIResource, "pods")
+                await take.fill(\.rbacCanISubresource, "exec")
+                await take.pause(0.5)
                 viewModel.runRBACCanISimulator()
-                await take.pause(3.5)
+                await take.pause(5)
+                take.mark("canILogs")
+                await take.pause(0.4)
+                viewModel.rbacCanIVerb = ""
+                viewModel.rbacCanISubresource = ""
+                await take.fill(\.rbacCanIVerb, "get")
+                await take.fill(\.rbacCanISubresource, "log")
+                await take.pause(0.5)
+                viewModel.runRBACCanISimulator()
+                await take.pause(4.5)
             default:
                 break
             }
         } after: { take in
-            let viewModel = take.viewModel
-            let state = take.state
-            viewModel.setSection(.helm)
-            try? await take.fixture.waitUntil(timeout: 20) { !state.helmReleases.isEmpty }
-            if let release = state.helmReleases.first(where: { $0.name == "orbit-lens" }) ?? state.helmReleases.first {
-                viewModel.selectHelmRelease(release)
-            }
-            await take.pause(1.5)
-            take.mark("helm")
-            await take.pause(5)
-            viewModel.setSection(.overview)
-            await take.pause(2)
-            // The other cluster, switched to on camera.
-            take.mark("otherCluster")
-            viewModel.setContext(KubeContext(name: "fake-lattice-spark"))
-            try? await take.fixture.waitUntil(timeout: 30) {
-                state.selectedContext?.name == "fake-lattice-spark" && !state.isLoading
-            }
-            await take.pause(4)
             take.mark("closing")
             await take.pause(5)
         }
@@ -179,6 +193,8 @@ final class RuneAppPreviewCaptureTests: XCTestCase {
     private func record(
         _ name: String,
         steps: Steps,
+        context: String = "fake-orbit-mesh",
+        extraKubeconfigs: [URL] = [],
         prepare: (RuneAppStoreCaptureFixture) -> Void = { _ in },
         during: @escaping @MainActor (RuneRootLiveDebugScenarioStep, PreviewTake) async -> Void,
         after: @MainActor (PreviewTake) async throws -> Void
@@ -187,7 +203,9 @@ final class RuneAppPreviewCaptureTests: XCTestCase {
             self,
             outputVariable: "RUNE_UI_APPPREVIEW_DIR",
             steps: steps.map(\.0),
-            windowSize: NSSize(width: 1440, height: 810)
+            windowSize: NSSize(width: 1440, height: 810),
+            context: context,
+            extraKubeconfigs: extraKubeconfigs
         )
         prepare(fixture)
         let movie = fixture.output.appendingPathComponent("\(name)-recording.mov")
@@ -231,6 +249,112 @@ final class RuneAppPreviewCaptureTests: XCTestCase {
     }
 }
 
+/// A user of the orbit test cluster who may read everything but not exec,
+/// for the access preview. Made with kubectl against the local Docker
+/// Compose stack only; the kubeconfig goes to a temporary folder.
+@MainActor
+enum PreviewViewer {
+    static let context = "fake-orbit-viewer"
+    private static let manifest = """
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: preview-viewer
+      namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: preview-viewer
+    rules:
+      - apiGroups: ["*"]
+        resources: ["*"]
+        verbs: ["get", "list", "watch"]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: preview-viewer
+    subjects:
+      - kind: ServiceAccount
+        name: preview-viewer
+        namespace: kube-system
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: preview-viewer
+    """
+
+    /// Skips, before touching any cluster, unless the preview capture is
+    /// switched on and the kubeconfig is the local-only fake-cluster one.
+    static func makeKubeconfig() throws -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["RUNE_UI_APPPREVIEW_DIR"]?.isEmpty == false,
+              environment["RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("Set RUNE_UI_APPPREVIEW_DIR and RUNE_RUN_LOCAL_K8S_INTEGRATION_TESTS=1 to record the preview.")
+        }
+        let admin = RuneAppStoreCaptureFixture.repoRoot
+            .appendingPathComponent("docker-compose/generated/rune-fake-kubeconfig.yaml").path
+        guard let contents = try? String(contentsOfFile: admin, encoding: .utf8),
+              contents.contains("server: https://127.0.0.1:16443") else {
+            throw XCTSkip("The Docker Compose kubeconfig is not the local-only fake-cluster fixture.")
+        }
+        let base = ["--kubeconfig", admin, "--context", "fake-orbit-mesh"]
+        _ = try kubectl(base + ["apply", "-f", "-"], input: manifest)
+        let token = try kubectl(base + ["create", "token", "preview-viewer", "-n", "kube-system", "--duration=1h"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let config = """
+        apiVersion: v1
+        kind: Config
+        clusters:
+          - name: \(context)
+            cluster:
+              server: https://127.0.0.1:16443
+              insecure-skip-tls-verify: true
+        users:
+          - name: \(context)
+            user:
+              token: \(token)
+        contexts:
+          - name: \(context)
+            context:
+              cluster: \(context)
+              user: \(context)
+              namespace: alpha-zone
+        current-context: \(context)
+        """
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("rune-preview-viewer-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("viewer-kubeconfig.yaml")
+        try config.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    private static func kubectl(_ arguments: [String], input: String? = nil) throws -> String {
+        guard let path = ["/opt/homebrew/bin/kubectl", "/usr/local/bin/kubectl"]
+            .first(where: FileManager.default.isExecutableFile(atPath:)) else {
+            throw XCTSkip("kubectl is needed to make the read-only preview user.")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        let stdin = Pipe()
+        process.standardInput = stdin
+        try process.run()
+        if let input { stdin.fileHandleForWriting.write(Data(input.utf8)) }
+        try stdin.fileHandleForWriting.close()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw XCTSkip("kubectl \(arguments.dropFirst(4).joined(separator: " ")) failed.")
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
 /// What a preview's script works with while it is being recorded.
 @MainActor
 final class PreviewTake {
@@ -254,6 +378,15 @@ final class PreviewTake {
     func pause(_ seconds: TimeInterval) async {
         guard seconds > 0 else { return }
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    /// Types into one of the view model's text fields a character at a time.
+    func fill(_ field: ReferenceWritableKeyPath<RuneAppViewModel, String>, _ text: String, every seconds: TimeInterval = 0.11) async {
+        for character in text {
+            viewModel[keyPath: field].append(character)
+            await pause(seconds)
+        }
+        await pause(0.25)
     }
 
     func typeSlowly(_ text: String, every seconds: TimeInterval) async {
