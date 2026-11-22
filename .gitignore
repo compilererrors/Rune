@@ -25,18 +25,7 @@ test-reports/
 # Full UI smoke screenshot runs are local review artifacts. Only the
 # screenshots embedded in README.md are kept as narrow exceptions.
 assets/screenshot/ui/*
-!assets/screenshot/ui/20260622T170110Z/
-assets/screenshot/ui/20260622T170110Z/*
-!assets/screenshot/ui/20260622T170110Z/01-overview.png
-!assets/screenshot/ui/20260622T170110Z/03-workloads-pod-logs.png
-!assets/screenshot/ui/20260622T170110Z/05-workloads-pod-yaml-quick-edit.png
-!assets/screenshot/ui/20260622T170110Z/07-workloads-pod-describe.png
-!assets/screenshot/ui/20260622T170110Z/09-workloads-deployment-unified-logs.png
-!assets/screenshot/ui/20260622T170110Z/13-workloads-deployment-describe.png
-!assets/screenshot/ui/20260622T170110Z/16-networking-service-port-forward.png
-!assets/screenshot/ui/20260622T170110Z/26-events-detail.png
-!assets/screenshot/ui/20260622T170110Z/29-terminal-logs.png
-!assets/screenshot/ui/20260622T170110Z/40-command-palette-pods.png
+!assets/screenshot/ui/3.0/
 
 # Local environment files.
 .env

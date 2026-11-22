@@ -4,7 +4,7 @@ Rune is a fast native macOS Kubernetes cluster manager for people who debug real
 
 It is built for fast Kubernetes troubleshooting: quick navigation, strong keyboard support, direct access to resources, and no heavy platform console in the way. Rune adds a native macOS interface with more room for logs, YAML, describe output, port-forwarding, metrics, events, and focused troubleshooting without turning into bloat.
 
-![Rune overview](assets/screenshot/ui/20260622T170110Z/01-overview.png)
+![Rune overview](assets/screenshot/ui/3.0/01-overview.png)
 
 ## Why Rune
 
@@ -33,15 +33,15 @@ Kubernetes debugging is often about keeping enough context in view: the pod, its
 [Jump to the full screenshot grid](#full-screenshot-grid).
 
 <p>
-  <img src="assets/screenshot/ui/20260622T170110Z/01-overview.png" alt="Rune overview with shortcuts, cluster signals, and Auth Doctor" width="100%">
+  <img src="assets/screenshot/ui/3.0/01-overview.png" alt="Rune cluster overview with health, workload counts and recent events" width="100%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/20260622T170110Z/29-terminal-logs.png" alt="Rune terminal and logs in split view" width="100%">
+  <img src="assets/screenshot/ui/3.0/04-terminal-with-logs.png" alt="Rune pod shell with pod logs beside it" width="100%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/20260622T170110Z/05-workloads-pod-yaml-quick-edit.png" alt="Rune YAML quick edit with validation feedback" width="100%">
+  <img src="assets/screenshot/ui/3.0/03-deployment-logs.png" alt="Rune logs from every pod in a deployment in one view" width="100%">
 </p>
 
 ## Navigation
@@ -153,26 +153,26 @@ You can also support development through PayPal:
 ## Full Screenshot Grid
 
 <p>
-  <img src="assets/screenshot/ui/20260622T170110Z/01-overview.png" alt="Rune overview" width="49%">
-  <img src="assets/screenshot/ui/20260622T170110Z/03-workloads-pod-logs.png" alt="Rune pod logs" width="49%">
+  <img src="assets/screenshot/ui/3.0/01-overview.png" alt="Rune cluster overview" width="49%">
+  <img src="assets/screenshot/ui/3.0/02-pod-logs.png" alt="Rune pod logs from every container with timestamps" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/20260622T170110Z/05-workloads-pod-yaml-quick-edit.png" alt="Rune pod YAML quick edit" width="49%">
-  <img src="assets/screenshot/ui/20260622T170110Z/07-workloads-pod-describe.png" alt="Rune k9s-style pod describe output" width="49%">
+  <img src="assets/screenshot/ui/3.0/03-deployment-logs.png" alt="Rune logs from every pod in a deployment" width="49%">
+  <img src="assets/screenshot/ui/3.0/04-terminal-with-logs.png" alt="Rune pod shell with logs" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/20260622T170110Z/09-workloads-deployment-unified-logs.png" alt="Rune deployment unified logs" width="49%">
-  <img src="assets/screenshot/ui/20260622T170110Z/13-workloads-deployment-describe.png" alt="Rune deployment describe output" width="49%">
+  <img src="assets/screenshot/ui/3.0/05-command-palette.png" alt="Rune command palette" width="49%">
+  <img src="assets/screenshot/ui/3.0/06-yaml-validation.png" alt="Rune YAML editing with validation" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/20260622T170110Z/16-networking-service-port-forward.png" alt="Rune service port-forwarding" width="49%">
-  <img src="assets/screenshot/ui/20260622T170110Z/26-events-detail.png" alt="Rune event details" width="49%">
+  <img src="assets/screenshot/ui/3.0/07-rbac-can-i.png" alt="Rune RBAC Can I check" width="49%">
+  <img src="assets/screenshot/ui/3.0/08-auth-doctor.png" alt="Rune Auth Doctor" width="49%">
 </p>
 
 <p>
-  <img src="assets/screenshot/ui/20260622T170110Z/29-terminal-logs.png" alt="Rune terminal and logs split view" width="49%">
-  <img src="assets/screenshot/ui/20260622T170110Z/40-command-palette-pods.png" alt="Rune command palette pod jump" width="49%">
+  <img src="assets/screenshot/ui/3.0/09-networking.png" alt="Rune service networking" width="49%">
+  <img src="assets/screenshot/ui/3.0/10-settings-over-app.png" alt="Rune settings" width="49%">
 </p>
