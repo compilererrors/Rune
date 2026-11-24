@@ -136,6 +136,23 @@ enum RuneThemeContrast {
         }
         // Leave already-readable theme colors intact, including their alpha.
         guard score(color) < minimum else { return color }
+        // A translucent label colour (secondary or tertiary text) first gains
+        // opacity. Snapping it to an opaque colour would make it louder than
+        // primary text, which is translucent too.
+        let opaque = RGB(r: color.r, g: color.g, b: color.b)
+        if color.a < 1, score(opaque) >= minimum + 0.04 {
+            var lower = color.a
+            var upper = 1.0
+            for _ in 0..<20 {
+                let alpha = (lower + upper) / 2
+                if score(RGB(r: color.r, g: color.g, b: color.b, a: alpha)) >= minimum + 0.04 {
+                    upper = alpha
+                } else {
+                    lower = alpha
+                }
+            }
+            return RGB(r: color.r, g: color.g, b: color.b, a: upper)
+        }
         let target: RGB = score(.white) >= score(.black) ? .white : .black
         // Raise brightness at constant hue and saturation first. Mixing straight
         // toward white turns blue, green and gold accents into pale pastels.

@@ -103,6 +103,37 @@ final class RuneThemeContrastTests: XCTestCase {
         }
     }
 
+    func testNativeSecondaryTextStaysQuieterThanPrimaryText() throws {
+        // A translucent label colour that needs more contrast gains opacity,
+        // not a jump to solid white or black, so descriptions stay below titles.
+        for scheme in [ColorScheme.light, .dark] {
+            let appearance = try XCTUnwrap(NSAppearance(named: scheme == .dark ? .darkAqua : .aqua))
+            appearance.performAsCurrentDrawingAppearance {
+                var environment = EnvironmentValues()
+                environment.colorScheme = scheme
+                let background = NSColor.windowBackgroundColor
+                func contrast(_ style: RuneTextStyle) -> Double {
+                    RuneThemeContrast.ratio(NSColor(style.resolve(in: environment)), over: background)
+                }
+                XCTAssertLessThan(contrast(.secondary), contrast(.primary), "Native \(scheme): secondary is quieter than primary")
+                XCTAssertLessThanOrEqual(contrast(.tertiary), contrast(.secondary), "Native \(scheme): tertiary is not louder than secondary")
+                let secondary = NSColor(RuneTextStyle.secondary.resolve(in: environment)).usingColorSpace(.sRGB)
+                XCTAssertLessThan(secondary?.alphaComponent ?? 1, 1, "Native \(scheme): secondary stays translucent")
+            }
+        }
+    }
+
+    func testTranslucentTextGainsOpacityBeforeItChangesColour() throws {
+        let source = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.3)
+        let background = NSColor.runeHex("#2a2a2a")
+        XCTAssertLessThan(RuneThemeContrast.ratio(source, over: background), 4.5)
+        let corrected = try XCTUnwrap(RuneThemeContrast.readable(source, over: [background]).usingColorSpace(.sRGB))
+        XCTAssertGreaterThanOrEqual(RuneThemeContrast.ratio(corrected, over: background), 4.5)
+        XCTAssertLessThan(RuneThemeContrast.ratio(corrected, over: background), 5.0, "only as much opacity as the minimum needs")
+        XCTAssertEqual(corrected.redComponent, 1, accuracy: 0.001)
+        XCTAssertLessThan(corrected.alphaComponent, 1)
+    }
+
     func testANSIColorsAndResourceCellsAcrossAllThemes() throws {
         let source = (Array(30...37) + Array(90...97) + [39, 0]).map { "\u{1B}[\($0)mSample " }.joined()
         for appearance in RuneAppearanceTheme.allCases where appearance != .native {
