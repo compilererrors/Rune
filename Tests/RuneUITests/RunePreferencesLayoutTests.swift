@@ -71,7 +71,7 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains("Toggle(\"⌃\""))
         XCTAssertTrue(source.contains("Toggle(\"⇧\""))
 
-        XCTAssertTrue(source.contains("RuneSettingsAdaptiveRow(label: label, control: control)"))
+        XCTAssertTrue(source.contains("LabeledContent {"))
         XCTAssertTrue(source.contains("dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(source.contains("private struct RuneSettingsRowLayout: Layout"))
         XCTAssertTrue(source.contains("RuneSettingsRowLayout(forceStacked: dynamicTypeSize.isAccessibilitySize)"))
@@ -91,10 +91,11 @@ final class RunePreferencesLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains(".accessibilityValue(isSelected ? \"Selected\" : presentation.appearanceTitle)"))
         XCTAssertTrue(source.contains("if isSelected {"))
 
-        XCTAssertTrue(source.contains("ScrollView {"))
-        XCTAssertTrue(source.contains(".padding(.horizontal, RuneSettingsMetrics.pageHorizontalPadding)"))
-        XCTAssertTrue(source.contains(".runeInsetCard(padding: RuneSettingsMetrics.sectionCardPadding)"))
-        XCTAssertTrue(source.contains(".frame(minHeight: RuneSettingsMetrics.rowMinHeight)"))
+        // Each pane is a grouped form, as in System Settings, on the window's theme colour.
+        XCTAssertTrue(source.contains("Form {"))
+        XCTAssertTrue(source.contains(".formStyle(.grouped)"))
+        XCTAssertTrue(source.contains(".scrollContentBackground(.hidden)"))
+        XCTAssertFalse(source.contains(".runeInsetCard(padding: RuneSettingsMetrics.sectionCardPadding)"))
     }
 
     func testThemeGridAndLogSettingsKeepPurposefulConsistentLayouts() throws {
@@ -172,7 +173,7 @@ final class RunePreferencesLayoutTests: XCTestCase {
         ))
 
         XCTAssertTrue(editor.contains("RuneSettingsAdaptiveRow {"))
-        XCTAssertTrue(editor.contains("TextField(placeholder, value: normalizedBinding, format: .number)"))
+        XCTAssertTrue(editor.contains("TextField(title, value: normalizedBinding, format: .number, prompt: Text(placeholder))"))
         XCTAssertTrue(editor.contains("Text(valueSuffix)"))
         XCTAssertTrue(editor.contains(".accessibilityLabel(\"\\(title) value\")"))
         XCTAssertTrue(editor.contains("Stepper(\"Adjust \\(title)\", value: normalizedBinding, step: step)"))

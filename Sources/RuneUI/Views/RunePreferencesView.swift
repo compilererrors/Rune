@@ -361,7 +361,10 @@ struct RuneSettingsIntegerLimitEditor: View {
             }
         } control: {
             HStack(spacing: RuneSpacing.xs) {
-                TextField(placeholder, value: normalizedBinding, format: .number)
+                // In a form a text field's title becomes a label beside it, so the
+                // title is hidden and the placeholder is the prompt.
+                TextField(title, value: normalizedBinding, format: .number, prompt: Text(placeholder))
+                    .labelsHidden()
                     .textFieldStyle(RuneControlTextFieldStyle())
                     .runeInterfaceFont(design: .monospaced)
                     .multilineTextAlignment(.trailing)
@@ -403,8 +406,8 @@ struct RuneSettingsIntegerLimitEditor: View {
 /// Settings window content.
 public struct RunePreferencesView: View {
     @ViewBuilder
-    private var selectedSettingsPane: some View {
-        switch selectedPane {
+    private func settingsPaneContent(_ pane: PreferencesPane) -> some View {
+        switch pane {
         case .general: generalSettingsForm
         case .themes: themesSettingsForm
         case .keyBindings: keyBindingsSettingsForm
@@ -521,29 +524,18 @@ public struct RunePreferencesView: View {
     public init() {}
 
     public var body: some View {
-        // The pane switcher is Rune's native segmented tab bar at the top of
-        // the window. A toolbar TabView needs about 730 pt for these seven
-        // labels and collapses into an empty overflow at the standard width.
-        VStack(spacing: 0) {
-            HStack {
-                Spacer(minLength: 0)
-                RuneTabBar("Settings", selection: $selectedPane, tabs: PreferencesPane.allCases) {
-                    $0.title(settingsString)
-                }
-                .fixedSize()
-                Spacer(minLength: 0)
+        // A standard macOS settings window: the panes are toolbar tabs with an
+        // icon, the window is titled after the pane and keeps its window
+        // buttons, and each pane is a grouped form as in System Settings.
+        TabView(selection: $selectedPane) {
+            ForEach(PreferencesPane.allCases) { pane in
+                settingsPaneContent(pane)
+                    .tabItem { Label(pane.title(settingsString), systemImage: pane.symbol) }
+                    .tag(pane)
             }
-            .padding(.horizontal, RuneSettingsMetrics.pageHorizontalPadding)
-            .padding(.top, RuneSpacing.sm)
-            .padding(.bottom, RuneSpacing.xs)
-
-            Divider()
-
-            selectedSettingsPane
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .id(interfaceLanguageRaw)
-        .frame(minWidth: 740, idealWidth: 820, minHeight: 540)
+        .frame(minWidth: 820, idealWidth: 860, minHeight: 560)
         .background(RuneSettingsWindowConfigurator())
         .runeInterfaceTypography(
             configuredFontSize: terminalFontSize,
@@ -583,7 +575,6 @@ public struct RunePreferencesView: View {
                     isOn: $persistNamespaceListCache
                 )
 
-                Divider()
 
                 settingsControlRow(
                     title: settingsString(.settingsMaintenance),
@@ -624,7 +615,6 @@ public struct RunePreferencesView: View {
                     }
                 }
 
-                Divider()
 
                 settingsToggleRow(
                     settingsString(.settingsSimpleMode),
@@ -632,7 +622,6 @@ public struct RunePreferencesView: View {
                     isOn: $simpleMode
                 )
 
-                Divider()
 
                 if simpleMode {
                     HStack(alignment: .top, spacing: RuneSpacing.inset) {
@@ -654,7 +643,6 @@ public struct RunePreferencesView: View {
                     )
                 }
 
-                Divider()
 
                 settingsToggleRow(
                     settingsString(.settingsShowHoverTooltips),
@@ -662,7 +650,6 @@ public struct RunePreferencesView: View {
                     isOn: $showHoverTooltips
                 )
 
-                Divider()
 
                 settingsToggleRow(
                     settingsString(.settingsShowResourceTableScrollEdgeGlow),
@@ -670,7 +657,6 @@ public struct RunePreferencesView: View {
                     isOn: $showResourceTableScrollEdgeGlow
                 )
 
-                Divider()
 
                 settingsToggleRow(
                     settingsString(.settingsShowSplitResizeHandles),
@@ -678,7 +664,6 @@ public struct RunePreferencesView: View {
                     isOn: $showSplitResizeHandles
                 )
 
-                Divider()
 
                 settingsControlRow(
                     title: settingsString(.language),
@@ -692,7 +677,6 @@ public struct RunePreferencesView: View {
                     )
                 }
 
-                Divider()
 
                 settingsControlRow(
                     title: "Pinned tab symbol",
@@ -1066,9 +1050,6 @@ public struct RunePreferencesView: View {
                         }
                     }
 
-                    if action != RuneKeyBindingAction.allCases.last {
-                        Divider()
-                    }
                 }
             }
         }
@@ -1096,7 +1077,6 @@ public struct RunePreferencesView: View {
                     timeUnitRaw: $customOneTimeUnitRaw
                 )
 
-                Divider()
 
                 customLogPresetRow(
                     slot: .two,
@@ -1115,7 +1095,6 @@ public struct RunePreferencesView: View {
                     exportFolderMenu
                 }
 
-                Divider()
 
                 settingsControlRow(
                     title: "Text exports",
@@ -1124,7 +1103,6 @@ public struct RunePreferencesView: View {
                     exportOpenerMenu(inklineRecommendation)
                 }
 
-                Divider()
 
                 settingsControlRow(
                     title: "Archive exports",
@@ -1133,7 +1111,6 @@ public struct RunePreferencesView: View {
                     exportOpenerMenu(quikZipRecommendation)
                 }
 
-                Divider()
 
                 settingsToggleRow(
                     "Privacy-safe export filenames",
@@ -1231,7 +1208,6 @@ public struct RunePreferencesView: View {
                     isOn: $verboseDebugTrace
                 )
 
-                Divider()
 
                 settingsGridRow {
                     VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
@@ -1277,7 +1253,6 @@ public struct RunePreferencesView: View {
                     normalize: RuneSettingsKeys.clampedTerminalScrollbackLineLimit
                 )
 
-                Divider()
 
                 settingsToggleRow(
                     "Record command history",
@@ -1288,7 +1263,6 @@ public struct RunePreferencesView: View {
                     )
                 )
 
-                Divider()
 
                 RuneSettingsIntegerLimitEditor(
                     title: "Command history",
@@ -1315,7 +1289,6 @@ public struct RunePreferencesView: View {
                     normalize: RuneSettingsKeys.clampedSessionLogCacheEntryLimit
                 )
 
-                Divider()
 
                 RuneSettingsIntegerLimitEditor(
                     title: "YAML undo",
@@ -1363,29 +1336,34 @@ public struct RunePreferencesView: View {
                 .frame(width: 80)
 
                 if mode.wrappedValue == .lines {
-                    TextField("5000", text: lines)
+                    TextField("Lines", text: lines, prompt: Text("5000"))
+                        .labelsHidden()
                         .textFieldStyle(RuneControlTextFieldStyle())
                         .runeText(.body).monospacedDigit()
                         .multilineTextAlignment(.trailing)
                         .frame(width: 72)
                         .help("Digits only. Use All logs in the log-window menu to load logs since the beginning.")
 
+                    // As wide as the unit menu in the time row, so both rows line up
+                    // within the 260 pt control column.
                     Text("lines")
                         .runeText(.micro)
                         .foregroundStyle(.runeSecondary)
+                        .frame(width: 92, alignment: .leading)
                 } else {
-                    TextField("15", text: timeValue)
+                    TextField("Time", text: timeValue, prompt: Text("15"))
+                        .labelsHidden()
                         .textFieldStyle(RuneControlTextFieldStyle())
                         .runeText(.body).monospacedDigit()
                         .multilineTextAlignment(.trailing)
-                        .frame(width: 54)
+                        .frame(width: 72)
 
                     RuneToolbarPicker(title: "Unit", selection: unit,
                                       options: RuneCustomLogPresetTimeUnit.allCases.map { ($0, $0.title) })
-                    .frame(maxWidth: 104)
+                    .frame(width: 92)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
@@ -1631,24 +1609,13 @@ public struct RunePreferencesView: View {
         subtitle: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: RuneSettingsMetrics.pageSpacing) {
-                // Like System Settings: the toolbar names the pane, so the page
-                // header stays small; groups and rows carry the hierarchy.
-                VStack(alignment: .leading, spacing: RuneSpacing.hairline) {
-                    Text(title)
-                        .runeText(.sectionTitle)
-                    Text(subtitle)
-                        .runeText(.micro)
-                        .foregroundStyle(.runeSecondary)
-                }
-
-                content()
-            }
-            .frame(maxWidth: RuneSettingsMetrics.pageMaxWidth, alignment: .leading)
-            .padding(.horizontal, RuneSettingsMetrics.pageHorizontalPadding)
-            .padding(.vertical, RuneSettingsMetrics.pageVerticalPadding)
+        // The toolbar and window title name the pane, so the form starts with
+        // its groups. The window's theme colour shows behind them.
+        Form {
+            content()
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 
     @ViewBuilder
@@ -1656,29 +1623,23 @@ public struct RunePreferencesView: View {
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: RuneSpacing.xs) {
+        Section {
+            content()
+        } header: {
             Text(title)
-                .runeText(.captionEmphasis)
-                .foregroundStyle(.runeSecondary)
-                .padding(.leading, RuneSpacing.xxs)
-
-            VStack(alignment: .leading, spacing: RuneSettingsMetrics.sectionSpacing) {
-                content()
-            }
-            .runeInsetCard(padding: RuneSettingsMetrics.sectionCardPadding)
+                .runeText(.headline)
+                .foregroundStyle(.runePrimary)
         }
     }
 
     @ViewBuilder
     private func settingsToggleRow(_ title: String, help: String, isOn: Binding<Bool>) -> some View {
-        settingsGridRow {
+        Toggle(isOn: isOn) {
             settingRowLabel(title: title, detail: help)
-        } control: {
-            Toggle(title, isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
         }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .accessibilityLabel(title)
     }
 
     @ViewBuilder
@@ -1699,9 +1660,16 @@ public struct RunePreferencesView: View {
         @ViewBuilder label: () -> LabelContent,
         @ViewBuilder control: () -> Control
     ) -> some View {
-        RuneSettingsAdaptiveRow(label: label, control: control)
-            .controlSize(.regular)
-            .buttonStyle(RuneToolbarButtonStyle())
+        LabeledContent {
+            // As in System Settings, a row's controls sit at its trailing edge and
+            // a menu is as wide as a menu, not as wide as the row.
+            control()
+                .controlSize(.regular)
+                .buttonStyle(RuneToolbarButtonStyle())
+                .frame(maxWidth: RuneSettingsMetrics.rowControlColumnWidth, alignment: .trailing)
+        } label: {
+            label()
+        }
     }
 
     @ViewBuilder

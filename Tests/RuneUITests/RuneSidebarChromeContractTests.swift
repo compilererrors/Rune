@@ -1907,7 +1907,7 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertTrue(preferencesSource.contains("title: \"YAML undo\""))
         XCTAssertTrue(preferencesSource.contains("title: \"Scrollback\""))
         XCTAssertTrue(preferencesSource.contains("RuneSettingsAdaptiveRow {"))
-        XCTAssertTrue(preferencesSource.contains("TextField(placeholder, value: normalizedBinding, format: .number)"))
+        XCTAssertTrue(preferencesSource.contains("TextField(title, value: normalizedBinding, format: .number, prompt: Text(placeholder))"))
         XCTAssertTrue(preferencesSource.contains("Text(valueSuffix)"))
         XCTAssertTrue(preferencesSource.contains(".accessibilityLabel(\"\\(title) value\")"))
         XCTAssertTrue(preferencesSource.contains("Stepper(\"Adjust \\(title)\", value: normalizedBinding, step: step)"))
@@ -1962,8 +1962,8 @@ final class RuneSidebarChromeContractTests: XCTestCase {
         XCTAssertFalse(themeSource.contains("Zed-format JSON"))
         XCTAssertFalse(themeSource.contains("VS Code"))
         XCTAssertTrue(preferencesSource.contains("case themes"))
-        // Settings panes are tabs in Rune's native segmented tab bar.
-        XCTAssertTrue(preferencesSource.contains("RuneTabBar(\"Settings\", selection: $selectedPane, tabs: PreferencesPane.allCases)"))
+        // Settings panes are the native toolbar tabs of a settings window.
+        XCTAssertTrue(preferencesSource.contains("TabView(selection: $selectedPane)"))
         XCTAssertTrue(preferencesSource.contains("case .themes: themesSettingsForm"))
         XCTAssertTrue(preferencesSource.contains("private var themesSettingsForm: some View"))
         XCTAssertTrue(preferencesSource.contains("struct RuneThemeSelectorCard"))

@@ -4,7 +4,7 @@ import XCTest
 @testable import RuneUI
 
 /// Settings is a standard macOS settings window: pane tabs in the toolbar,
-/// a small page header and compact grouped rows.
+/// window buttons, and each pane a grouped form.
 @MainActor
 final class RuneSettingsWindowLayoutTests: XCTestCase {
     func testSettingsTabsAreVisibleAtTheTopAtStandardWidth() async throws {
@@ -22,11 +22,10 @@ final class RuneSettingsWindowLayoutTests: XCTestCase {
         defer { RuneTestWindow.close(window) }
         try await Task.sleep(nanoseconds: 1_200_000_000)
 
-        let tabs = try XCTUnwrap(firstSubview(of: NSSegmentedControl.self, in: try XCTUnwrap(window.contentView)), "visible pane tab bar")
-        XCTAssertEqual(tabs.segmentCount, 7, "every settings pane is a visible tab")
-        let frame = tabs.convert(tabs.bounds, to: nil)
-        XCTAssertTrue(try XCTUnwrap(window.contentView).bounds.contains(frame), "the tab bar fits the standard settings width")
-        XCTAssertGreaterThan(frame.minY, 640 - 80, "the tab bar sits at the top, with no empty band above it")
+        // SwiftUI puts a settings TabView's panes in the window toolbar.
+        let toolbarItems = try XCTUnwrap(window.toolbar?.items, "the panes are in the window toolbar")
+        XCTAssertTrue(toolbarItems.contains { $0.label == "Navigation Tab Bar" }, "the pane tabs are a toolbar item")
+        XCTAssertNotNil(window.standardWindowButton(.closeButton), "the window keeps its close button")
     }
 
     private func firstSubview<T: NSView>(of type: T.Type, in view: NSView) -> T? {
@@ -39,10 +38,11 @@ final class RuneSettingsWindowLayoutTests: XCTestCase {
 
     func testSettingsTabLabelsAndRowsUseSystemSettingsProportions() throws {
         let source = try String(contentsOfFile: sourcePath, encoding: .utf8)
-        XCTAssertTrue(source.contains("RuneTabBar(\"Settings\", selection: $selectedPane, tabs: PreferencesPane.allCases)"))
+        XCTAssertTrue(source.contains("TabView(selection: $selectedPane)"))
+        XCTAssertTrue(source.contains(".tabItem { Label(pane.title(settingsString), systemImage: pane.symbol) }"))
         XCTAssertTrue(source.contains("Text(title)\n                .runeText(.body)"), "row titles are 13 pt regular")
         XCTAssertTrue(source.contains("Text(detail)\n                    .runeText(.micro)\n                    .foregroundStyle(.runeSecondary)"), "descriptions are small and secondary")
-        XCTAssertTrue(source.contains(".toggleStyle(.switch)\n                .controlSize(.small)"), "row switches are small")
+        XCTAssertTrue(source.contains(".toggleStyle(.switch)\n        .controlSize(.small)"), "row switches are small")
     }
 
     private var sourcePath: String {
