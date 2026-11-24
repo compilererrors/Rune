@@ -7,7 +7,7 @@ import XCTest
 /// Secret can have any name, so they are not found by a list of key names.
 @MainActor
 final class SupportBundleSecretRedactionTests: XCTestCase {
-    private func bundle(yaml: String, describe: String = "") throws -> (yaml: String, describe: String, json: String) {
+    private func bundle(yaml: String, describe: String = "", selectedKind: String? = nil) throws -> (yaml: String, describe: String, json: String) {
         let state = RuneAppState()
         state.setResourceYAML(yaml)
         state.setResourceDescribe(describe)
@@ -15,7 +15,7 @@ final class SupportBundleSecretRedactionTests: XCTestCase {
             state: state,
             generatedAt: "2026-05-06T00:00:00Z",
             resourceCounts: [:],
-            selectedResourceKind: "Secret",
+            selectedResourceKind: selectedKind,
             selectedResourceName: "database"
         )
         let data = try JSONSupportBundleBuilder().buildBundle(from: request)
@@ -110,7 +110,7 @@ final class SupportBundleSecretRedactionTests: XCTestCase {
         XCTAssertFalse(result.json.contains("c3ludGhldGljLWRhdGFiYXNlLXVybA=="))
         XCTAssertFalse(result.json.contains("c3ludGhldGljLWFwaS1rZXk="))
         XCTAssertFalse(result.json.contains("c3ludGhldGljLWxhc3QtYXBwbGllZA=="))
-        XCTAssertTrue(result.describe.contains(#""DATABASE_URL" : "<redacted>","#))
+        XCTAssertTrue(result.describe.contains(#""DATABASE_URL" : "<redacted>""#))
         XCTAssertTrue(result.describe.contains(#""api-key" : "<redacted>""#))
         XCTAssertTrue(result.describe.contains(#""kubectl.kubernetes.io/last-applied-configuration" : "<redacted>""#))
         XCTAssertTrue(result.describe.contains(#""name" : "database""#), "the rest of the manifest stays")
@@ -152,6 +152,55 @@ final class SupportBundleSecretRedactionTests: XCTestCase {
 
         XCTAssertTrue(result.yaml.contains("LOG_LEVEL: debug"))
         XCTAssertFalse(result.yaml.contains("c3ludGhldGljLWlubGluZQ=="))
-        XCTAssertTrue(result.yaml.contains("data: <redacted>"))
+        XCTAssertTrue(result.yaml.contains("inline: <redacted>"))
+    }
+
+    func testSecretKindWithInlineCommentIsRedacted() throws {
+        let draft = """
+        apiVersion: v1
+        kind: Secret # edited locally
+        metadata: {name: example}
+        stringData: {example: synthetic-value}
+        """
+        let result = try bundle(yaml: draft, selectedKind: "secret")
+        XCTAssertFalse(result.json.contains("synthetic-value"))
+        XCTAssertTrue(result.yaml.contains("example: <redacted>"))
+    }
+
+    func testSecretDraftWithoutAKindIsOmitted() throws {
+        let draft = """
+        apiVersion: v1
+        metadata: {name: example}
+        data: {example: synthetic-value}
+        """
+        let result = try bundle(yaml: draft, selectedKind: "secret")
+        XCTAssertFalse(result.json.contains("synthetic-value"))
+        XCTAssertTrue(result.yaml.contains("omitted"))
+    }
+
+    func testSecretListRedactsItemsWithoutAnIndividualKind() throws {
+        let manifest = """
+        apiVersion: v1
+        kind: SecretList
+        items:
+        - metadata: {name: example}
+          stringData: {example: synthetic-value}
+        """
+        XCTAssertFalse(try bundle(yaml: manifest).json.contains("synthetic-value"))
+    }
+
+    func testSecretWithAnAliasedValueOutsideDataIsOmitted() throws {
+        let draft = """
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: example
+          annotations: {example: &value synthetic-alias-marker}
+        stringData:
+          example: *value
+        """
+        let result = try bundle(yaml: draft, selectedKind: "secret")
+        XCTAssertFalse(result.json.contains("synthetic-alias-marker"))
+        XCTAssertTrue(result.yaml.contains("omitted"))
     }
 }

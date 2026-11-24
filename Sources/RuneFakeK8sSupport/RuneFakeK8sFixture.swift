@@ -9,6 +9,7 @@ public struct RuneFakeK8sFixture: Sendable {
     public var keepAliveConnections: Bool = false
     /// Resource versions a watch may not start from: answered with 410 Gone.
     public var expiredWatchResourceVersions: Set<String> = []
+    public var watchSendsResourceChanges = true
 
     public init(
         contexts: [RuneFakeK8sCluster] = RuneFakeK8sFixture.defaultContexts,

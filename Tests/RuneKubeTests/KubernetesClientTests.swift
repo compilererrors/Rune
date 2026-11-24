@@ -19,9 +19,9 @@ final class KubernetesClientTests: XCTestCase {
         )
         XCTAssertEqual(
             try KubernetesResourceWatchEvent.decode(
-                line: #"{"type":"ERROR","object":{"message":"resource version expired"}}"#
-            ).errorMessage,
-            "resource version expired"
+                line: #"{"type":"ERROR","object":{"code":410,"message":"resource version expired"}}"#
+            ),
+            KubernetesResourceWatchEvent(type: .error, errorMessage: "resource version expired", errorStatusCode: 410)
         )
     }
 
@@ -67,13 +67,17 @@ final class KubernetesClientTests: XCTestCase {
             metadata["annotations"] as? [String: String],
             ["team": "synthetic", "cronjob.kubernetes.io/instantiate": "manual"]
         )
-        let owners = try XCTUnwrap(metadata["ownerReferences"] as? [[String: String]])
-        XCTAssertEqual(owners, [[
+        let owners = try XCTUnwrap(metadata["ownerReferences"] as? [[String: Any]])
+        let owner = try XCTUnwrap(owners.first)
+        XCTAssertEqual(owners.count, 1)
+        XCTAssertEqual(owner.compactMapValues { $0 as? String }, [
             "apiVersion": "batch/v1",
             "kind": "CronJob",
             "name": "report",
             "uid": "5f0c2a9e-0000-4000-8000-000000000001"
-        ]])
+        ])
+        XCTAssertEqual(owner["controller"] as? Bool, true)
+        XCTAssertNil(owner["blockOwnerDeletion"])
         XCTAssertEqual((job["spec"] as? [String: Any])?["backoffLimit"] as? Int, 2)
         XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: job))
     }

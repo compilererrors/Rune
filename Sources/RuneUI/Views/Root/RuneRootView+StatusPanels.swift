@@ -219,7 +219,7 @@ extension RuneRootView {
             } label: {
                 Label("Save Bundle", systemImage: "square.and.arrow.down")
             }
-            .help("Copy the issues, or save Auth Doctor diagnostics and support data.")
+            .help("Copy issue summaries, or save Auth Doctor diagnostics and support data.")
 
             Button {
                 withAnimation(.snappy(duration: 0.16)) {

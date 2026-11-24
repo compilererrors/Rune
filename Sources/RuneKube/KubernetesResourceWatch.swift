@@ -2,6 +2,7 @@ import Foundation
 import RuneCore
 
 public enum KubernetesResourceWatchEventType: String, Sendable, Equatable {
+    case connected
     case added = "ADDED"
     case modified = "MODIFIED"
     case deleted = "DELETED"
@@ -10,19 +11,30 @@ public enum KubernetesResourceWatchEventType: String, Sendable, Equatable {
     case unknown
 }
 
+public enum KubernetesResourceWatchError: LocalizedError, Sendable {
+    case resourceVersionExpired
+
+    public var errorDescription: String? {
+        "Kubernetes watch failed with HTTP status 410. The resource version expired."
+    }
+}
+
 public struct KubernetesResourceWatchEvent: Sendable, Equatable {
     public let type: KubernetesResourceWatchEventType
     public let resourceVersion: String?
     public let errorMessage: String?
+    public let errorStatusCode: Int?
 
     public init(
         type: KubernetesResourceWatchEventType,
         resourceVersion: String? = nil,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        errorStatusCode: Int? = nil
     ) {
         self.type = type
         self.resourceVersion = resourceVersion
         self.errorMessage = errorMessage
+        self.errorStatusCode = errorStatusCode
     }
 
     /// An object may be a few megabytes with its managed fields; far past
@@ -51,7 +63,8 @@ public struct KubernetesResourceWatchEvent: Sendable, Equatable {
         return KubernetesResourceWatchEvent(
             type: type,
             resourceVersion: metadata?["resourceVersion"] as? String,
-            errorMessage: type == .error ? statusMessage ?? "Kubernetes watch reported an error." : nil
+            errorMessage: type == .error ? statusMessage ?? "Kubernetes watch reported an error." : nil,
+            errorStatusCode: type == .error ? object?["code"] as? Int : nil
         )
     }
 }

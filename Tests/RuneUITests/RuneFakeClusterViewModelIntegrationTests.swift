@@ -278,13 +278,24 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
     func testLiveResourceWatchStartsOverWhenItsResourceVersionIsGone() async throws {
         // The fake server's watch ends at synthetic-3; continuing from there
         // is answered with 410 Gone, as after sleep or a long outage.
-        var fixture = RuneFakeK8sFixture()
+        let namespace = "synthetic"
+        var fixture = RuneFakeK8sFixture(contexts: [
+            RuneFakeK8sCluster(
+                contextName: RuneFakeK8sFixture.defaultContextName,
+                defaultNamespace: namespace,
+                namespaces: [RuneFakeK8sNamespace(name: namespace, pods: [], deployments: [], services: [])],
+                nodes: []
+            )
+        ])
         fixture.expiredWatchResourceVersions = ["synthetic-3"]
+        fixture.watchSendsResourceChanges = false
         let harness = try await makeHarness(fixture: fixture)
         defer { harness.cleanup() }
         harness.state.selectedSection = .workloads
         harness.state.selectedWorkloadKind = .pod
         try await harness.viewModel.reloadContexts()
+        // The current list is empty, but Rune still has a pod in its snapshot.
+        harness.state.setPods([PodSummary(name: "removed-pod", namespace: namespace, status: "Running")])
         harness.server.resetRequestLines()
 
         harness.viewModel.isLiveStatusUpdatesEnabled = true
@@ -296,7 +307,7 @@ final class RuneFakeClusterViewModelIntegrationTests: XCTestCase {
         try await waitUntil {
             let lines = watchLines()
             guard let expired = lines.firstIndex(where: { $0.contains("resourceVersion=synthetic-3") }) else { return false }
-            return lines[(expired + 1)...].contains { !$0.contains("resourceVersion=") }
+            return lines[(expired + 1)...].contains { !$0.contains("resourceVersion=") } && harness.state.pods.isEmpty
         }
 
         XCTAssertFalse(

@@ -1,5 +1,6 @@
 import Foundation
 import RuneCore
+import Yams
 
 public struct SupportBundleRequest: Codable, Sendable {
     public let generatedAt: String
@@ -347,6 +348,7 @@ public extension SupportBundleRequest {
         cloudImportDiagnostic: SupportBundleCloudImportDiagnostic? = nil
     ) -> SupportBundleRequest {
         let sanitizer = SupportBundleSanitizer(redactedIdentifiers: [state.selectedContext?.name].compactMap { $0 })
+        let selectedSecret = selectedResourceKind?.lowercased() == "secret"
 
         return SupportBundleRequest(
             generatedAt: generatedAt,
@@ -357,8 +359,8 @@ public extension SupportBundleRequest {
             resourceCounts: resourceCounts,
             selectedResourceKind: selectedResourceKind.map(sanitizer.sanitizedText),
             selectedResourceName: selectedResourceName.map(sanitizer.sanitizedText),
-            resourceYAML: sanitizer.sanitizedText(sanitizer.redactingSecretValues(state.resourceYAML)),
-            resourceDescribe: sanitizer.sanitizedText(sanitizer.redactingSecretValues(state.resourceDescribe)),
+            resourceYAML: sanitizer.sanitizedText(sanitizer.redactingSecretYAML(state.resourceYAML, selectedSecret: selectedSecret)),
+            resourceDescribe: sanitizer.sanitizedText(sanitizer.redactingSecretDescribe(state.resourceDescribe, selectedSecret: selectedSecret)),
             podLogs: sanitizer.sanitizedText(state.podLogs),
             unifiedLogs: sanitizer.sanitizedText(state.unifiedServiceLogs),
             unifiedLogPods: state.unifiedServiceLogPods.map(sanitizer.sanitizedText),
@@ -434,113 +436,107 @@ public extension SupportBundleRequest {
                 .joined(separator: "\n")
         }
 
-        /// The values of a Secret never go into a bundle. Its keys can have
-        /// any name, so the key list above does not find them: everything
-        /// under `data` and `stringData` is replaced, and so is the
-        /// last-applied annotation, which repeats the whole object. Covers
-        /// the manifest as YAML and as the indented JSON of the describe text.
-        func redactingSecretValues(_ text: String) -> String {
-            guard text.contains("Secret") else { return text }
-            let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            var output: [String] = []
-            output.reserveCapacity(lines.count)
-            var documentStart = 0
-            for index in lines.indices where lines[index] == "---" || lines[index].hasPrefix("--- ") {
-                output.append(contentsOf: Self.redactingSecretDocument(Array(lines[documentStart..<index])))
-                output.append(lines[index])
-                documentStart = index + 1
-            }
-            output.append(contentsOf: Self.redactingSecretDocument(Array(lines[documentStart...])))
-            return output.joined(separator: "\n")
-        }
-
+        private static let omittedManifest = "[manifest omitted from support bundle]"
         private static let lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
 
-        private static func redactingSecretDocument(_ lines: [String]) -> [String] {
-            let isSecret = lines.contains { line in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed == "Kind: Secret" { return true }
-                guard let colon = trimmed.firstIndex(of: ":") else { return false }
-                let key = unquoted(trimmed[..<colon])
-                var value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-                if value.hasSuffix(",") { value.removeLast() }
-                // Top level in YAML; one level in for a pretty-printed JSON object.
-                return key == "kind" && unquoted(value) == "Secret" && indentation(of: line) <= 2
-            }
-            guard isSecret else { return lines }
-
-            var output: [String] = []
-            output.reserveCapacity(lines.count)
-            /// The block being redacted: the indentation of its key, and
-            /// whether its children are entries (a mapping) or one value.
-            var block: (indent: Int, isMapping: Bool, entryIndent: Int?)?
-
-            for line in lines {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                let indent = indentation(of: line)
-
-                if var current = block {
-                    let closesJSONObject = trimmed == "}" || trimmed == "},"
-                    if trimmed.isEmpty {
-                        continue
+        func redactingSecretYAML(_ text: String, selectedSecret: Bool) -> String {
+            guard !text.isEmpty else { return text }
+            do {
+                let parser = try Parser(yaml: text)
+                var documents: [(node: Node, containsSecret: Bool, hasReferences: Bool)] = []
+                while let node = try parser.nextRoot() {
+                    let containsSecret = Self.containsSecret(node)
+                    documents.append((node, containsSecret, Self.hasYAMLReferences(node)))
+                }
+                guard selectedSecret || documents.contains(where: \.containsSecret) else { return text }
+                return try documents.map { node, containsSecret, hasReferences in
+                    let kindChanged = selectedSecret && node["kind"]?.string != "Secret"
+                    // Aliases and merge keys can repeat Secret material outside the data mapping.
+                    if kindChanged || hasReferences {
+                        return Self.omittedManifest
                     }
-                    if indent > current.indent {
-                        let entryIndent = current.entryIndent ?? indent
-                        current.entryIndent = entryIndent
-                        block = current
-                        // An entry line keeps its key; the lines of a longer
-                        // value below it are dropped.
-                        if current.isMapping, indent == entryIndent, let redacted = redactedEntry(line) {
-                            output.append(redacted)
+                    let safe = containsSecret ? Self.redactedSecretTree(node) : node
+                    return try Yams.serialize(node: safe).trimmingCharacters(in: .newlines)
+                }.joined(separator: "\n---\n")
+            } catch {
+                // A draft may be invalid midway through editing, including its kind line.
+                return Self.omittedManifest
+            }
+        }
+
+        func redactingSecretDescribe(_ text: String, selectedSecret: Bool) -> String {
+            guard !text.isEmpty else { return text }
+            let manifestHeader = "\nManifest JSON:\n"
+            let eventsHeader = "\n\nEvents:\n"
+            let expectsSecret = selectedSecret || text.contains("\nKind: Secret\n")
+            guard let start = text.range(of: manifestHeader),
+                  let end = text.range(of: eventsHeader, range: start.upperBound..<text.endIndex) else {
+                return expectsSecret ? Self.omittedManifest : text
+            }
+
+            let raw = String(text[start.upperBound..<end.lowerBound])
+            let manifest: String
+            guard let parser = try? Parser(yaml: raw), let node = try? parser.singleRoot() else {
+                return Self.omittedManifest
+            }
+            let containsSecret = Self.containsSecret(node)
+            guard expectsSecret || containsSecret else { return text }
+            let hasReferences = withExtendedLifetime(parser) { Self.hasYAMLReferences(node) }
+            if (expectsSecret && node["kind"]?.string != "Secret") || hasReferences {
+                manifest = Self.omittedManifest
+            } else {
+                let safe = Self.redactedSecretTree(node)
+                let data = try? JSONSerialization.data(
+                    withJSONObject: safe.any,
+                    options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+                )
+                manifest = data.map { String(decoding: $0, as: UTF8.self) } ?? Self.omittedManifest
+            }
+            return String(text[..<start.upperBound]) + manifest + String(text[end.lowerBound...])
+        }
+
+        private static func containsSecret(_ node: Node) -> Bool {
+            if let mapping = node.mapping {
+                let kind = mapping["kind"]?.string
+                return kind == "Secret" || kind == "SecretList" || mapping.values.contains(where: containsSecret)
+            }
+            return node.sequence?.contains(where: containsSecret) ?? false
+        }
+
+        private static func hasYAMLReferences(_ node: Node) -> Bool {
+            if node.anchor != nil { return true }
+            if let mapping = node.mapping {
+                return mapping.contains { key, value in
+                    key.scalar?.string == "<<" || hasYAMLReferences(key) || hasYAMLReferences(value)
+                }
+            }
+            return node.sequence?.contains(where: hasYAMLReferences) ?? false
+        }
+
+        private static func redactedSecretTree(_ node: Node, secretItem: Bool = false) -> Node {
+            if let mapping = node.mapping {
+                let kind = mapping["kind"]?.string
+                let isSecret = secretItem || kind == "Secret"
+                return Node(mapping.map { key, value in
+                    if isSecret, key.string == "data" || key.string == "stringData" {
+                        let redacted: Node = "<redacted>"
+                        return (key, value.mapping.map { Node($0.keys.map { ($0, redacted) }) } ?? redacted)
+                    }
+                    if isSecret, key.string == "metadata", var annotations = value["annotations"]?.mapping {
+                        if annotations[lastAppliedAnnotation] != nil {
+                            annotations[lastAppliedAnnotation] = "<redacted>"
                         }
-                        continue
+                        var metadata = value
+                        metadata["annotations"] = .mapping(annotations)
+                        return (key, metadata)
                     }
-                    block = nil
-                    if closesJSONObject, indent == current.indent, current.isMapping {
-                        output.append(line)
-                        continue
-                    }
-                }
-
-                guard let colon = trimmed.firstIndex(of: ":") else {
-                    output.append(line)
-                    continue
-                }
-                let key = unquoted(trimmed[..<colon])
-                let value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-                let isValueBlock = (key == "data" || key == "stringData") && indent <= 2
-                if isValueBlock, value.isEmpty || value == "{" {
-                    output.append(line)
-                    block = (indent, true, nil)
-                } else if isValueBlock || key == lastAppliedAnnotation {
-                    // An inline value, or a block scalar that continues below.
-                    output.append(redactedEntry(line) ?? line)
-                    block = (indent, false, nil)
-                } else {
-                    output.append(line)
-                }
+                    return (key, redactedSecretTree(value, secretItem: kind == "SecretList" && key.string == "items"))
+                }, mapping.tag, mapping.style)
             }
-            return output
-        }
-
-        /// `key: value` or `"key" : "value",` with the value replaced.
-        private static func redactedEntry(_ line: String) -> String? {
-            guard let colon = line.firstIndex(of: ":") else { return nil }
-            let isJSON = line.trimmingCharacters(in: .whitespaces).hasPrefix("\"")
-            let hasComma = line.trimmingCharacters(in: .whitespaces).hasSuffix(",")
-            let prefix = line[...colon]
-            return isJSON
-                ? "\(prefix) \"<redacted>\"\(hasComma ? "," : "")"
-                : "\(prefix) <redacted>"
-        }
-
-        private static func indentation(of line: String) -> Int {
-            line.prefix { $0 == " " }.count
-        }
-
-        private static func unquoted(_ text: some StringProtocol) -> String {
-            text.trimmingCharacters(in: .whitespaces)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if let sequence = node.sequence {
+                return Node(sequence.map { redactedSecretTree($0, secretItem: secretItem) }, sequence.tag, sequence.style)
+            }
+            return node
         }
 
         func sanitizedEvent(_ event: EventSummary) -> EventSummary {

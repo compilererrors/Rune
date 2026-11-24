@@ -273,7 +273,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
         resource: String,
         namespace: String?,
         resourceVersion: String?,
-        timeoutSeconds: Int
+        timeoutSeconds: Int,
+        includeConnectionEvent: Bool
     ) async throws -> AsyncThrowingStream<KubernetesResourceWatchEvent, Error> {
         let resolved = try await resolvedContext(environment: environment, contextName: contextName)
         let basePath: String?
@@ -332,10 +333,14 @@ final class KubernetesRESTClient: @unchecked Sendable {
                     guard let httpResponse = response as? HTTPURLResponse,
                           (200..<300).contains(httpResponse.statusCode) else {
                         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        if status == 410 { throw KubernetesResourceWatchError.resourceVersionExpired }
                         throw RuneError.commandFailed(
                             command: "kubernetes REST watch",
                             message: "Kubernetes watch failed with HTTP status \(status)."
                         )
+                    }
+                    if includeConnectionEvent {
+                        continuation.yield(KubernetesResourceWatchEvent(type: .connected))
                     }
                     // One event per line feed. `bytes.lines` would also break
                     // a line at U+0085 and U+2028, which JSON allows inside
@@ -346,6 +351,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                         try Task.checkCancellation()
                         guard let event = try KubernetesResourceWatchEvent.decodeLine(Data(line)) else { return }
                         if event.type == .error {
+                            if event.errorStatusCode == 410 { throw KubernetesResourceWatchError.resourceVersionExpired }
                             throw RuneError.commandFailed(
                                 command: "kubernetes REST watch",
                                 message: event.errorMessage ?? "Kubernetes watch reported an error."
@@ -1079,7 +1085,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 "apiVersion": "batch/v1",
                 "kind": "CronJob",
                 "name": cronJobMetadata?["name"] as? String ?? cronJobName,
-                "uid": uid
+                "uid": uid,
+                "controller": true
             ]]
         }
 
@@ -1523,7 +1530,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 headers: headers,
                 body: body,
                 timeout: timeout,
-                requiredDifferentCredential: nil
+                rejectedCredentialFingerprint: nil
             )
         } catch let error as RESTRenewableCredentialRejected {
             rejected = error
@@ -1539,7 +1546,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                 headers: headers,
                 body: body,
                 timeout: timeout,
-                requiredDifferentCredential: rejected.rejected
+                rejectedCredentialFingerprint: rejected.fingerprint
             )
             authenticationRetryLimiter.recordSuccess(source)
             return response
@@ -1547,6 +1554,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
             authenticationRetryLimiter.recordFailedRetry(source)
             throw again.underlying
         } catch is RESTSameCredentialAfterRenewal {
+            authenticationRetryLimiter.recordFailedRetry(source)
             throw rejected.underlying
         }
     }
@@ -1563,7 +1571,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         headers: [String: String],
         body: String?,
         timeout: TimeInterval,
-        requiredDifferentCredential: RESTCredentialInvalidationKey?
+        rejectedCredentialFingerprint: Data?
     ) async throws -> RESTResponse {
         let metricsRequestGeneration = await requestMetricsRecorder?.reserveScopeGeneration()
         let resolved = try await resolvedContext(
@@ -1571,8 +1579,14 @@ final class KubernetesRESTClient: @unchecked Sendable {
             contextName: contextName,
             metricsRequestGeneration: metricsRequestGeneration
         )
-        if let requiredDifferentCredential, resolved.credentialInvalidationKey == requiredDifferentCredential {
-            throw RESTSameCredentialAfterRenewal()
+        let credentialFingerprint = RESTCredentialFingerprint.make(
+            authentication: resolved.authentication,
+            clientTLSIdentity: resolved.clientTLSIdentity
+        )
+        if let rejectedCredentialFingerprint {
+            guard let credentialFingerprint, credentialFingerprint != rejectedCredentialFingerprint else {
+                throw RESTSameCredentialAfterRenewal()
+            }
         }
         let metricsScope = resolved.metricsScope
         VerboseKubeTrace.append(
@@ -1611,10 +1625,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         }
 
         if KubernetesRESTRequestCoalescingKey.isCoalescible(method: method, body: body),
-           let credentialFingerprint = RESTCredentialFingerprint.make(
-               authentication: resolved.authentication,
-               clientTLSIdentity: resolved.clientTLSIdentity
-           ) {
+           let credentialFingerprint {
             let finalRequest = request
             let key = KubernetesRESTRequestCoalescingKey(
                 method: method,
@@ -1635,6 +1646,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
                     contextName: contextName,
                     apiPath: apiPath,
                     resolved: resolved,
+                    credentialFingerprint: credentialFingerprint,
                     metricsScope: metricsScope
                 )
             }
@@ -1648,6 +1660,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
             contextName: contextName,
             apiPath: apiPath,
             resolved: resolved,
+            credentialFingerprint: credentialFingerprint,
             metricsScope: metricsScope
         )
     }
@@ -1660,6 +1673,7 @@ final class KubernetesRESTClient: @unchecked Sendable {
         contextName: String,
         apiPath: String,
         resolved: ResolvedRESTContext,
+        credentialFingerprint: Data?,
         metricsScope: KubernetesRESTRequestMetricsScopeToken?
     ) async throws -> RESTResponse {
         var attempt = 1
@@ -1811,8 +1825,8 @@ final class KubernetesRESTClient: @unchecked Sendable {
                         decision: retryDecision
                     )
                 )
-                if http.statusCode == 401, let key = resolved.credentialInvalidationKey {
-                    throw RESTRenewableCredentialRejected(rejected: key, underlying: failure)
+                if http.statusCode == 401, let key = resolved.credentialInvalidationKey, let credentialFingerprint {
+                    throw RESTRenewableCredentialRejected(rejected: key, fingerprint: credentialFingerprint, underlying: failure)
                 }
                 throw failure
             }
@@ -4319,6 +4333,7 @@ private enum RESTCredentialInvalidationKey: Hashable, Sendable {
 /// A 401 for a credential Rune can renew; the request may be sent once more.
 private struct RESTRenewableCredentialRejected: Error {
     let rejected: RESTCredentialInvalidationKey
+    let fingerprint: Data
     let underlying: Error
 }
 

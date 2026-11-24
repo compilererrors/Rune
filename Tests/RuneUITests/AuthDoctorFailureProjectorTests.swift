@@ -197,7 +197,7 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
 }
 
 final class AuthDoctorIssueReportTests: XCTestCase {
-    func testListsOnlyFailedAndWarningChecksWithTheirErrors() throws {
+    func testListsOnlyFailedAndWarningSummaries() throws {
         let report = try XCTUnwrap(AuthDoctorIssueReport.text(
             checks: [
                 RuneHealthCheck(id: "kubeconfig", title: "Kubeconfig", status: .passed, message: "1 source(s) loaded."),
@@ -214,11 +214,20 @@ final class AuthDoctorIssueReportTests: XCTestCase {
 
         Failed: Pod list
         Cannot list pods in namespace alpha-zone.
-            HTTP 403: pods is forbidden: User "system:serviceaccount:kube-system:auth-doctor-denied" cannot list resource "pods"
 
         Warning: Namespace list
         Cannot list namespaces.
         """)
+    }
+
+    func testCopyIssuesOmitsRawQueryValues() throws {
+        let checks = AuthDoctorFailureProjector.checks(
+            for: "HTTP status 403 GET https://example.test/api/v1/pods?token=synthetic-share-marker"
+        )
+        let report = try XCTUnwrap(AuthDoctorIssueReport.text(checks: checks, context: nil, namespace: nil))
+        XCTAssertTrue(report.contains("Failed Kubernetes API request"))
+        XCTAssertFalse(report.contains("synthetic-share-marker"))
+        XCTAssertFalse(report.contains("example.test"))
     }
 
     func testHasNothingToCopyWhenEveryCheckPassed() {

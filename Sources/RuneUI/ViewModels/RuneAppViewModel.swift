@@ -5719,6 +5719,7 @@ public final class RuneAppViewModel: ObservableObject {
     private func runLiveResourceWatch(_ scope: LiveResourceWatchScope) async {
         var reconnectAttempt = 0
         var resourceVersion: String?
+        var needsSnapshot = false
         while !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) {
             do {
                 let events = try await kubeClient.watchResourceChanges(
@@ -5726,10 +5727,25 @@ public final class RuneAppViewModel: ObservableObject {
                     context: scope.context,
                     namespace: scope.namespace,
                     kind: scope.kind,
-                    resourceVersion: resourceVersion
+                    resourceVersion: resourceVersion,
+                    includeConnectionEvent: needsSnapshot
                 )
                 for try await event in events {
                     guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
+                    if event.type == .connected {
+                        // Start collecting changes before listing so an empty
+                        // collection and changes during the list are both covered.
+                        scheduleRefreshCurrentView(
+                            forceNamespaceMetadataRefresh: false,
+                            debounced: false,
+                            preservingLiveWatch: true
+                        )
+                        await scheduledRefreshTask?.value
+                        guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
+                        guard state.freshness(for: scope.family).status == .live else { break }
+                        needsSnapshot = false
+                        continue
+                    }
                     resourceVersion = event.resourceVersion ?? resourceVersion
                     if event.type == .bookmark {
                         reconnectAttempt = 0
@@ -5760,25 +5776,23 @@ public final class RuneAppViewModel: ObservableObject {
                         reloadLogsForSelection()
                     }
                 }
-                reconnectAttempt += 1
-                guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
-                try await Task.sleep(nanoseconds: liveWatchReconnectDelayNanoseconds(attempt: reconnectAttempt))
             } catch {
                 guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
-                reconnectAttempt += 1
-                // Whatever ended the stream, the resource version may be one
-                // the server no longer has (410 Gone, after sleep or a long
-                // outage). Starting over without one lists the current state.
-                resourceVersion = nil
+                if error is KubernetesResourceWatchError {
+                    resourceVersion = nil
+                }
                 state.markResourceListsReconnecting(
                     [scope.family],
                     message: "Live watch reconnecting"
                 )
-                do {
-                    try await Task.sleep(nanoseconds: liveWatchReconnectDelayNanoseconds(attempt: reconnectAttempt))
-                } catch {
-                    return
-                }
+            }
+            guard !Task.isCancelled, liveResourceWatchScopeIsCurrent(scope) else { return }
+            if resourceVersion == nil { needsSnapshot = true }
+            reconnectAttempt += 1
+            do {
+                try await Task.sleep(nanoseconds: liveWatchReconnectDelayNanoseconds(attempt: reconnectAttempt))
+            } catch {
+                return
             }
             if reconnectAttempt > Self.liveWatchQuickReconnectAttempts {
                 refreshWhileLiveWatchIsDown(scope)

@@ -227,7 +227,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         namespace: String,
         kind: KubeResourceKind,
         resourceVersion: String? = nil,
-        timeoutSeconds: Int = 290
+        timeoutSeconds: Int = 290,
+        includeConnectionEvent: Bool = false
     ) async throws -> AsyncThrowingStream<KubernetesResourceWatchEvent, Error> {
         let environment = try kubeconfigEnvironment(from: sources)
         return try await restClient.watchCollection(
@@ -236,7 +237,8 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
             resource: KubernetesRESTPath.resourceName(for: kind),
             namespace: kind.isNamespaced ? namespace : nil,
             resourceVersion: resourceVersion,
-            timeoutSeconds: timeoutSeconds
+            timeoutSeconds: timeoutSeconds,
+            includeConnectionEvent: includeConnectionEvent
         )
     }
 
@@ -2582,7 +2584,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
     ) -> [TaggedLogLine] {
         var tagged: [TaggedLogLine] = []
         for line in logs.split(whereSeparator: \.isNewline) where !line.isEmpty {
-            let timestamp = KubernetesLogTimestamp.leadingDate(in: line)
+            let timestamp = KubernetesLogTimestamp.leadingTimestamp(in: line)
             let text = keepTimestamps || timestamp == nil
                 ? String(line)
                 : KubernetesLogTimestamp.droppingLeadingTimestamp(line)
@@ -2648,7 +2650,7 @@ public final class KubernetesClient: ContextListingService, NamespaceListingServ
         let podName: String
         let containerName: String?
         let text: String
-        let timestamp: Date?
+        let timestamp: KubernetesLogTimestamp?
         let sequence: Int
     }
 

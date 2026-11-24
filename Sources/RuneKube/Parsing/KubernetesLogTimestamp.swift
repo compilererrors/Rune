@@ -6,10 +6,14 @@ import Foundation
 /// It runs once for every line of every pod, so it reads the bytes itself.
 /// An `ISO8601DateFormatter` per line took 150 to 200 µs: seconds of work for
 /// a deployment's logs.
-enum KubernetesLogTimestamp {
-    /// The date of `2026-05-05T10:00:00Z`, `…T10:00:00.123456789Z` or
-    /// `…T10:00:00+02:00` at the start of the line (after any spaces); nil
-    /// when the line starts with anything else.
+struct KubernetesLogTimestamp: Comparable, Sendable {
+    let seconds: Int
+    let nanoseconds: Int
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        (lhs.seconds, lhs.nanoseconds) < (rhs.seconds, rhs.nanoseconds)
+    }
+
     /// The line without the timestamp the kubelet puts in front of it for
     /// `timestamps=true`, and the space after it.
     static func droppingLeadingTimestamp(_ line: some StringProtocol) -> String {
@@ -18,13 +22,14 @@ enum KubernetesLogTimestamp {
         return String(trimmed[trimmed.index(after: space)...])
     }
 
-    static func leadingDate(in line: some StringProtocol) -> Date? {
+    /// The RFC 3339 timestamp at the start of the line, with nanosecond precision.
+    static func leadingTimestamp(in line: some StringProtocol) -> Self? {
         let parsed = line.utf8.withContiguousStorageIfAvailable { parse($0) }
         if let parsed { return parsed }
         return Array(line.utf8.prefix(64)).withUnsafeBufferPointer { parse($0) }
     }
 
-    private static func parse(_ bytes: UnsafeBufferPointer<UInt8>) -> Date? {
+    private static func parse(_ bytes: UnsafeBufferPointer<UInt8>) -> Self? {
         var start = 0
         while start < bytes.count, bytes[start] == 0x20 || bytes[start] == 0x09 {
             start += 1
@@ -96,7 +101,7 @@ enum KubernetesLogTimestamp {
 
         let days = daysFromCivil(year: year, month: month, day: day)
         let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offsetSeconds
-        return Date(timeIntervalSince1970: Double(seconds) + Double(nanoseconds) / 1_000_000_000)
+        return Self(seconds: seconds, nanoseconds: nanoseconds)
     }
 
     /// Days from 1970-01-01 to a date of the proleptic Gregorian calendar.

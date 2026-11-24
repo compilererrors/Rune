@@ -414,15 +414,23 @@ final class ExecCredentialQualityGateTests: XCTestCase {
     }
 
     private func writeUnauthorizedFixture(
-        server: UnauthorizedThenSuccessServer
+        server: UnauthorizedThenSuccessServer,
+        rotatesToken: Bool = true
     ) throws -> (Fixture, counter: URL) {
         let fixture = try makeFixture()
         let counter = fixture.directory.appendingPathComponent("unauthorized-invocation-count")
+        let renewal = rotatesToken ? """
+
+        if [ "$count" -gt 1 ]; then
+          printf '%s\\n' '\(validCredentialPayload(token: "synthetic-renewed-token"))'
+          exit 0
+        fi
+        """ : ""
         let plugin = try writePlugin(
             in: fixture.directory,
             name: "unauthorized-auth.sh",
             payload: validCredentialPayload(expirationTimestamp: "2099-01-02T03:04:05Z"),
-            preflight: sequentialCounterPreflight
+            preflight: sequentialCounterPreflight + renewal
         )
         try fixture.writeKubeconfig(
             userYAML: execYAML(
@@ -473,6 +481,26 @@ final class ExecCredentialQualityGateTests: XCTestCase {
         // The first call retried once; the next two, inside the minute, did not.
         XCTAssertEqual(server.requestCount, 4)
         XCTAssertEqual(try String(contentsOf: counter, encoding: .utf8), "4")
+    }
+
+    func testHTTP401WithAnUnchangedExecTokenIsNotSentAgain() async throws {
+        let server = try await UnauthorizedThenSuccessServer.start(unauthorizedResponses: 1)
+        defer { server.stop() }
+        let (fixture, counter) = try writeUnauthorizedFixture(server: server, rotatesToken: false)
+        defer { fixture.remove() }
+
+        do {
+            _ = try await KubernetesRESTClient().listNamespaces(
+                environment: ["KUBECONFIG": fixture.kubeconfig.path],
+                contextName: Fixture.contextName,
+                timeout: 2
+            )
+            XCTFail("Expected HTTP 401")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 401"), error.localizedDescription)
+        }
+        XCTAssertEqual(server.requestCount, 1)
+        XCTAssertEqual(try String(contentsOf: counter, encoding: .utf8), "2")
     }
 
     func testHTTP401WithAStaticTokenIsNotSentAgain() async throws {
@@ -544,10 +572,11 @@ final class ExecCredentialQualityGateTests: XCTestCase {
 
     private func validCredentialPayload(
         apiVersion: String = "client.authentication.k8s.io/v1",
-        expirationTimestamp: String? = nil
+        expirationTimestamp: String? = nil,
+        token: String = "synthetic-token"
     ) -> String {
         let expiration = expirationTimestamp.map { ",\"expirationTimestamp\":\"\($0)\"" } ?? ""
-        return #"{"apiVersion":"\#(apiVersion)","kind":"ExecCredential","status":{"token":"synthetic-token"\#(expiration)}}"#
+        return #"{"apiVersion":"\#(apiVersion)","kind":"ExecCredential","status":{"token":"\#(token)"\#(expiration)}}"#
     }
 
     private var sequentialCounterPreflight: String {

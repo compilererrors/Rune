@@ -59,7 +59,10 @@ let package = Package(
         ),
         .target(
             name: "RuneDiagnostics",
-            dependencies: ["RuneCore"]
+            dependencies: [
+                "RuneCore",
+                .product(name: "Yams", package: "Yams")
+            ]
         ),
         .target(name: "RuneSharedCore"),
         .target(

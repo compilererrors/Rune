@@ -392,16 +392,18 @@ private struct RuneFakeK8sRouter {
             if let version = query["resourceVersion"], fixture.expiredWatchResourceVersions.contains(version) {
                 return .json(status: 410, object: status(message: "too old resource version: \(version)"))
             }
-            return .watch(events: [
-                [
+            var events: [[String: Any]] = []
+            if fixture.watchSendsResourceChanges {
+                events.append([
                     "type": "MODIFIED",
                     "object": ["metadata": ["resourceVersion": "synthetic-2"]]
-                ],
-                [
-                    "type": "BOOKMARK",
-                    "object": ["metadata": ["resourceVersion": "synthetic-3"]]
-                ]
+                ])
+            }
+            events.append([
+                "type": "BOOKMARK",
+                "object": ["metadata": ["resourceVersion": "synthetic-3"]]
             ])
+            return .watch(events: events)
         }
 
         if method == "PATCH",
