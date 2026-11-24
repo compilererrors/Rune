@@ -353,9 +353,10 @@ struct RuneSettingsIntegerLimitEditor: View {
         RuneSettingsAdaptiveRow {
             VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                 Text(title)
-                    .runeInterfaceFont(weight: .semibold)
+                    .runeText(.body)
+                    .foregroundStyle(.runePrimary)
                 Text(detail)
-                    .runeInterfaceFont(relativeSize: -1)
+                    .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -711,9 +712,10 @@ public struct RunePreferencesView: View {
                     settingsGridRow {
                         VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                             Text("Recent")
-                                .runeInterfaceFont(weight: .semibold)
+                                .runeText(.body)
+                                .foregroundStyle(.runePrimary)
                             Text("Current: \(selectedAppearanceTheme.title)")
-                                .runeInterfaceFont(relativeSize: -1)
+                                .runeText(.micro)
                                 .foregroundStyle(
                                     selectedAppearanceTheme.palette?.secondaryText ?? Color.secondary
                                 )
@@ -743,9 +745,10 @@ public struct RunePreferencesView: View {
                 settingsGridRow {
                     VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                         Text("Theme JSON files")
-                            .runeInterfaceFont(weight: .semibold)
+                            .runeText(.body)
+                            .foregroundStyle(.runePrimary)
                         Text("Create or add compatible theme files, then reload.")
-                            .runeInterfaceFont(relativeSize: -1)
+                            .runeText(.micro)
                             .foregroundStyle(.runeSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Text(displayThemesDirectoryPath)
@@ -1008,7 +1011,8 @@ public struct RunePreferencesView: View {
                     settingsGridRow {
                         VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                             Text(action.title)
-                                .runeText(.microEmphasis)
+                                .runeText(.body)
+                                .foregroundStyle(.runePrimary)
                             Text(action.detail)
                                 .runeText(.micro)
                                 .foregroundStyle(.runeSecondary)
@@ -1212,7 +1216,8 @@ public struct RunePreferencesView: View {
                 settingsGridRow {
                     VStack(alignment: .leading, spacing: RuneSpacing.xxs) {
                         Text("Log file")
-                            .runeText(.microEmphasis)
+                            .runeText(.body)
+                            .foregroundStyle(.runePrimary)
                         Text(DebugTraceWriter.logFileURL.path)
                             .runeText(.micro, design: .monospaced)
                             .foregroundStyle(.runeSecondary)
