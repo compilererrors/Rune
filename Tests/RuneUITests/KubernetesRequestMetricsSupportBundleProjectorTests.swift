@@ -88,7 +88,7 @@ final class KubernetesRequestMetricsSupportBundleProjectorTests: XCTestCase {
             "/api/v1/namespaces/<namespace>/configmaps/<name>",
             "/api/v1/nodes/<name>"
         ])
-        XCTAssertEqual(presentation.endpointHighlights.map(\.hasIssues), [true, true, false])
+        XCTAssertEqual(presentation.endpointHighlights.map(\.hasIssues), [false, true, false])
         XCTAssertEqual(presentation.endpointHighlights.first?.outcomeText, "1 attempt • 1 cancelled")
         XCTAssertEqual(presentation.endpointHighlights.first?.maxDurationText, "max 30 ms")
         let rendered = presentation.endpointHighlights

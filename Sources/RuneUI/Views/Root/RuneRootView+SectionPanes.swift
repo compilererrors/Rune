@@ -114,6 +114,8 @@ extension RuneRootView {
     }
 
     var overviewPane: some View {
+        // Another cluster's overview starts at the top, so its first panels are in view.
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: RuneUILayoutMetrics.contentSectionSpacing) {
                 if !hasAvailableKubernetesContexts {
@@ -189,11 +191,18 @@ extension RuneRootView {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
+            .id(Self.overviewTopAnchor)
         }
         .id("overview")
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: viewModel.state.selectedContext?.name) { _, _ in
+            proxy.scrollTo(Self.overviewTopAnchor, anchor: .top)
+        }
+        }
     }
+
+    static let overviewTopAnchor = "overview-top"
 
     var workloadsPane: some View {
         workloadsContent

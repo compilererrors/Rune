@@ -9770,7 +9770,7 @@ public final class RuneAppViewModel: ObservableObject {
             } catch {
                 guard isActiveRun() else { return }
                 recordProjectedFailure(error)
-                record("contexts", "Contexts", .failed, error.localizedDescription)
+                record("contexts", "Contexts", .failed, "Could not read the contexts in the kubeconfig.", detail: error.localizedDescription)
                 return
             }
 
@@ -9793,7 +9793,7 @@ public final class RuneAppViewModel: ObservableObject {
                     )
                 } catch {
                     guard isActiveRun() else { return }
-                    record("native-auth-profile", "Native authentication", .warning, error.localizedDescription)
+                    record("native-auth-profile", "Native authentication", .warning, "Could not check the native provider profile for this context.", detail: error.localizedDescription)
                 }
             }
             let kubeConfigSources = scope.kubeConfigSources
@@ -9851,7 +9851,7 @@ public final class RuneAppViewModel: ObservableObject {
             } catch {
                 guard isActiveRun() else { return }
                 recordProjectedFailure(error)
-                record("context-namespace", "Context namespace", .warning, error.localizedDescription)
+                record("context-namespace", "Context namespace", .warning, "Could not read the context's namespace.", detail: error.localizedDescription)
             }
 
             do {
@@ -9950,7 +9950,7 @@ public final class RuneAppViewModel: ObservableObject {
                     } catch {
                         guard isActiveRun() else { return }
                         recordProjectedFailure(error)
-                        record("pod-logs", "Pod logs", .warning, error.localizedDescription)
+                        record("pod-logs", "Pod logs", .warning, "Could not read logs for a pod in \(namespace).", detail: error.localizedDescription)
                     }
                 } else {
                     record("pod-logs", "Pod logs", .warning, "No pods found, so log access could not be verified.")
@@ -9958,7 +9958,7 @@ public final class RuneAppViewModel: ObservableObject {
             } catch {
                 guard isActiveRun() else { return }
                 recordProjectedFailure(error)
-                record("pod-list", "Pod list", .failed, error.localizedDescription)
+                record("pod-list", "Pod list", .failed, "Cannot list pods in namespace \(namespace).", detail: error.localizedDescription)
             }
         }
     }

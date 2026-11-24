@@ -195,3 +195,37 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
         XCTAssertEqual(check.detail, serverMessage)
     }
 }
+
+final class AuthDoctorIssueReportTests: XCTestCase {
+    func testListsOnlyFailedAndWarningChecksWithTheirErrors() throws {
+        let report = try XCTUnwrap(AuthDoctorIssueReport.text(
+            checks: [
+                RuneHealthCheck(id: "kubeconfig", title: "Kubeconfig", status: .passed, message: "1 source(s) loaded."),
+                RuneHealthCheck(id: "pod-list", title: "Pod list", status: .failed, message: "Cannot list pods in namespace alpha-zone.",
+                                detail: "HTTP 403: pods is forbidden: User \"system:serviceaccount:kube-system:auth-doctor-denied\" cannot list resource \"pods\""),
+                RuneHealthCheck(id: "namespace-list", title: "Namespace list", status: .warning, message: "Cannot list namespaces."),
+            ],
+            context: "fake-orbit-denied",
+            namespace: "alpha-zone"
+        ))
+
+        XCTAssertEqual(report, """
+        Auth Doctor, context fake-orbit-denied, namespace alpha-zone
+
+        Failed: Pod list
+        Cannot list pods in namespace alpha-zone.
+            HTTP 403: pods is forbidden: User "system:serviceaccount:kube-system:auth-doctor-denied" cannot list resource "pods"
+
+        Warning: Namespace list
+        Cannot list namespaces.
+        """)
+    }
+
+    func testHasNothingToCopyWhenEveryCheckPassed() {
+        XCTAssertNil(AuthDoctorIssueReport.text(
+            checks: [RuneHealthCheck(id: "x", title: "X", status: .passed, message: "ok")],
+            context: nil,
+            namespace: nil
+        ))
+    }
+}

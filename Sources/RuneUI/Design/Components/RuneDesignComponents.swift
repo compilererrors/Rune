@@ -568,11 +568,16 @@ struct RuneNoticeBanner: View {
                 Text(notice.title)
                     .runeText(.microEmphasis)
                     .foregroundStyle(.runePrimary)
-                Text(notice.message)
-                    .runeText(.micro)
-                    .foregroundStyle(.runeSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                if notice.severity == .info {
+                    Text(notice.message)
+                        .runeText(.micro)
+                        .foregroundStyle(.runeSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                } else {
+                    // Warnings and errors carry what the cluster or client said: shown word for word, copyable.
+                    RuneErrorDetail(Self.readableErrorMessage(notice.message))
+                }
 
                 if let savedFileURL = notice.savedFileURL,
                    onOpenFolder != nil || onOpenFile != nil {
@@ -636,6 +641,11 @@ struct RuneNoticeBanner: View {
             .help("Open the saved log file in its default application.")
             .accessibilityIdentifier("saved-log-open-file")
         }
+    }
+
+    /// A partial load joins one error per resource with " | "; each goes on its own line.
+    static func readableErrorMessage(_ message: String) -> String {
+        message.replacingOccurrences(of: " | ", with: "\n")
     }
 
     private var symbolName: String {

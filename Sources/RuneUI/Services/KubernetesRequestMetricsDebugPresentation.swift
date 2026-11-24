@@ -87,7 +87,8 @@ public struct KubernetesRequestMetricsDebugPresentation: Equatable, Sendable {
                 apiPath: group.apiPath,
                 outcomeText: outcomeText,
                 maxDurationText: "max \(Self.formatDuration(group.maxDurationSeconds))",
-                hasIssues: issueCount > 0
+                // A cancelled request is usually Rune's own doing (a reload or a new selection), so only failures warn.
+                hasIssues: group.failureCount > 0
             )
         }
 

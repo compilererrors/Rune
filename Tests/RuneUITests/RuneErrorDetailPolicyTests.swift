@@ -29,3 +29,12 @@ final class RuneErrorDetailPolicyTests: XCTestCase {
         XCTAssertEqual(check.withDetail(" HTTP 403: denied ").detail, "HTTP 403: denied")
     }
 }
+
+final class RuneNoticeBannerMessageTests: XCTestCase {
+    func testPartialLoadPutsEachResourceErrorOnItsOwnLine() {
+        XCTAssertEqual(
+            RuneNoticeBanner.readableErrorMessage("Partial load: pods: HTTP 403: forbidden | events: HTTP 403: forbidden"),
+            "Partial load: pods: HTTP 403: forbidden\nevents: HTTP 403: forbidden"
+        )
+    }
+}

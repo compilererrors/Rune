@@ -196,6 +196,15 @@ extension RuneRootView {
             .help("Run kubeconfig, auth, RBAC, logs, exec, and port-forward checks.")
 
             RuneToolbarMenu {
+                Button("Copy Issues") {
+                    guard let report = authDoctorIssueReport else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(report, forType: .string)
+                }
+                .disabled(authDoctorIssueReport == nil)
+
+                Divider()
+
                 Button("Save Bundle") {
                     viewModel.saveSupportBundle()
                 }
@@ -210,7 +219,7 @@ extension RuneRootView {
             } label: {
                 Label("Save Bundle", systemImage: "square.and.arrow.down")
             }
-            .help("Save Auth Doctor diagnostics and support data.")
+            .help("Copy the issues, or save Auth Doctor diagnostics and support data.")
 
             Button {
                 withAnimation(.snappy(duration: 0.16)) {
@@ -286,6 +295,14 @@ extension RuneRootView {
             .disabled(viewModel.isRefreshingKubernetesRequestMetricsSummary)
             .help("Refresh API request metrics")
         }
+    }
+
+    var authDoctorIssueReport: String? {
+        AuthDoctorIssueReport.text(
+            checks: viewModel.state.authDoctorChecks,
+            context: viewModel.state.selectedContext?.name,
+            namespace: viewModel.state.selectedNamespace
+        )
     }
 
     func authDoctorCheckRow(_ check: RuneHealthCheck) -> some View {
