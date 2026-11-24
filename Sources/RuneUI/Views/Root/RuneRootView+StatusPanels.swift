@@ -301,6 +301,9 @@ extension RuneRootView {
                     .runeText(.micro)
                     .foregroundStyle(.runeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let detail = check.detail {
+                    RuneErrorDetail(detail)
+                }
             }
 
             Spacer(minLength: 8)

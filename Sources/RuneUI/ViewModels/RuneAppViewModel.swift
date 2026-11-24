@@ -9700,17 +9700,17 @@ public final class RuneAppViewModel: ObservableObject {
             }
 
             @MainActor
-            func record(_ id: String, _ title: String, _ status: RuneHealthCheckStatus, _ message: String) {
+            func record(_ id: String, _ title: String, _ status: RuneHealthCheckStatus, _ message: String, detail: String? = nil) {
                 guard isActiveRun() else { return }
                 checks.removeAll { $0.id == id }
-                checks.append(RuneHealthCheck(id: id, title: title, status: status, message: message))
+                checks.append(RuneHealthCheck(id: id, title: title, status: status, message: message, detail: detail))
                 self.state.setAuthDoctorChecks(checks)
             }
 
             @MainActor
             func recordProjectedFailureMessage(_ message: String) {
                 for check in AuthDoctorFailureProjector.checks(for: message) {
-                    record(check.id, check.title, check.status, check.message)
+                    record(check.id, check.title, check.status, check.message, detail: check.detail)
                 }
             }
 
@@ -9729,7 +9729,7 @@ public final class RuneAppViewModel: ObservableObject {
                     ) else { return }
                     guard isActiveRun() else { return }
                     let check = AuthDoctorExecAuthCacheProjector.check(for: diagnostic)
-                    record(check.id, check.title, check.status, check.message)
+                    record(check.id, check.title, check.status, check.message, detail: check.detail)
                 } catch {
                     guard isActiveRun() else { return }
                     recordProjectedFailure(error)
@@ -9760,7 +9760,7 @@ public final class RuneAppViewModel: ObservableObject {
                 sources: scope.kubeConfigSources,
                 activeContextName: scope.selectedContext?.name
             ) {
-                record(check.id, check.title, check.status, check.message)
+                record(check.id, check.title, check.status, check.message, detail: check.detail)
             }
             let contexts: [KubeContext]
             do {
@@ -9831,12 +9831,12 @@ public final class RuneAppViewModel: ObservableObject {
                         allowed: allowed
                     )
                     let check = AuthDoctorRBACProjector.check(for: capability, namespace: namespace)
-                    record(check.id, check.title, check.status, check.message)
+                    record(check.id, check.title, check.status, check.message, detail: check.detail)
                     return capability
                 } catch {
                     guard isActiveRun() else { return nil }
                     recordProjectedFailure(error)
-                    record(id, title, .warning, "Could not verify RBAC with SelfSubjectAccessReview: \(error.localizedDescription)")
+                    record(id, title, .warning, "Could not verify RBAC with SelfSubjectAccessReview.", detail: error.localizedDescription)
                     return nil
                 }
             }
@@ -9868,7 +9868,7 @@ public final class RuneAppViewModel: ObservableObject {
             } catch {
                 guard isActiveRun() else { return }
                 recordProjectedFailure(error)
-                record("namespace-list", "Namespace list", .warning, "Cannot list namespaces. Manual namespace mode can still work if RBAC allows access to a specific namespace. \(error.localizedDescription)")
+                record("namespace-list", "Namespace list", .warning, "Cannot list namespaces. Manual namespace mode can still work if RBAC allows access to a specific namespace.", detail: error.localizedDescription)
             }
 
             let namespace = scope.selectedNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -9915,10 +9915,10 @@ public final class RuneAppViewModel: ObservableObject {
                         allowed: allowed
                     )
                     let check = AuthDoctorRBACProjector.check(for: capability, namespace: result.namespace)
-                    record(check.id, check.title, check.status, check.message)
+                    record(check.id, check.title, check.status, check.message, detail: check.detail)
                 } else if let errorMessage = result.errorMessage {
                     recordProjectedFailureMessage(errorMessage)
-                    record(result.target.id, result.target.title, .warning, "Could not verify RBAC with SelfSubjectAccessReview: \(errorMessage)")
+                    record(result.target.id, result.target.title, .warning, "Could not verify RBAC with SelfSubjectAccessReview.", detail: errorMessage)
                 }
             }
 

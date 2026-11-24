@@ -455,6 +455,7 @@ public struct RunePreferencesView: View {
     @State private var selectedPane: PreferencesPane = .general
     @AppStorage(RuneSettingsKeys.persistNamespaceListCache) private var persistNamespaceListCache = true
     @AppStorage(RuneSettingsKeys.diagnosticsLogging) private var diagnosticsLogging = true
+    @AppStorage(RuneSettingsKeys.errorDetailsAlwaysExpanded) private var errorDetailsAlwaysExpanded = false
     @AppStorage(RuneSettingsKeys.verboseDebugTrace) private var verboseDebugTrace = false
     @AppStorage(RuneSettingsKeys.backgroundPrefetchOtherContexts) private var backgroundPrefetchOtherContexts = false
     @AppStorage(RuneSettingsKeys.enableDemoCluster) private var enableDemoCluster = true
@@ -1207,6 +1208,14 @@ public struct RunePreferencesView: View {
             title: settingsString(.settingsDiagnostics),
             subtitle: settingsString(.settingsDiagnosticsSubtitle)
         ) {
+            settingsSection("Error messages") {
+                settingsToggleRow(
+                    "Always expand error messages",
+                    help: "Show the whole error from Kubernetes instead of its first line. You can always open or copy it either way.",
+                    isOn: $errorDetailsAlwaysExpanded
+                )
+            }
+
             settingsSection("Diagnostics logging") {
                 settingsToggleRow(
                     "Diagnostics logging",

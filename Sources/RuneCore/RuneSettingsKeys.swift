@@ -70,6 +70,12 @@ public enum RuneSettingsKeys {
     public static let hideManagedFieldsByDefault = "rune.settings.appearance.hideManagedFieldsByDefault"
     /// When true, Rune favors a lighter, less dense interface and skips advanced optional panels.
     public static let simpleMode = "rune.settings.appearance.simpleMode"
+    /// When true, an error from Kubernetes shows its whole message instead of its first line.
+    public static let errorDetailsAlwaysExpanded = "rune.settings.errors.alwaysExpanded"
+    /// How often an error message was opened by hand, until Rune has asked once about always expanding.
+    public static let errorDetailsExpandCount = "rune.settings.errors.expandCount"
+    /// Set once Rune has asked whether error messages should always be expanded.
+    public static let errorDetailsAlwaysExpandAsked = "rune.settings.errors.alwaysExpandAsked"
     /// When true, Rune shows native hover help for explanatory labels and controls.
     public static let showHoverTooltips = "rune.settings.appearance.showHoverTooltips"
     /// When true, horizontally scrollable resource tables show a subtle glow at edges with hidden columns.
@@ -204,6 +210,7 @@ public enum RuneSettingsKeys {
             terminalCommandHistoryExpanded: true,
             hideManagedFieldsByDefault: true,
             simpleMode: false,
+            errorDetailsAlwaysExpanded: false,
             showHoverTooltips: true,
             showResourceTableScrollEdgeGlow: false,
             showSplitResizeHandles: false,

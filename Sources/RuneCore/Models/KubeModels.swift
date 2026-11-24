@@ -37,13 +37,23 @@ public struct RuneHealthCheck: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public let title: String
     public let status: RuneHealthCheckStatus
+    /// Rune's own line about the check.
     public let message: String
+    /// The error the server or client returned, word for word, shown under `message`.
+    public let detail: String?
 
-    public init(id: String, title: String, status: RuneHealthCheckStatus, message: String) {
+    public init(id: String, title: String, status: RuneHealthCheckStatus, message: String, detail: String? = nil) {
         self.id = id
         self.title = title
         self.status = status
         self.message = message
+        let trimmed = detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.detail = trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    /// The same check with the error it came from.
+    public func withDetail(_ detail: String) -> RuneHealthCheck {
+        RuneHealthCheck(id: id, title: title, status: status, message: message, detail: detail)
     }
 }
 

@@ -183,4 +183,15 @@ final class AuthDoctorFailureProjectorTests: XCTestCase {
     func testReturnsNoChecksForUnknownFailures() {
         XCTAssertTrue(AuthDoctorFailureProjector.checks(for: "synthetic parse failure").isEmpty)
     }
+
+    func testKeepsTheWholeServerMessageBesideRunesLine() throws {
+        let serverMessage = "HTTP 403: pods is forbidden: User \"system:serviceaccount:kube-system:preview-viewer\" cannot create resource \"pods/exec\" in API group \"\" in the namespace \"alpha-zone\". " + String(repeating: "Further detail from the API server.", count: 8)
+        XCTAssertGreaterThan(serverMessage.count, 192)
+
+        let checks = AuthDoctorFailureProjector.checks(for: "  \(serverMessage)\n")
+        let check = try XCTUnwrap(checks.first { $0.id == "api-authorization" })
+
+        XCTAssertTrue(check.message.contains("authorization failure"))
+        XCTAssertEqual(check.detail, serverMessage)
+    }
 }

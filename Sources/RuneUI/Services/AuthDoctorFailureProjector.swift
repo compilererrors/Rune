@@ -3,6 +3,7 @@ import RuneCore
 import RuneKube
 
 public enum AuthDoctorFailureProjector {
+    /// Only the start of a message is read to classify it; the check still carries the whole message.
     private static let maximumDiagnosticCharacters = 192
     private static let nativeAuthChecks = [
         RuneHealthCheck(
@@ -61,7 +62,18 @@ public enum AuthDoctorFailureProjector {
         )
     ]
 
+    /// Rune's checks for an error, each with the whole error as its detail, so the server's
+    /// message stays visible under Rune's line.
     public static func checks(for errorMessage: String) -> [RuneHealthCheck] {
+        let wholeMessage = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        return classifiedChecks(for: errorMessage).map { check in
+            check.id == endpointCheckID ? check : check.withDetail(wholeMessage)
+        }
+    }
+
+    private static let endpointCheckID = "api-request-endpoint"
+
+    private static func classifiedChecks(for errorMessage: String) -> [RuneHealthCheck] {
         let trimmed = boundedTrimmedErrorMessage(errorMessage)
         guard !trimmed.isEmpty else { return [] }
         let lower = trimmed.lowercased()
@@ -268,7 +280,7 @@ public enum AuthDoctorFailureProjector {
         guard let endpoint = sanitizedAPIEndpoint(in: message) else { return checks }
         return checks + [
             RuneHealthCheck(
-                id: "api-request-endpoint",
+                id: endpointCheckID,
                 title: "Failed API request",
                 status: .warning,
                 message: "Failed Kubernetes API request: \(endpoint)."
