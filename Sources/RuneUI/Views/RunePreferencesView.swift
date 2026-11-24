@@ -912,7 +912,14 @@ public struct RunePreferencesView: View {
     }
 
     private var displayThemesDirectoryPath: String {
-        let path = RuneThemeCatalog.userThemesDirectoryURL.path
+        Self.homeRelativePath(RuneThemeCatalog.userThemesDirectoryURL.path)
+    }
+
+    private var displayDebugTraceFilePath: String {
+        Self.homeRelativePath(DebugTraceWriter.logFileURL.path)
+    }
+
+    private static func homeRelativePath(_ path: String) -> String {
         let homePath = FileManager.default.homeDirectoryForCurrentUser.path
         guard path.hasPrefix(homePath) else { return path }
         return "~" + String(path.dropFirst(homePath.count))
@@ -1218,10 +1225,10 @@ public struct RunePreferencesView: View {
                         Text("Log file")
                             .runeText(.body)
                             .foregroundStyle(.runePrimary)
-                        Text(DebugTraceWriter.logFileURL.path)
+                        Text(displayDebugTraceFilePath)
                             .runeText(.micro, design: .monospaced)
                             .foregroundStyle(.runeSecondary)
-                            .lineLimit(2)
+                            .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
                             .help(DebugTraceWriter.logFileURL.path)

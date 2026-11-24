@@ -24,6 +24,13 @@ final class RuneSettingsRowStyleTests: XCTestCase {
         XCTAssertLessThan(stepper.lowerBound, suffix.lowerBound, "the stepper follows the field, then the unit")
     }
 
+    func testDebugTraceFileShowsAShortSingleLinePath() throws {
+        let source = try preferencesSource()
+        let row = try block(from: "Text(\"Log file\")", to: "debugTraceManagementMenu", in: source)
+        XCTAssertTrue(row.contains("displayDebugTraceFilePath"), "the path starts with ~ like the themes folder")
+        XCTAssertTrue(row.contains(".lineLimit(1)"))
+    }
+
     private func block(from start: String, to end: String, in source: String) throws -> String {
         let lower = try XCTUnwrap(source.range(of: start), "missing \(start)")
         let upper = try XCTUnwrap(source.range(of: end, range: lower.upperBound..<source.endIndex), "missing \(end)")
