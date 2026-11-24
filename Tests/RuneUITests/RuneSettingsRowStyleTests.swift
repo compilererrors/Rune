@@ -14,6 +14,16 @@ final class RuneSettingsRowStyleTests: XCTestCase {
         XCTAssertFalse(source.contains(".runeInterfaceFont(relativeSize: -1)\n                    .foregroundStyle(.runeSecondary)\n                    .fixedSize(horizontal: false, vertical: true)"), "limit row descriptions")
     }
 
+    func testLimitStepperSitsBesideItsField() throws {
+        let source = try preferencesSource()
+        let editor = try block(from: "struct RuneSettingsIntegerLimitEditor: View {", to: "private var normalizedValue: Int", in: source)
+        let field = try XCTUnwrap(editor.range(of: "TextField(title, value: normalizedBinding"))
+        let stepper = try XCTUnwrap(editor.range(of: "Stepper(\"Adjust \\(title)\""))
+        let suffix = try XCTUnwrap(editor.range(of: "Text(valueSuffix)"))
+        XCTAssertLessThan(field.lowerBound, stepper.lowerBound)
+        XCTAssertLessThan(stepper.lowerBound, suffix.lowerBound, "the stepper follows the field, then the unit")
+    }
+
     private func block(from start: String, to end: String, in source: String) throws -> String {
         let lower = try XCTUnwrap(source.range(of: start), "missing \(start)")
         let upper = try XCTUnwrap(source.range(of: end, range: lower.upperBound..<source.endIndex), "missing \(end)")

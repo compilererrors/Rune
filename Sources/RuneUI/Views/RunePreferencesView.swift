@@ -372,16 +372,16 @@ struct RuneSettingsIntegerLimitEditor: View {
                     .frame(width: 76)
                     .accessibilityLabel("\(title) value")
 
+                Stepper("Adjust \(title)", value: normalizedBinding, step: step)
+                    .labelsHidden()
+                    .help("Adjust \(title) by \(step). Current value: \(normalizedValue) \(valueSuffix).")
+
                 Text(valueSuffix)
                     .runeInterfaceFont(relativeSize: -1)
                     .foregroundStyle(.runeSecondary)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
-
-                Stepper("Adjust \(title)", value: normalizedBinding, step: step)
-                    .labelsHidden()
-                    .help("Adjust \(title) by \(step). Current value: \(normalizedValue) \(valueSuffix).")
 
                 Button("Reset") {
                     value.wrappedValue = defaultValue
